@@ -1,0 +1,8 @@
+.venv
+.env
+.vscode
+node_modules
+__pycache__
+dist
+db.sqlite
+package-lock.json

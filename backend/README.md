@@ -1,0 +1,27 @@
+# Backend
+
+Flask API for the strategy-building chat application.
+
+## Run
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+python backend/app.py
+```
+
+The SQLite database is stored at `backend/db/db.sqlite`.
+
+## API
+
+`GET /strategy?thread_id=<uuid>` returns the current thread state and creates an empty row if it does not exist.
+
+`POST /strategy` accepts:
+
+```json
+{
+  "thread_id": "uuid",
+  "message": "user message"
+}
+```
