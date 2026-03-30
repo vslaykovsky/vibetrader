@@ -1,8 +1,9 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
+import { randomUUID } from './randomUUID.js';
 import { StrategyPage } from './pages/StrategyPage';
 
 function createThreadId() {
-  return crypto.randomUUID();
+  return randomUUID();
 }
 
 export default function App() {

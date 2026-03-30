@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { randomUUID } from '../randomUUID.js';
 import { loadStrategyChartsModule } from '../strategyChartsModule.js';
 
 function DiffView({ diff }) {
@@ -487,7 +488,7 @@ export function StrategyPage() {
             <button
               type="button"
               className="button-new-thread"
-              onClick={() => navigate(`/strategy/${crypto.randomUUID()}`)}
+              onClick={() => navigate(`/strategy/${randomUUID()}`)}
             >
               New strategy
             </button>
