@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import datetime
 import dotenv
 dotenv.load_dotenv()
 from langsmith import traceable
@@ -21,9 +22,8 @@ SYSTEM_PROMPT = f"""You help users design trading strategies in chat.
 Workflow
 
 * Before the first update_strategy, request any missing details needed to build the strategy (e.g., ticker, candlestick period, time range, stop loss, take profit, other parameters).
-* To modify code or parameters, call update_strategy with a brief task describing only the changes. Match the user’s language.
-* To re-run a backtest without changes, call run_strategy with the full command (e.g. 'python src/strategy.py --ticker SPY --backtest').
-  Use the strategy script's --help output to pick the right flags.
+* To modify code call update_strategy with a brief task describing only the changes. Match the user’s language. Only run update_strategy if the required logic is changed. If only CLI arguments of strategy are changed, call run_strategy instead.
+* To re-run a backtest without changes, call run_strategy with the full command (e.g. 'python src/strategy.py --ticker SPY --backtest').  Use the strategy script's --help output to pick the right flags.
 * To run parameter optimization, call run_strategy with the --hyperopt flag (if available).
 Always respond in the user’s language.
 
@@ -32,6 +32,7 @@ Notes
 * update_strategy generates strategy code and charts; it can also include hyperparameter optimization code.
 * Strategies can use Alpaca market data.
 * Backtesting is supported; live trading is not.
+* Today's date is {datetime.now().strftime("%Y-%m-%d")}.
 
 {{strategy_help}}
 

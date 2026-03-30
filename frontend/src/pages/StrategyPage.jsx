@@ -87,6 +87,26 @@ function hasNonEmptyOutputText(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function paramsJsonFromOutput(output) {
+  if (!output || typeof output !== 'object') {
+    return null;
+  }
+  const raw = output['params.json'];
+  if (raw == null) {
+    return null;
+  }
+  if (typeof raw === 'string') {
+    const t = raw.trim();
+    return t.length ? t : null;
+  }
+  try {
+    const s = JSON.stringify(raw, null, 2);
+    return s.trim().length ? s : null;
+  } catch {
+    return null;
+  }
+}
+
 function strategyNameFromOutput(output) {
   if (!output || typeof output !== 'object') {
     return '';
@@ -453,6 +473,8 @@ export function StrategyPage() {
   const showSummary = hasNonEmptyOutputText(summaryText);
   const showPseudocode = hasNonEmptyOutputText(pseudocodeText);
   const showPseudocodeDiff = hasNonEmptyOutputText(pseudocodeDiff);
+  const paramsJsonText = paramsJsonFromOutput(output);
+  const showParamsPanel = paramsJsonText != null;
 
   return (
     <main className="layout">
@@ -532,6 +554,12 @@ export function StrategyPage() {
             <h3 className="canvas-text-block-title">Summary</h3>
             <div className="canvas-text-block-body">{summaryText}</div>
           </article>
+        ) : null}
+        {showParamsPanel ? (
+          <details className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details">
+            <summary className="canvas-pseudocode-summary">Strategy parameters</summary>
+            <pre className="canvas-pseudocode">{paramsJsonText}</pre>
+          </details>
         ) : null}
         {showPseudocode ? (
           <details className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details">
