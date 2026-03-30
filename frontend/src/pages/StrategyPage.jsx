@@ -4,6 +4,26 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { loadStrategyChartsModule } from '../strategyChartsModule.js';
 
+function DiffView({ diff }) {
+  const lines = (diff || '').split('\n');
+  return (
+    <pre className="canvas-pseudocode-diff">
+      {lines.map((line, i) => {
+        let cls = 'diff-ctx';
+        if (line.startsWith('+')) cls = 'diff-add';
+        else if (line.startsWith('-')) cls = 'diff-del';
+        else if (line.startsWith('@@')) cls = 'diff-hunk';
+        return (
+          <span key={i} className={cls}>
+            {line}
+            {'\n'}
+          </span>
+        );
+      })}
+    </pre>
+  );
+}
+
 function ChatProcessingSpinner({ label }) {
   const text =
     typeof label === 'string' && label.trim().length > 0 ? label.trim() : 'Working…';
@@ -85,7 +105,7 @@ function strategyNameFromOutput(output) {
   if (typeof data !== 'object' || data === null) {
     return '';
   }
-  const name = data.strategy && data.strategy.name;
+  const name = data.strategy_name;
   return typeof name === 'string' && name.trim() ? name.trim() : '';
 }
 
@@ -432,8 +452,10 @@ export function StrategyPage() {
   const strategyName = strategyNameFromOutput(output);
   const summaryText = output && typeof output === 'object' ? output['summary.txt'] : undefined;
   const pseudocodeText = output && typeof output === 'object' ? output['pseudocode.txt'] : undefined;
+  const pseudocodeDiff = output && typeof output === 'object' ? output['pseudocode.diff'] : undefined;
   const showSummary = hasNonEmptyOutputText(summaryText);
   const showPseudocode = hasNonEmptyOutputText(pseudocodeText);
+  const showPseudocodeDiff = hasNonEmptyOutputText(pseudocodeDiff);
 
   return (
     <main className="layout">
@@ -517,6 +539,12 @@ export function StrategyPage() {
         {showPseudocode ? (
           <details className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details">
             <summary className="canvas-pseudocode-summary">Pseudocode</summary>
+            {showPseudocodeDiff ? (
+              <details className="canvas-pseudocode-diff-details" open>
+                <summary className="canvas-pseudocode-diff-summary">Changes</summary>
+                <DiffView diff={pseudocodeDiff} />
+              </details>
+            ) : null}
             <pre className="canvas-pseudocode">{pseudocodeText}</pre>
           </details>
         ) : null}

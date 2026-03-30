@@ -256,6 +256,31 @@ def _strategy_script_help(workspace: Path) -> str:
     return _tail((proc.stdout or "").strip())
 
 
+def _generate_pseudocode_diff(root: Path) -> None:
+    pseudocode = root / "output" / "pseudocode.txt"
+    pseudocode_old = root / "output" / "pseudocode.old"
+    pseudocode_diff = root / "output" / "pseudocode.diff"
+    if not pseudocode_old.is_file():
+        pseudocode_diff.unlink(missing_ok=True)
+        return
+    try:
+        proc = subprocess.run(
+            ["diff", "-u", str(pseudocode_old), str(pseudocode)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        diff_text = proc.stdout or ""
+        if diff_text.strip():
+            pseudocode_diff.write_text(diff_text, encoding="utf-8")
+        else:
+            pseudocode_diff.unlink(missing_ok=True)
+    except (OSError, subprocess.TimeoutExpired):
+        pseudocode_diff.unlink(missing_ok=True)
+    finally:
+        pseudocode_old.unlink(missing_ok=True)
+
+
 @traceable(name="run_update_strategy")
 def run_update_strategy(
     thread_id: str, task: str, on_progress: ProgressCallback = None
@@ -267,9 +292,18 @@ def run_update_strategy(
         return {"ok": False, "error": "invalid thread_id"}
     root = ensure_strategy_workspace(thread_id)
     ticker = (os.getenv("STRATEGY_BACKTEST_TICKER") or "SPY").strip() or "SPY"
+
+    pseudocode = root / "output" / "pseudocode.txt"
+    pseudocode_old = root / "output" / "pseudocode.old"
+    if pseudocode.is_file():
+        shutil.copy2(pseudocode, pseudocode_old)
+
     if on_progress:
         on_progress("Updating strategy…")
     codegen = _run_codex_exec(task, root)
+
+    _generate_pseudocode_diff(root)
+
     result: dict[str, Any] = {
         "runner": "codex",
         "codex_returncode": codegen.returncode,

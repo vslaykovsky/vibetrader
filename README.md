@@ -1,8 +1,7 @@
 # TODO
 
 ## MVP (kirill)
-- change history.
-- pseudocode diff. 
+
 - hyperopt mode / "train" mode. 
 
 ## Public Beta
