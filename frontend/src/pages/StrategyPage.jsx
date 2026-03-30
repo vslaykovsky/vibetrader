@@ -202,23 +202,14 @@ export function StrategyPage() {
     if (serverJob.status !== 'running') {
       return undefined;
     }
-    let cancelled = false;
 
-    async function poll() {
-      if (cancelled) {
-        return;
-      }
+    const evtSource = new EventSource(
+      `${API_BASE_URL}/strategy/stream?thread_id=${encodeURIComponent(threadId)}`,
+    );
+
+    evtSource.onmessage = (event) => {
       try {
-        const response = await fetch(
-          `${API_BASE_URL}/strategy?thread_id=${encodeURIComponent(threadId)}`,
-        );
-        if (!response.ok || cancelled) {
-          return;
-        }
-        const payload = await response.json();
-        if (cancelled) {
-          return;
-        }
+        const payload = JSON.parse(event.data);
         setMessages(payload.messages || []);
         setCanvas(payload.canvas || {});
         setServerJob({
@@ -227,19 +218,20 @@ export function StrategyPage() {
         });
         if (payload.status !== 'running') {
           setSubmitting(false);
+          evtSource.close();
         }
       } catch {
-        if (!cancelled) {
-          setSubmitting(false);
-        }
+        /* ignore malformed events */
       }
-    }
+    };
 
-    poll();
-    const id = setInterval(poll, 1000);
+    evtSource.onerror = () => {
+      evtSource.close();
+      setSubmitting(false);
+    };
+
     return () => {
-      cancelled = true;
-      clearInterval(id);
+      evtSource.close();
     };
   }, [threadId, serverJob.status]);
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import threading
+import time
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, Response, current_app, jsonify, request
 from sqlalchemy.orm import Session
 
 from db.models import Strategy
@@ -151,3 +153,35 @@ def post_strategy() -> tuple:
         return jsonify(serialize_strategy(strategy)), 200
     finally:
         session.close()
+
+
+@strategy_blueprint.get("/strategy/stream")
+def strategy_stream():
+    thread_id = request.args.get("thread_id", "").strip()
+    if not thread_id or not thread_id_allowed(thread_id):
+        return _validation_error("invalid or missing thread_id")
+
+    def generate():
+        last_snapshot = None
+        while True:
+            session = SessionLocal()
+            try:
+                strategy = session.get(Strategy, thread_id)
+                if strategy is None:
+                    break
+                snapshot = json.dumps(serialize_strategy(strategy), sort_keys=True)
+                if snapshot != last_snapshot:
+                    last_snapshot = snapshot
+                    yield f"data: {snapshot}\n\n"
+                done = strategy.status != "running"
+            finally:
+                session.close()
+            if done:
+                break
+            time.sleep(0.5)
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

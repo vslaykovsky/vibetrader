@@ -2,7 +2,7 @@
 
 ## MVP (kirill)
 - provide context about existing code to agent. 
-- speed up with codex spark (chatgpt pro) or claude code. 
+- speed up with codex spark (chatgpt pro). 
 - pseudocode diff. 
 - change history.
 - ask more at the start of the thread (symbol, other stuff)

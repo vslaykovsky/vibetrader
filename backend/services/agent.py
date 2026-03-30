@@ -32,7 +32,6 @@ Answer in plain text. No JSON or markup unless the user asks."""
 
 STRATEGIES_DIR = Path(__file__).resolve().parents[1] / "strategies"
 STRATEGY_AGENTS_TEMPLATE = STRATEGIES_DIR / "AGENTS.md"
-STRATEGY_CODEGEN_CODEX_ONCE_MARKER = ".vibetrader_codex_codegen_once"
 UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
 RERUN_BACKTEST_TOOL_NAME = "rerun_backtest"
 
@@ -105,9 +104,8 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": UPDATE_STRATEGY_TOOL_NAME,
             "description": (
-                "Change the trading strategy in this thread's strategies/<thread_id>/ folder. The "
-                "first update in a thread runs Codex in full-auto mode; later updates use Claude Code "
-                "with --yes. Then the backtest re-runs to refresh output/data.json."
+                "Change the trading strategy in this thread's strategies/<thread_id>/ folder using "
+                "Codex exec in full-auto mode, then re-run the backtest to refresh output/data.json."
             ),
             "parameters": {
                 "type": "object",
@@ -198,15 +196,19 @@ def canvas_with_output(existing_canvas: dict[str, Any], thread_id: str) -> dict[
 
 
 @traceable(name="run_codex_exec")
-def _run_codex_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:    
-    codex_cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", task]
-    return _run_logged_subprocess("codex exec", codex_cmd, str(cwd), timeout=600)
-
-
-@traceable(name="run_claude_code_exec")
-def _run_claude_code_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
-    claude_cmd = ["claude", "code", "--prompt", task, "--yes", "--quiet"]
-    return _run_logged_subprocess("claude code", claude_cmd, str(cwd), timeout=600)
+def _run_codex_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    cmd = [
+        "codex",
+        "exec",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check",
+        "--model", "gpt-5.4",
+        "-c", "service_tier=fast",
+        "-c", "model_verbosity=low",
+        "-c", "features.fast_mode=true",
+        task,
+    ]
+    return _run_logged_subprocess("codex exec", cmd, str(cwd), timeout=600)
 
 
 @traceable(name="run_strategy_backtest")
@@ -238,36 +240,17 @@ def run_update_strategy(
         return {"ok": False, "error": "invalid thread_id"}
     root = ensure_strategy_workspace(thread_id)
     ticker = (os.getenv("STRATEGY_BACKTEST_TICKER") or "SPY").strip() or "SPY"
-    marker = root / STRATEGY_CODEGEN_CODEX_ONCE_MARKER
-    use_claude = marker.is_file()
-    if use_claude:
-        if on_progress:
-            on_progress("Updating code…")
-        codegen = _run_claude_code_exec(task, root)
-        result: dict[str, Any] = {
-            "runner": "claude_code",
-            "claude_returncode": codegen.returncode,
-            "claude_stdout": _tail(codegen.stdout or ""),
-            "claude_stderr": _tail(codegen.stderr or ""),
-        }
-        codegen_rc = codegen.returncode
-        codegen_err = "claude code failed"
-    else:
-        if on_progress:
-            on_progress("Updating strategy…")
-        codegen = _run_codex_exec(task, root)
-        result = {
-            "runner": "codex",
-            "codex_returncode": codegen.returncode,
-            "codex_stdout": _tail(codegen.stdout or ""),
-            "codex_stderr": _tail(codegen.stderr or ""),
-        }
-        codegen_rc = codegen.returncode
-        codegen_err = "codex exec failed"
-        try:
-            marker.write_text("", encoding="utf-8")
-        except OSError:
-            pass
+    if on_progress:
+        on_progress("Updating strategy…")
+    codegen = _run_codex_exec(task, root)
+    result: dict[str, Any] = {
+        "runner": "codex",
+        "codex_returncode": codegen.returncode,
+        "codex_stdout": _tail(codegen.stdout or ""),
+        "codex_stderr": _tail(codegen.stderr or ""),
+    }
+    codegen_rc = codegen.returncode
+    codegen_err = "codex exec failed"
     if on_progress:
         on_progress("Running backtest…")
     bt = _run_strategy_backtest(ticker, root)
