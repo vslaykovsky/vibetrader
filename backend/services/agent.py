@@ -18,21 +18,20 @@ from services.chat_openrouter import ChatOpenRouter
 
 SYSTEM_PROMPT = f"""You help users design trading strategies in chat.
 
-- Before running update_strategy for the first time, ask the user to provide additional context needed to build the strategy if not provided yet. Exaples may include, but not limited to:
-  - ticker
-  - candlestick period
-  - time period
-  - stop loss
-  - take profit
-  - other parameters that are needed to build the strategy
-- To change code or parameters, call update_strategy with a short task describing only what should change. When user uses non-english language, use the same language for the task.
-- To re-run the backtest without changing code, call rerun_backtest; pass ticker when a different symbol is needed, and optional candlestick_period (Alpaca timeframe, e.g. 1Day, 1Hour) and time_period (e.g. 8y, 252d, or days as an integer string) when the user asks.
-- when user uses non-english language, use the same language for the response
+Workflow
 
-Additional context:
-- update_strategy creates strategy code along with chart visualizations. 
-- strategy code can use alpaca market data api to get market data. 
-- strategy code can be backtested, but cannot be run live as of today. 
+* Before the first update_strategy, request any missing details needed to build the strategy (e.g., ticker, candlestick period, time range, stop loss, take profit, other parameters).
+* To modify code or parameters, call update_strategy with a brief task describing only the changes. Match the user’s language.
+* To re-run a backtest without changes, call run_strategy with the full command (e.g. 'python src/strategy.py --ticker SPY --backtest').
+  Use the strategy script's --help output to pick the right flags.
+* To run parameter optimization, call run_strategy with the --hyperopt flag (if available).
+Always respond in the user’s language.
+
+Notes
+
+* update_strategy generates strategy code and charts; it can also include hyperparameter optimization code.
+* Strategies can use Alpaca market data.
+* Backtesting is supported; live trading is not.
 
 {{strategy_help}}
 
@@ -41,7 +40,7 @@ Answer in plain text. No JSON or markup unless the user asks."""
 STRATEGIES_DIR = Path(__file__).resolve().parents[1] / "strategies"
 STRATEGY_AGENTS_TEMPLATE = STRATEGIES_DIR / "AGENTS.md"
 UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
-RERUN_BACKTEST_TOOL_NAME = "rerun_backtest"
+RUN_STRATEGY_TOOL_NAME = "run_strategy"
 
 ProgressCallback = Callable[[str], None] | None
 
@@ -130,29 +129,22 @@ AGENT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": RERUN_BACKTEST_TOOL_NAME,
+            "name": RUN_STRATEGY_TOOL_NAME,
             "description": (
-                "Re-run python src/strategy.py --backtest for this thread only (no Codex, no code edits). "
-                "Refreshes output/data.json. Omit ticker to use STRATEGY_BACKTEST_TICKER or SPY. "
-                "Optional candlestick_period and time_period are passed as CLI flags when set."
+                "Run a strategy command in this thread's workspace (no Codex, no code edits). "
+                "Provide the full shell command to execute (e.g. 'python src/strategy.py --ticker SPY --backtest'). "
+                "Use the strategy script's --help output to pick the right flags. "
+                "Refreshes output/data.json on success."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "ticker": {
+                    "command": {
                         "type": "string",
-                        "description": "Symbol to backtest (e.g. SPY, QQQ). Omit for the default ticker.",
-                    },
-                    "candlestick_period": {
-                        "type": "string",
-                        "description": "Alpaca bar timeframe (e.g. 1Day, 1Hour). Omit to use the strategy default.",
-                    },
-                    "time_period": {
-                        "type": "string",
-                        "description": "History window: Ny or Nd (e.g. 8y, 252d) or a plain integer days string. Omit for default.",
+                        "description": "Full shell command to run (e.g. 'python src/strategy.py --ticker SPY --backtest --candlestick-period 1Day').",
                     },
                 },
-                "required": [],
+                "required": ["command"],
             },
         },
     },
@@ -221,20 +213,14 @@ def _run_codex_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
 
 @traceable(name="run_strategy_backtest")
 def _run_strategy_backtest(
-    ticker: str,
+    command: str,
     cwd: Path,
-    *,
-    candlestick_period: str | None = None,
-    time_period: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    backtest_cmd = [sys.executable, "src/strategy.py", "--ticker", ticker, "--backtest"]
-    cp = (candlestick_period or "").strip()
-    if cp:
-        backtest_cmd.extend(["--candlestick-period", cp])
-    tp = (time_period or "").strip()
-    if tp:
-        backtest_cmd.extend(["--time-period", tp])
-    return _run_logged_subprocess("strategy backtest", backtest_cmd, str(cwd), timeout=300)
+    import shlex
+    parts = shlex.split(command)
+    if parts and parts[0] == "python":
+        parts[0] = sys.executable
+    return _run_logged_subprocess("strategy backtest", parts, str(cwd), timeout=300)
 
 
 def _strategy_script_help(workspace: Path) -> str:
@@ -309,54 +295,35 @@ def run_update_strategy(
         "codex_returncode": codegen.returncode,
         "codex_stdout": _tail(codegen.stdout or ""),
         "codex_stderr": _tail(codegen.stderr or ""),
+        "ok": codegen.returncode == 0,
     }
-    codegen_rc = codegen.returncode
-    codegen_err = "codex exec failed"
-    if on_progress:
-        on_progress("Running backtest…")
-    bt = _run_strategy_backtest(ticker, root)
-    result["backtest_returncode"] = bt.returncode
-    result["backtest_stdout"] = _tail(bt.stdout or "")
-    result["backtest_stderr"] = _tail(bt.stderr or "")
-    result["ok"] = codegen_rc == 0 and bt.returncode == 0
-    if codegen_rc != 0:
-        result["error"] = codegen_err
-    elif bt.returncode != 0:
-        result["error"] = "backtest failed"
+    if codegen.returncode != 0:
+        result["error"] = "codex exec failed"
     return result
 
 
 @traceable(name="run_rerun_backtest")
 def run_rerun_backtest(
     thread_id: str,
-    ticker: str | None,
-    *,
-    candlestick_period: str | None = None,
-    time_period: str | None = None,
+    command: str,
     on_progress: ProgressCallback = None,
 ) -> dict[str, Any]:
     if not thread_id_allowed(thread_id):
         return {"ok": False, "error": "invalid thread_id"}
+    command = (command or "").strip()
+    if not command:
+        return {"ok": False, "error": "command is empty"}
     root = ensure_strategy_workspace(thread_id)
-    t = (ticker or "").strip()
-    if not t:
-        t = (os.getenv("STRATEGY_BACKTEST_TICKER") or "SPY").strip() or "SPY"
-    cp = (candlestick_period or "").strip() or None
-    tp = (time_period or "").strip() or None
     if on_progress:
         on_progress("Running backtest…")
-    bt = _run_strategy_backtest(t, root, candlestick_period=cp, time_period=tp)
+    bt = _run_strategy_backtest(command, root)
     result: dict[str, Any] = {
-        "ticker": t,
+        "command": command,
         "backtest_returncode": bt.returncode,
         "backtest_stdout": _tail(bt.stdout or ""),
         "backtest_stderr": _tail(bt.stderr or ""),
         "ok": bt.returncode == 0,
     }
-    if cp is not None:
-        result["candlestick_period"] = cp
-    if tp is not None:
-        result["time_period"] = tp
     if bt.returncode != 0:
         result["error"] = "backtest failed"
     return result
@@ -369,19 +336,12 @@ def _tool_handlers_for_thread(
         return run_update_strategy(thread_id, str(args.get("task", "")), on_progress=on_progress)
 
     def _rerun(args: dict[str, Any]) -> dict[str, Any]:
-        raw_t = args.get("ticker")
-        ticker = None if raw_t is None else str(raw_t)
-        raw_cp = args.get("candlestick_period")
-        cp = None if raw_cp is None else str(raw_cp)
-        raw_tp = args.get("time_period")
-        tp = None if raw_tp is None else str(raw_tp)
-        return run_rerun_backtest(
-            thread_id, ticker, candlestick_period=cp, time_period=tp, on_progress=on_progress
-        )
+        command = str(args.get("command", ""))
+        return run_rerun_backtest(thread_id, command, on_progress=on_progress)
 
     return {
         UPDATE_STRATEGY_TOOL_NAME: _update,
-        RERUN_BACKTEST_TOOL_NAME: _rerun,
+        RUN_STRATEGY_TOOL_NAME: _rerun,
     }
 
 

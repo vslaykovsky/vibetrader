@@ -149,30 +149,27 @@ function attachSyncedTimeScales(charts) {
   }
   let syncing = false;
   const subscriptions = charts.map((chart) => {
-    const handler = (range) => {
-      if (syncing || range === null) {
+    const handler = (logicalRange) => {
+      if (syncing || logicalRange === null) {
         return;
       }
       syncing = true;
       try {
         for (const other of charts) {
           if (other !== chart) {
-            other.timeScale().setVisibleRange({
-              from: range.from,
-              to: range.to,
-            });
+            other.timeScale().setVisibleLogicalRange(logicalRange);
           }
         }
       } finally {
         syncing = false;
       }
     };
-    chart.timeScale().subscribeVisibleTimeRangeChange(handler);
+    chart.timeScale().subscribeVisibleLogicalRangeChange(handler);
     return { chart, handler };
   });
   return () => {
     for (const { chart, handler } of subscriptions) {
-      chart.timeScale().unsubscribeVisibleTimeRangeChange(handler);
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
     }
   };
 }
@@ -338,7 +335,7 @@ export function StrategyPage() {
           return;
         }
         stateRef.revokeModuleUrl = mod.revokeModuleUrl;
-        mod.render_charts(root, chartData);
+        await mod.render_charts(root, chartData);
         stateRef.detachTimeScaleSync = attachSyncedTimeScales(mod.getCollectedCharts());
       } catch (err) {
         if (!cancelled) {
