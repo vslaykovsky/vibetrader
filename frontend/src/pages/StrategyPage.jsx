@@ -25,10 +25,19 @@ function ChatProcessingSpinner({ label }) {
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
 
-function MessageBubble({ message }) {
+function MessageBubble({ message, activeRunId, onViewRun }) {
   const isAssistant = message.role === 'assistant';
+  const hasRunId = isAssistant && message.run_id;
+  const isActive = hasRunId && message.run_id === activeRunId;
   return (
-    <div className={`message message-${message.role}`}>
+    <div
+      className={`message message-${message.role}${hasRunId ? ' message-clickable' : ''}${isActive ? ' message-active-run' : ''}`}
+      title={hasRunId ? 'Click to view strategy output' : undefined}
+      onClick={hasRunId ? () => onViewRun(message.run_id) : undefined}
+      role={hasRunId ? 'button' : undefined}
+      tabIndex={hasRunId ? 0 : undefined}
+      onKeyDown={hasRunId ? (e) => { if (e.key === 'Enter' || e.key === ' ') onViewRun(message.run_id); } : undefined}
+    >
       <span className="message-role">{isAssistant ? 'Agent' : 'You'}</span>
       {isAssistant ? (
         <div className="message-markdown">
@@ -163,6 +172,27 @@ export function StrategyPage() {
   const optimisticUserContentRef = useRef(null);
   const chartsMountRef = useRef(null);
   const [chartError, setChartError] = useState('');
+  const [viewingRunId, setViewingRunId] = useState(null);
+  const [historicalCanvas, setHistoricalCanvas] = useState(null);
+
+  async function handleViewRun(runId) {
+    if (runId === viewingRunId) {
+      setViewingRunId(null);
+      setHistoricalCanvas(null);
+      return;
+    }
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/strategy?id=${encodeURIComponent(runId)}`,
+      );
+      if (!response.ok) throw new Error('Failed to load strategy run');
+      const payload = await response.json();
+      setHistoricalCanvas(payload.canvas || {});
+      setViewingRunId(runId);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -239,9 +269,12 @@ export function StrategyPage() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, submitting, serverJob.status]);
 
+  const displayCanvas = viewingRunId ? historicalCanvas : canvas;
+  const displayOutput = displayCanvas ? displayCanvas.output : undefined;
+
   useEffect(() => {
     const mount = chartsMountRef.current;
-    const output = canvas.output;
+    const output = displayOutput;
     setChartError('');
     if (!mount || !output) {
       if (mount) {
@@ -302,7 +335,7 @@ export function StrategyPage() {
       stateRef.revokeModuleUrl = undefined;
       mount.innerHTML = '';
     };
-  }, [canvas.output]);
+  }, [displayOutput]);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -313,6 +346,8 @@ export function StrategyPage() {
 
     setSubmitting(true);
     setError('');
+    setViewingRunId(null);
+    setHistoricalCanvas(null);
     optimisticUserContentRef.current = message;
     setMessages((prev) => [...prev, { role: 'user', content: message }]);
     setDraft('');
@@ -393,7 +428,7 @@ export function StrategyPage() {
         ? 'Sending…'
         : 'Working…';
 
-  const output = canvas.output;
+  const output = displayOutput;
   const strategyName = strategyNameFromOutput(output);
   const summaryText = output && typeof output === 'object' ? output['summary.txt'] : undefined;
   const pseudocodeText = output && typeof output === 'object' ? output['pseudocode.txt'] : undefined;
@@ -416,13 +451,17 @@ export function StrategyPage() {
               New strategy
             </button>
           </div>
-          <p>Shape a strategy in chat. Backtest charts appear on the right.</p>
         </header>
 
         <div className="chat-stream">
           {loading ? <p className="status">Loading thread…</p> : null}
           {messages.map((message, index) => (
-            <MessageBubble key={`${message.role}-${index}`} message={message} />
+            <MessageBubble
+              key={`${message.role}-${index}`}
+              message={message}
+              activeRunId={viewingRunId}
+              onViewRun={handleViewRun}
+            />
           ))}
           {showProcessing ? <ChatProcessingSpinner label={processingLabel} /> : null}
           <div ref={chatEndRef} />
@@ -434,7 +473,7 @@ export function StrategyPage() {
           </label>
           <textarea
             id="message"
-            placeholder="Describe the edge, constraints, or risk logic…"
+            placeholder="Describe your strategy in your own words..."
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -459,6 +498,15 @@ export function StrategyPage() {
       <section className="canvas-panel canvas-panel-charts">
         <header className="canvas-hero">
           <h2>{strategyName || 'Strategy'}</h2>
+          {viewingRunId ? (
+            <button
+              type="button"
+              className="button-back-to-current"
+              onClick={() => { setViewingRunId(null); setHistoricalCanvas(null); }}
+            >
+              Back to current
+            </button>
+          ) : null}
         </header>
         {showSummary ? (
           <article className="canvas-text-block" aria-label="Strategy summary">

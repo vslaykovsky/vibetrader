@@ -320,6 +320,37 @@ li {
   background: rgba(248, 250, 252, 0.92);
 }
 
+.message-clickable {
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.message-clickable:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.message-active-run {
+  border-color: var(--accent-strong);
+  box-shadow: 0 0 0 2px var(--accent-strong);
+}
+
+.button-back-to-current {
+  margin-top: 8px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 6px 14px;
+  background: transparent;
+  color: var(--accent-strong);
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.button-back-to-current:hover {
+  background: rgba(13, 148, 136, 0.08);
+}
+
 .chat-processing .message-role {
   display: block;
 }

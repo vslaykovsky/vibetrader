@@ -5,6 +5,7 @@ import threading
 import time
 
 from flask import Blueprint, Response, current_app, jsonify, request
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from db.models import Strategy
@@ -15,14 +16,29 @@ from langsmith import traceable
 strategy_blueprint = Blueprint("strategy", __name__)
 
 
-def serialize_strategy(strategy: Strategy) -> dict:
+def serialize_strategy(strategy: Strategy, *, live_output: bool = True) -> dict:
+    if live_output:
+        canvas = canvas_with_output(dict(strategy.canvas or {}), strategy.thread_id)
+    else:
+        canvas = dict(strategy.canvas or {})
     return {
+        "id": strategy.id,
         "thread_id": strategy.thread_id,
         "messages": strategy.messages or [],
-        "canvas": canvas_with_output(dict(strategy.canvas or {}), strategy.thread_id),
+        "canvas": canvas,
         "status": strategy.status,
         "status_text": strategy.status_text or "",
+        "created_at": strategy.created_at.isoformat() if strategy.created_at else None,
     }
+
+
+def _latest_strategy(session: Session, thread_id: str) -> Strategy | None:
+    return (
+        session.query(Strategy)
+        .filter_by(thread_id=thread_id)
+        .order_by(desc(Strategy.created_at))
+        .first()
+    )
 
 
 def _validation_error(message: str) -> tuple:
@@ -38,12 +54,12 @@ def _validation_error(message: str) -> tuple:
     )
 
 
-def _run_strategy_agent_job(app_obj, thread_id: str, model: str) -> None:
+def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str, model: str) -> None:
     def persist_status_text(text: str) -> None:
         t = (text or "")[:512]
         s = SessionLocal()
         try:
-            row = s.get(Strategy, thread_id)
+            row = s.get(Strategy, run_id)
             if row is not None:
                 row.status_text = t
                 s.add(row)
@@ -54,7 +70,7 @@ def _run_strategy_agent_job(app_obj, thread_id: str, model: str) -> None:
     with app_obj.app_context():
         session = SessionLocal()
         try:
-            strategy = session.get(Strategy, thread_id)
+            strategy = session.get(Strategy, run_id)
             if strategy is None:
                 return
             messages = list(strategy.messages or [])
@@ -67,7 +83,11 @@ def _run_strategy_agent_job(app_obj, thread_id: str, model: str) -> None:
                     thread_id=thread_id,
                     on_progress=persist_status_text,
                 )
-                messages.append({"role": "assistant", "content": agent_result["message"]})
+                messages.append({
+                    "role": "assistant",
+                    "content": agent_result["message"],
+                    "run_id": run_id,
+                })
                 strategy.messages = messages
                 strategy.canvas = agent_result["canvas"]
                 strategy.status = "success"
@@ -83,20 +103,31 @@ def _run_strategy_agent_job(app_obj, thread_id: str, model: str) -> None:
 
 @traceable(name="get_or_create_strategy")
 def get_or_create_strategy(session: Session, thread_id: str) -> Strategy:
-    strategy = session.get(Strategy, thread_id)
-    if strategy is None:
-        strategy = Strategy(thread_id=thread_id, messages=[], canvas={})
-        session.add(strategy)
+    latest = _latest_strategy(session, thread_id)
+    if latest is None:
+        latest = Strategy(thread_id=thread_id, messages=[], canvas={})
+        session.add(latest)
         session.flush()
-    return strategy
+    return latest
 
 
 @strategy_blueprint.get("/strategy")
 @traceable(name="get_strategy")
 def get_strategy() -> tuple:
+    run_id = request.args.get("id", "").strip()
+    if run_id:
+        session = SessionLocal()
+        try:
+            strategy = session.get(Strategy, run_id)
+            if strategy is None:
+                return _validation_error("strategy not found")
+            return jsonify(serialize_strategy(strategy, live_output=False)), 200
+        finally:
+            session.close()
+
     thread_id = request.args.get("thread_id", "").strip()
     if not thread_id:
-        return _validation_error("thread_id query parameter is required")
+        return _validation_error("thread_id or id query parameter is required")
     if not thread_id_allowed(thread_id):
         return _validation_error("invalid thread_id")
 
@@ -125,32 +156,38 @@ def post_strategy() -> tuple:
 
     session = SessionLocal()
     try:
-        strategy = get_or_create_strategy(session, thread_id)
-        if strategy.status == "running":
+        latest = _latest_strategy(session, thread_id)
+        if latest is not None and latest.status == "running":
             session.commit()
-            out = serialize_strategy(strategy)
+            out = serialize_strategy(latest)
             out["error"] = "A strategy update is already in progress."
             return jsonify(out), 409
 
-        messages = list(strategy.messages or [])
-        user_message = {"role": "user", "content": content}
-        messages.append(user_message)
-        strategy.messages = messages
-        strategy.status = "running"
-        strategy.status_text = "Starting…"
-        session.add(strategy)
-        session.commit()
-        session.refresh(strategy)
+        prev_messages = list(latest.messages or []) if latest else []
+        prev_canvas = dict(latest.canvas or {}) if latest else {}
+        messages = prev_messages + [{"role": "user", "content": content}]
 
+        new_strategy = Strategy(
+            thread_id=thread_id,
+            messages=messages,
+            canvas=prev_canvas,
+            status="running",
+            status_text="Starting…",
+        )
+        session.add(new_strategy)
+        session.commit()
+        session.refresh(new_strategy)
+
+        run_id = new_strategy.id
         app_obj = current_app._get_current_object()
         model = app_obj.config["OPENROUTER_MODEL"]
         threading.Thread(
             target=_run_strategy_agent_job,
-            args=(app_obj, thread_id, model),
+            args=(app_obj, run_id, thread_id, model),
             daemon=True,
         ).start()
 
-        return jsonify(serialize_strategy(strategy)), 200
+        return jsonify(serialize_strategy(new_strategy)), 200
     finally:
         session.close()
 
@@ -166,7 +203,7 @@ def strategy_stream():
         while True:
             session = SessionLocal()
             try:
-                strategy = session.get(Strategy, thread_id)
+                strategy = _latest_strategy(session, thread_id)
                 if strategy is None:
                     break
                 snapshot = json.dumps(serialize_strategy(strategy), sort_keys=True)
