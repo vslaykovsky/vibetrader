@@ -8,7 +8,7 @@ from flask_cors import CORS
 
 from api.routes import strategy_blueprint
 from db.models import Base
-from db.session import engine
+from db.session import engine, ensure_strategy_columns
 
 
 def create_app() -> Flask:
@@ -19,6 +19,7 @@ def create_app() -> Flask:
     CORS(app, resources={r"/*": {"origins": "*"}})
 
     Base.metadata.create_all(bind=engine)
+    ensure_strategy_columns(engine)
 
     app.register_blueprint(strategy_blueprint)
     return app

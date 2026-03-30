@@ -17,9 +17,15 @@ from services.chat_openrouter import ChatOpenRouter
 
 SYSTEM_PROMPT = """You help users design trading strategies in chat.
 
-To change code or parameters, call update_strategy with a short task describing only what should change.
-
-To re-run the backtest without changing code, call rerun_backtest; pass ticker when a different symbol is needed, and optional candlestick_period (Alpaca timeframe, e.g. 1Day, 1Hour) and time_period (e.g. 8y, 252d, or days as an integer string) when the user asks.
+- Before running update_strategy for the first time, ask the user to provide additional context needed to build the strategy if not provided yet. Exaples may include, but not limited to:
+  - ticker
+  - candlestick period
+  - time period
+  - stop loss
+  - take profit
+  - other parameters that are needed to build the strategy
+- To change code or parameters, call update_strategy with a short task describing only what should change.
+- To re-run the backtest without changing code, call rerun_backtest; pass ticker when a different symbol is needed, and optional candlestick_period (Alpaca timeframe, e.g. 1Day, 1Hour) and time_period (e.g. 8y, 252d, or days as an integer string) when the user asks.
 
 Answer in plain text. No JSON or markup unless the user asks."""
 
@@ -28,6 +34,8 @@ STRATEGY_AGENTS_TEMPLATE = STRATEGIES_DIR / "AGENTS.md"
 STRATEGY_CODEGEN_CODEX_ONCE_MARKER = ".vibetrader_codex_codegen_once"
 UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
 RERUN_BACKTEST_TOOL_NAME = "rerun_backtest"
+
+ProgressCallback = Callable[[str], None] | None
 
 
 def thread_id_allowed(thread_id: str) -> bool:
@@ -203,7 +211,9 @@ def _run_strategy_backtest(
 
 
 @traceable(name="run_update_strategy")
-def run_update_strategy(thread_id: str, task: str) -> dict[str, Any]:
+def run_update_strategy(
+    thread_id: str, task: str, on_progress: ProgressCallback = None
+) -> dict[str, Any]:
     task = (task or "").strip()
     if not task:
         return {"ok": False, "error": "task is empty"}
@@ -214,6 +224,8 @@ def run_update_strategy(thread_id: str, task: str) -> dict[str, Any]:
     marker = root / STRATEGY_CODEGEN_CODEX_ONCE_MARKER
     use_claude = marker.is_file()
     if use_claude:
+        if on_progress:
+            on_progress("Updating code…")
         codegen = _run_claude_code_exec(task, root)
         result: dict[str, Any] = {
             "runner": "claude_code",
@@ -224,6 +236,8 @@ def run_update_strategy(thread_id: str, task: str) -> dict[str, Any]:
         codegen_rc = codegen.returncode
         codegen_err = "claude code failed"
     else:
+        if on_progress:
+            on_progress("Updating strategy…")
         codegen = _run_codex_exec(task, root)
         result = {
             "runner": "codex",
@@ -237,6 +251,8 @@ def run_update_strategy(thread_id: str, task: str) -> dict[str, Any]:
             marker.write_text("", encoding="utf-8")
         except OSError:
             pass
+    if on_progress:
+        on_progress("Running backtest…")
     bt = _run_strategy_backtest(ticker, root)
     result["backtest_returncode"] = bt.returncode
     result["backtest_stdout"] = _tail(bt.stdout or "")
@@ -256,6 +272,7 @@ def run_rerun_backtest(
     *,
     candlestick_period: str | None = None,
     time_period: str | None = None,
+    on_progress: ProgressCallback = None,
 ) -> dict[str, Any]:
     if not thread_id_allowed(thread_id):
         return {"ok": False, "error": "invalid thread_id"}
@@ -265,6 +282,8 @@ def run_rerun_backtest(
         t = (os.getenv("STRATEGY_BACKTEST_TICKER") or "SPY").strip() or "SPY"
     cp = (candlestick_period or "").strip() or None
     tp = (time_period or "").strip() or None
+    if on_progress:
+        on_progress("Running backtest…")
     bt = _run_strategy_backtest(t, root, candlestick_period=cp, time_period=tp)
     result: dict[str, Any] = {
         "ticker": t,
@@ -282,9 +301,11 @@ def run_rerun_backtest(
     return result
 
 
-def _tool_handlers_for_thread(thread_id: str) -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
+def _tool_handlers_for_thread(
+    thread_id: str, on_progress: ProgressCallback = None
+) -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
     def _update(args: dict[str, Any]) -> dict[str, Any]:
-        return run_update_strategy(thread_id, str(args.get("task", "")))
+        return run_update_strategy(thread_id, str(args.get("task", "")), on_progress=on_progress)
 
     def _rerun(args: dict[str, Any]) -> dict[str, Any]:
         raw_t = args.get("ticker")
@@ -293,7 +314,9 @@ def _tool_handlers_for_thread(thread_id: str) -> dict[str, Callable[[dict[str, A
         cp = None if raw_cp is None else str(raw_cp)
         raw_tp = args.get("time_period")
         tp = None if raw_tp is None else str(raw_tp)
-        return run_rerun_backtest(thread_id, ticker, candlestick_period=cp, time_period=tp)
+        return run_rerun_backtest(
+            thread_id, ticker, candlestick_period=cp, time_period=tp, on_progress=on_progress
+        )
 
     return {
         UPDATE_STRATEGY_TOOL_NAME: _update,
@@ -367,6 +390,7 @@ def build_agent_reply(
     messages: list[dict[str, Any]],
     existing_canvas: dict[str, Any],
     thread_id: str,
+    on_progress: ProgressCallback = None,
 ) -> dict[str, Any]:
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
 
@@ -395,9 +419,11 @@ def build_agent_reply(
         },
     )
     llm_tools = llm.bind_tools(AGENT_TOOLS)
-    tool_handlers = _tool_handlers_for_thread(thread_id)
+    tool_handlers = _tool_handlers_for_thread(thread_id, on_progress=on_progress)
 
     for _ in range(max_iterations):
+        if on_progress:
+            on_progress("Thinking…")
         assistant_msg = llm_tools.invoke(chat_messages)
         chat_messages.append(assistant_msg)
         tool_calls = assistant_msg.tool_calls or []

@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { loadStrategyChartsModule } from '../strategyChartsModule.js';
 
-function ChatProcessingSpinner() {
+function ChatProcessingSpinner({ label }) {
+  const text =
+    typeof label === 'string' && label.trim().length > 0 ? label.trim() : 'Working…';
   return (
     <div
       className="message message-assistant chat-processing"
@@ -13,7 +17,7 @@ function ChatProcessingSpinner() {
       <span className="message-role">Agent</span>
       <div className="chat-spinner-row">
         <span className="chat-spinner" aria-hidden />
-        <span className="chat-processing-label">Working…</span>
+        <span className="chat-processing-label">{text}</span>
       </div>
     </div>
   );
@@ -22,10 +26,17 @@ function ChatProcessingSpinner() {
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
 
 function MessageBubble({ message }) {
+  const isAssistant = message.role === 'assistant';
   return (
     <div className={`message message-${message.role}`}>
-      <span className="message-role">{message.role === 'assistant' ? 'Agent' : 'You'}</span>
-      <p>{message.content}</p>
+      <span className="message-role">{isAssistant ? 'Agent' : 'You'}</span>
+      {isAssistant ? (
+        <div className="message-markdown">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || ''}</ReactMarkdown>
+        </div>
+      ) : (
+        <p>{message.content}</p>
+      )}
     </div>
   );
 }
@@ -145,6 +156,7 @@ export function StrategyPage() {
   const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [serverJob, setServerJob] = useState({ status: null, statusText: '' });
   const [error, setError] = useState('');
   const chatEndRef = useRef(null);
   const chatFormRef = useRef(null);
@@ -169,6 +181,10 @@ export function StrategyPage() {
         const payload = await response.json();
         setMessages(payload.messages || []);
         setCanvas(payload.canvas || {});
+        setServerJob({
+          status: payload.status ?? null,
+          statusText: payload.status_text || '',
+        });
       } catch (loadError) {
         if (loadError.name !== 'AbortError') {
           setError(loadError.message);
@@ -183,8 +199,53 @@ export function StrategyPage() {
   }, [threadId]);
 
   useEffect(() => {
+    if (serverJob.status !== 'running') {
+      return undefined;
+    }
+    let cancelled = false;
+
+    async function poll() {
+      if (cancelled) {
+        return;
+      }
+      try {
+        const response = await fetch(
+          `${API_BASE_URL}/strategy?thread_id=${encodeURIComponent(threadId)}`,
+        );
+        if (!response.ok || cancelled) {
+          return;
+        }
+        const payload = await response.json();
+        if (cancelled) {
+          return;
+        }
+        setMessages(payload.messages || []);
+        setCanvas(payload.canvas || {});
+        setServerJob({
+          status: payload.status ?? null,
+          statusText: payload.status_text || '',
+        });
+        if (payload.status !== 'running') {
+          setSubmitting(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setSubmitting(false);
+        }
+      }
+    }
+
+    poll();
+    const id = setInterval(poll, 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [threadId, serverJob.status]);
+
+  useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, submitting]);
+  }, [messages, submitting, serverJob.status]);
 
   useEffect(() => {
     const mount = chartsMountRef.current;
@@ -254,7 +315,7 @@ export function StrategyPage() {
   async function handleSubmit(event) {
     event.preventDefault();
     const message = draft.trim();
-    if (!message || submitting) {
+    if (!message || submitting || serverJob.status === 'running') {
       return;
     }
 
@@ -264,6 +325,7 @@ export function StrategyPage() {
     setMessages((prev) => [...prev, { role: 'user', content: message }]);
     setDraft('');
 
+    let payload = {};
     try {
       const response = await fetch(`${API_BASE_URL}/strategy`, {
         method: 'POST',
@@ -271,7 +333,7 @@ export function StrategyPage() {
         body: JSON.stringify({ thread_id: threadId, message }),
       });
 
-      const payload = await response.json().catch(() => ({}));
+      payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         if (payload.messages) {
           optimisticUserContentRef.current = null;
@@ -293,13 +355,28 @@ export function StrategyPage() {
         if (payload.canvas) {
           setCanvas(payload.canvas || {});
         }
+        if (payload.status != null || payload.status_text != null) {
+          setServerJob({
+            status: payload.status ?? null,
+            statusText: payload.status_text || '',
+          });
+        }
+        setSubmitting(false);
         throw new Error(payload.error || 'Failed to send message');
       }
 
       optimisticUserContentRef.current = null;
       setMessages(payload.messages || []);
       setCanvas(payload.canvas || {});
+      setServerJob({
+        status: payload.status ?? null,
+        statusText: payload.status_text || '',
+      });
+      if (payload.status !== 'running') {
+        setSubmitting(false);
+      }
     } catch (submitError) {
+      setSubmitting(false);
       const sent = optimisticUserContentRef.current;
       if (sent) {
         optimisticUserContentRef.current = null;
@@ -313,10 +390,16 @@ export function StrategyPage() {
         setDraft(sent);
       }
       setError(submitError.message);
-    } finally {
-      setSubmitting(false);
     }
   }
+
+  const showProcessing = submitting || serverJob.status === 'running';
+  const processingLabel =
+    serverJob.status === 'running'
+      ? serverJob.statusText?.trim() || 'Working…'
+      : submitting
+        ? 'Sending…'
+        : 'Working…';
 
   const output = canvas.output;
   const strategyName = strategyNameFromOutput(output);
@@ -349,7 +432,7 @@ export function StrategyPage() {
           {messages.map((message, index) => (
             <MessageBubble key={`${message.role}-${index}`} message={message} />
           ))}
-          {submitting ? <ChatProcessingSpinner /> : null}
+          {showProcessing ? <ChatProcessingSpinner label={processingLabel} /> : null}
           <div ref={chatEndRef} />
         </div>
 
@@ -372,16 +455,16 @@ export function StrategyPage() {
           />
           <div className="chat-actions">
             <span className="status chat-actions-status">
-              {submitting ? (
+              {showProcessing ? (
                 <>
                   <span className="chat-spinner chat-spinner-inline" aria-hidden />
-                  <span>Processing…</span>
+                  <span>{processingLabel}</span>
                 </>
               ) : (
                 error || 'Ready'
               )}
             </span>
-            <button type="submit" disabled={submitting}>
+            <button type="submit" disabled={showProcessing}>
               Send
             </button>
           </div>
