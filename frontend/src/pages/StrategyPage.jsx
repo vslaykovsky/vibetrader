@@ -1,6 +1,6 @@
-import * as LightweightCharts from 'lightweight-charts';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { loadStrategyChartsModule } from '../strategyChartsModule.js';
 
 function ChatProcessingSpinner() {
   return (
@@ -30,13 +30,6 @@ function MessageBubble({ message }) {
   );
 }
 
-function createRenderChartsFromSource(source) {
-  const runner = new Function(
-    `${source}\nreturn typeof render_charts === 'function' ? render_charts : undefined;`,
-  );
-  return runner();
-}
-
 function hasRenderableChartOutput(output) {
   if (!output || typeof output !== 'object') {
     return false;
@@ -52,6 +45,28 @@ function hasRenderableChartOutput(output) {
 
 function hasNonEmptyOutputText(value) {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+function strategyNameFromOutput(output) {
+  if (!output || typeof output !== 'object') {
+    return '';
+  }
+  let data = output['data.json'];
+  if (data == null) {
+    return '';
+  }
+  if (typeof data === 'string') {
+    try {
+      data = JSON.parse(data);
+    } catch {
+      return '';
+    }
+  }
+  if (typeof data !== 'object' || data === null) {
+    return '';
+  }
+  const name = data.strategy && data.strategy.name;
+  return typeof name === 'string' && name.trim() ? name.trim() : '';
 }
 
 function normalizeLightweightChartTimes(data) {
@@ -205,42 +220,33 @@ export function StrategyPage() {
     const root = document.createElement('div');
     root.className = 'strategy-charts-root';
     mount.appendChild(root);
-    const prevLwc = window.LightweightCharts;
-    const collectedCharts = [];
-    const origCreateChart = LightweightCharts.createChart.bind(LightweightCharts);
-    const LightweightChartsForRender = new Proxy(LightweightCharts, {
-      get(target, prop, receiver) {
-        if (prop === 'createChart') {
-          return (container, options) => {
-            const chart = origCreateChart(container, options);
-            collectedCharts.push(chart);
-            return chart;
-          };
+
+    let cancelled = false;
+    const stateRef = { detachTimeScaleSync: undefined, revokeModuleUrl: undefined };
+
+    (async () => {
+      try {
+        const mod = await loadStrategyChartsModule(chartsSource);
+        if (cancelled) {
+          mod.revokeModuleUrl();
+          return;
         }
-        return Reflect.get(target, prop, receiver);
-      },
-    });
-    window.LightweightCharts = LightweightChartsForRender;
-    let detachTimeScaleSync;
-    try {
-      const renderCharts = createRenderChartsFromSource(chartsSource);
-      if (typeof renderCharts !== 'function') {
-        setChartError('charts.js did not define render_charts');
-        return undefined;
+        stateRef.revokeModuleUrl = mod.revokeModuleUrl;
+        mod.render_charts(root, chartData);
+        stateRef.detachTimeScaleSync = attachSyncedTimeScales(mod.getCollectedCharts());
+      } catch (err) {
+        if (!cancelled) {
+          setChartError(err instanceof Error ? err.message : String(err));
+        }
       }
-      renderCharts(root, chartData);
-      detachTimeScaleSync = attachSyncedTimeScales(collectedCharts);
-    } catch (err) {
-      setChartError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (prevLwc === undefined) {
-        delete window.LightweightCharts;
-      } else {
-        window.LightweightCharts = prevLwc;
-      }
-    }
+    })();
+
     return () => {
-      detachTimeScaleSync?.();
+      cancelled = true;
+      stateRef.detachTimeScaleSync?.();
+      stateRef.revokeModuleUrl?.();
+      stateRef.detachTimeScaleSync = undefined;
+      stateRef.revokeModuleUrl = undefined;
       mount.innerHTML = '';
     };
   }, [canvas.output]);
@@ -313,6 +319,7 @@ export function StrategyPage() {
   }
 
   const output = canvas.output;
+  const strategyName = strategyNameFromOutput(output);
   const summaryText = output && typeof output === 'object' ? output['summary.txt'] : undefined;
   const pseudocodeText = output && typeof output === 'object' ? output['pseudocode.txt'] : undefined;
   const showSummary = hasNonEmptyOutputText(summaryText);
@@ -324,15 +331,14 @@ export function StrategyPage() {
         <header className="chat-header">
           <div className="chat-header-top">
             <div>
-              <span className="eyebrow">Strategy Builder</span>
-              <h1>Thread {threadId.slice(0, 8)}</h1>
+              <span className="app-logo">VibeTrader</span>
             </div>
             <button
               type="button"
               className="button-new-thread"
               onClick={() => navigate(`/strategy/${crypto.randomUUID()}`)}
             >
-              New thread
+              New strategy
             </button>
           </div>
           <p>Shape a strategy in chat. Backtest charts appear on the right.</p>
@@ -340,12 +346,6 @@ export function StrategyPage() {
 
         <div className="chat-stream">
           {loading ? <p className="status">Loading thread…</p> : null}
-          {!loading && messages.length === 0 ? (
-            <div className="empty-state">
-              <h2>Start with the market idea.</h2>
-              <p>Example: build a mean reversion strategy for oversold large-cap tech names.</p>
-            </div>
-          ) : null}
           {messages.map((message, index) => (
             <MessageBubble key={`${message.role}-${index}`} message={message} />
           ))}
@@ -390,8 +390,7 @@ export function StrategyPage() {
 
       <section className="canvas-panel canvas-panel-charts">
         <header className="canvas-hero">
-          <span className="eyebrow">Canvas</span>
-          <h2>Backtest</h2>
+          <h2>{strategyName || 'Strategy'}</h2>
         </header>
         {showSummary ? (
           <article className="canvas-text-block" aria-label="Strategy summary">

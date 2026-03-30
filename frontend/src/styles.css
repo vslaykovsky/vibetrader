@@ -93,14 +93,21 @@ textarea {
 
 .chat-header-top {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
 }
 
+.app-logo {
+  font-size: clamp(1.5rem, 3vw, 2.15rem);
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  color: var(--text);
+}
+
 .button-new-thread {
   flex-shrink: 0;
-  margin-top: 2px;
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 10px 18px;

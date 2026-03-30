@@ -15,16 +15,19 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from services.chat_openrouter import ChatOpenRouter
 
 
-SYSTEM_PROMPT = """You are a trading strategy design agent.
-You help the user create a trading strategy through chat.
+SYSTEM_PROMPT = """You help users design trading strategies in chat.
 
-When the user wants the strategy code or parameters changed, call update_strategy with a clear, self-contained task string for the coding agent.
+To change code or parameters, call update_strategy with a short task describing only what should change.
 
-Reply in plain text only. Do not use JSON or structured markup unless the user asks."""
+To re-run the backtest without changing code, call rerun_backtest; pass ticker when a different symbol is needed, and optional candlestick_period (Alpaca timeframe, e.g. 1Day, 1Hour) and time_period (e.g. 8y, 252d, or days as an integer string) when the user asks.
+
+Answer in plain text. No JSON or markup unless the user asks."""
 
 STRATEGIES_DIR = Path(__file__).resolve().parents[1] / "strategies"
 STRATEGY_AGENTS_TEMPLATE = STRATEGIES_DIR / "AGENTS.md"
+STRATEGY_CODEGEN_CODEX_ONCE_MARKER = ".vibetrader_codex_codegen_once"
 UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
+RERUN_BACKTEST_TOOL_NAME = "rerun_backtest"
 
 
 def thread_id_allowed(thread_id: str) -> bool:
@@ -59,9 +62,9 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": UPDATE_STRATEGY_TOOL_NAME,
             "description": (
-                "Change the trading strategy in this thread's strategies/<thread_id>/ folder. Runs "
-                "Codex in full-auto mode with your task, then re-runs the backtest to "
-                "refresh output/data.json."
+                "Change the trading strategy in this thread's strategies/<thread_id>/ folder. The "
+                "first update in a thread runs Codex in full-auto mode; later updates use Claude Code "
+                "with --yes. Then the backtest re-runs to refresh output/data.json."
             ),
             "parameters": {
                 "type": "object",
@@ -74,7 +77,36 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                 "required": ["task"],
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": RERUN_BACKTEST_TOOL_NAME,
+            "description": (
+                "Re-run python src/strategy.py --backtest for this thread only (no Codex, no code edits). "
+                "Refreshes output/data.json. Omit ticker to use STRATEGY_BACKTEST_TICKER or SPY. "
+                "Optional candlestick_period and time_period are passed as CLI flags when set."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "Symbol to backtest (e.g. SPY, QQQ). Omit for the default ticker.",
+                    },
+                    "candlestick_period": {
+                        "type": "string",
+                        "description": "Alpaca bar timeframe (e.g. 1Day, 1Hour). Omit to use the strategy default.",
+                    },
+                    "time_period": {
+                        "type": "string",
+                        "description": "History window: Ny or Nd (e.g. 8y, 252d) or a plain integer days string. Omit for default.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -123,8 +155,8 @@ def canvas_with_output(existing_canvas: dict[str, Any], thread_id: str) -> dict[
 
 
 @traceable(name="run_codex_exec")
-def _run_codex_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
-    codex_cmd = ["codex", "exec", "--full-auto", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", task]
+def _run_codex_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:    
+    codex_cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", task]
     return subprocess.run(
         codex_cmd,
         cwd=str(cwd),
@@ -134,9 +166,33 @@ def _run_codex_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+@traceable(name="run_claude_code_exec")
+def _run_claude_code_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    claude_cmd = ["claude", "code", "--prompt", task, "--yes", "--quiet"]
+    return subprocess.run(
+        claude_cmd,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+
+
 @traceable(name="run_strategy_backtest")
-def _run_strategy_backtest(ticker: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run_strategy_backtest(
+    ticker: str,
+    cwd: Path,
+    *,
+    candlestick_period: str | None = None,
+    time_period: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     backtest_cmd = [sys.executable, "src/strategy.py", "--ticker", ticker, "--backtest"]
+    cp = (candlestick_period or "").strip()
+    if cp:
+        backtest_cmd.extend(["--candlestick-period", cp])
+    tp = (time_period or "").strip()
+    if tp:
+        backtest_cmd.extend(["--time-period", tp])
     return subprocess.run(
         backtest_cmd,
         cwd=str(cwd),
@@ -155,20 +211,73 @@ def run_update_strategy(thread_id: str, task: str) -> dict[str, Any]:
         return {"ok": False, "error": "invalid thread_id"}
     root = ensure_strategy_workspace(thread_id)
     ticker = (os.getenv("STRATEGY_BACKTEST_TICKER") or "SPY").strip() or "SPY"
-    codex = _run_codex_exec(task, root)
-    result: dict[str, Any] = {
-        "codex_returncode": codex.returncode,
-        "codex_stdout": _tail(codex.stdout or ""),
-        "codex_stderr": _tail(codex.stderr or ""),
-    }
+    marker = root / STRATEGY_CODEGEN_CODEX_ONCE_MARKER
+    use_claude = marker.is_file()
+    if use_claude:
+        codegen = _run_claude_code_exec(task, root)
+        result: dict[str, Any] = {
+            "runner": "claude_code",
+            "claude_returncode": codegen.returncode,
+            "claude_stdout": _tail(codegen.stdout or ""),
+            "claude_stderr": _tail(codegen.stderr or ""),
+        }
+        codegen_rc = codegen.returncode
+        codegen_err = "claude code failed"
+    else:
+        codegen = _run_codex_exec(task, root)
+        result = {
+            "runner": "codex",
+            "codex_returncode": codegen.returncode,
+            "codex_stdout": _tail(codegen.stdout or ""),
+            "codex_stderr": _tail(codegen.stderr or ""),
+        }
+        codegen_rc = codegen.returncode
+        codegen_err = "codex exec failed"
+        try:
+            marker.write_text("", encoding="utf-8")
+        except OSError:
+            pass
     bt = _run_strategy_backtest(ticker, root)
     result["backtest_returncode"] = bt.returncode
     result["backtest_stdout"] = _tail(bt.stdout or "")
     result["backtest_stderr"] = _tail(bt.stderr or "")
-    result["ok"] = codex.returncode == 0 and bt.returncode == 0
-    if codex.returncode != 0:
-        result["error"] = "codex exec failed"
+    result["ok"] = codegen_rc == 0 and bt.returncode == 0
+    if codegen_rc != 0:
+        result["error"] = codegen_err
     elif bt.returncode != 0:
+        result["error"] = "backtest failed"
+    return result
+
+
+@traceable(name="run_rerun_backtest")
+def run_rerun_backtest(
+    thread_id: str,
+    ticker: str | None,
+    *,
+    candlestick_period: str | None = None,
+    time_period: str | None = None,
+) -> dict[str, Any]:
+    if not thread_id_allowed(thread_id):
+        return {"ok": False, "error": "invalid thread_id"}
+    root = ensure_strategy_workspace(thread_id)
+    t = (ticker or "").strip()
+    if not t:
+        t = (os.getenv("STRATEGY_BACKTEST_TICKER") or "SPY").strip() or "SPY"
+    cp = (candlestick_period or "").strip() or None
+    tp = (time_period or "").strip() or None
+    bt = _run_strategy_backtest(t, root, candlestick_period=cp, time_period=tp)
+    result: dict[str, Any] = {
+        "ticker": t,
+        "backtest_returncode": bt.returncode,
+        "backtest_stdout": _tail(bt.stdout or ""),
+        "backtest_stderr": _tail(bt.stderr or ""),
+        "ok": bt.returncode == 0,
+    }
+    if cp is not None:
+        result["candlestick_period"] = cp
+    if tp is not None:
+        result["time_period"] = tp
+    if bt.returncode != 0:
         result["error"] = "backtest failed"
     return result
 
@@ -177,7 +286,19 @@ def _tool_handlers_for_thread(thread_id: str) -> dict[str, Callable[[dict[str, A
     def _update(args: dict[str, Any]) -> dict[str, Any]:
         return run_update_strategy(thread_id, str(args.get("task", "")))
 
-    return {UPDATE_STRATEGY_TOOL_NAME: _update}
+    def _rerun(args: dict[str, Any]) -> dict[str, Any]:
+        raw_t = args.get("ticker")
+        ticker = None if raw_t is None else str(raw_t)
+        raw_cp = args.get("candlestick_period")
+        cp = None if raw_cp is None else str(raw_cp)
+        raw_tp = args.get("time_period")
+        tp = None if raw_tp is None else str(raw_tp)
+        return run_rerun_backtest(thread_id, ticker, candlestick_period=cp, time_period=tp)
+
+    return {
+        UPDATE_STRATEGY_TOOL_NAME: _update,
+        RERUN_BACKTEST_TOOL_NAME: _rerun,
+    }
 
 
 def _stored_messages_to_lc(messages: list[dict[str, Any]]) -> list[BaseMessage]:
