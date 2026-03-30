@@ -16,7 +16,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from services.chat_openrouter import ChatOpenRouter
 
 
-SYSTEM_PROMPT = """You help users design trading strategies in chat.
+SYSTEM_PROMPT = f"""You help users design trading strategies in chat.
 
 - Before running update_strategy for the first time, ask the user to provide additional context needed to build the strategy if not provided yet. Exaples may include, but not limited to:
   - ticker
@@ -27,6 +27,13 @@ SYSTEM_PROMPT = """You help users design trading strategies in chat.
   - other parameters that are needed to build the strategy
 - To change code or parameters, call update_strategy with a short task describing only what should change.
 - To re-run the backtest without changing code, call rerun_backtest; pass ticker when a different symbol is needed, and optional candlestick_period (Alpaca timeframe, e.g. 1Day, 1Hour) and time_period (e.g. 8y, 252d, or days as an integer string) when the user asks.
+
+Additional context:
+- update_strategy creates strategy code along with chart visualizations. 
+- strategy code can use alpaca market data api to get market data. 
+- strategy code can be backtested, but cannot be run live as of today. 
+
+{{strategy_help}}
 
 Answer in plain text. No JSON or markup unless the user asks."""
 
@@ -229,6 +236,25 @@ def _run_strategy_backtest(
     return _run_logged_subprocess("strategy backtest", backtest_cmd, str(cwd), timeout=300)
 
 
+def _strategy_script_help(workspace: Path) -> str:
+    script = workspace / "src" / "strategy.py"
+    if not script.is_file():
+        return ""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "src/strategy.py", "--help"],
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return _tail((proc.stdout or "").strip())
+
+
 @traceable(name="run_update_strategy")
 def run_update_strategy(
     thread_id: str, task: str, on_progress: ProgressCallback = None
@@ -403,8 +429,12 @@ def build_agent_reply(
             "canvas": canvas_with_output(existing_canvas, thread_id),
         }
 
+    workspace = strategy_root_for_thread(thread_id)
+    strategy_help = _strategy_script_help(workspace)
+    if strategy_help:
+        strategy_help = f"\n\nStrategy script --help output:\n{strategy_help}"
     chat_messages: list[BaseMessage] = [
-        SystemMessage(content=SYSTEM_PROMPT),
+        SystemMessage(content=SYSTEM_PROMPT.format(strategy_help=strategy_help)),
         *_stored_messages_to_lc(messages),
     ]
 

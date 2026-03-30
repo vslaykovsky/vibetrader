@@ -447,14 +447,7 @@ export function StrategyPage() {
           />
           <div className="chat-actions">
             <span className="status chat-actions-status">
-              {showProcessing ? (
-                <>
-                  <span className="chat-spinner chat-spinner-inline" aria-hidden />
-                  <span>{processingLabel}</span>
-                </>
-              ) : (
-                error || 'Ready'
-              )}
+ 
             </span>
             <button type="submit" disabled={showProcessing}>
               Send
