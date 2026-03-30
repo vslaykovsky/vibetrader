@@ -30,6 +30,12 @@ Use the following approach:
 1. src/strategy.py --backtest must produce output/data.json with all input data required to build the chart. This data will be sent back to the web frontend. Apart from other keys it should include 'strategy_name' and 'ticker' keys.
 2. additionally generate JS code into output/charts.js with `render_charts(node_id, data)` function that uses lightweight-charts version 5.1 to render charts into `node_id` node using `data` parameter that contains json data from output/data.json. output/charts.js must be produced statically, not dynamically from src/strategy.py! Don't use outdated functions like addCandlestickSeries. When showing buy/sell signals, use createSeriesMarkers to add markers to a chart. Don't render header with strategy name, only render charts with their titles.
 
+IMPORTANT: output/charts.js is loaded as an ES module on the frontend. It MUST start with a named import from 'lightweight-charts', for example:
+```
+import { createChart } from 'lightweight-charts';
+```
+The frontend rewires this import at runtime. Do NOT use default imports, do NOT use `import *`, do NOT skip the import. Always use named imports like `import { createChart, LineSeries, CandlestickSeries, AreaSeries, HistogramSeries, BaselineSeries } from 'lightweight-charts';` (only import what you need). The function `render_charts` must be exported: `export function render_charts(container, data) { ... }`.
+
 
 ## Summary
 

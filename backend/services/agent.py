@@ -3,6 +3,7 @@ import dotenv
 dotenv.load_dotenv()
 from langsmith import traceable
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -36,6 +37,40 @@ UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
 RERUN_BACKTEST_TOOL_NAME = "rerun_backtest"
 
 ProgressCallback = Callable[[str], None] | None
+
+logger = logging.getLogger(__name__)
+
+
+def _run_logged_subprocess(
+    label: str,
+    cmd: list[str],
+    cwd: str,
+    *,
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as e:
+        logger.error("%s timed out after %s seconds", label, e.timeout)
+        raise
+    except OSError as e:
+        logger.error("%s failed to start: %s", label, e)
+        raise
+    if proc.returncode != 0:
+        logger.error(
+            "%s failed: returncode=%s\nstdout:\n%s\nstderr:\n%s",
+            label,
+            proc.returncode,
+            _tail(proc.stdout or ""),
+            _tail(proc.stderr or ""),
+        )
+    return proc
 
 
 def thread_id_allowed(thread_id: str) -> bool:
@@ -165,25 +200,13 @@ def canvas_with_output(existing_canvas: dict[str, Any], thread_id: str) -> dict[
 @traceable(name="run_codex_exec")
 def _run_codex_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:    
     codex_cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", task]
-    return subprocess.run(
-        codex_cmd,
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
+    return _run_logged_subprocess("codex exec", codex_cmd, str(cwd), timeout=600)
 
 
 @traceable(name="run_claude_code_exec")
 def _run_claude_code_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     claude_cmd = ["claude", "code", "--prompt", task, "--yes", "--quiet"]
-    return subprocess.run(
-        claude_cmd,
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
+    return _run_logged_subprocess("claude code", claude_cmd, str(cwd), timeout=600)
 
 
 @traceable(name="run_strategy_backtest")
@@ -201,13 +224,7 @@ def _run_strategy_backtest(
     tp = (time_period or "").strip()
     if tp:
         backtest_cmd.extend(["--time-period", tp])
-    return subprocess.run(
-        backtest_cmd,
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
+    return _run_logged_subprocess("strategy backtest", backtest_cmd, str(cwd), timeout=300)
 
 
 @traceable(name="run_update_strategy")

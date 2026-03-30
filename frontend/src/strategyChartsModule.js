@@ -29,6 +29,13 @@ function stripLightweightChartsImports(source) {
       remaining = remaining.slice(0, star.index) + remaining.slice(star.index + star[0].length);
       continue;
     }
+    const defaultImport =
+      /^\s*import\s+(\w+)\s+from\s+['"]lightweight-charts['"]\s*;?\s*/m.exec(remaining);
+    if (defaultImport) {
+      parts.push(`const ${defaultImport[1]} = LightweightCharts;\n`);
+      remaining = remaining.slice(0, defaultImport.index) + remaining.slice(defaultImport.index + defaultImport[0].length);
+      continue;
+    }
     break;
   }
   return { bindings: parts.join(''), body: remaining };
@@ -59,9 +66,9 @@ export function __vibeGetCollectedCharts() {
 }
 
 export async function loadStrategyChartsModule(userSource) {
-  const { bindings, body } = stripLightweightChartsImports(userSource);
+  let { bindings, body } = stripLightweightChartsImports(userSource);
   if (!bindings.trim()) {
-    throw new Error('charts.js must import from lightweight-charts');
+    bindings = `const { createChart, LineSeries, CandlestickSeries, AreaSeries, HistogramSeries, BaselineSeries, ColorType } = LightweightCharts;\n`;
   }
   const lwcImportHref = resolveLwcSpecifierForBlobImport(lightweightChartsUrl);
   const full = buildModuleSource(bindings, body, lwcImportHref);
