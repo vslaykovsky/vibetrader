@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -282,6 +282,14 @@ export function StrategyPage() {
   const [deletingThread, setDeletingThread] = useState(false);
   const chatEndRef = useRef(null);
   const chatFormRef = useRef(null);
+  const emptyThreadPrompts = useMemo(
+    () => [
+      'What can you do?',
+      "Let's create a SMA-based strategy for SPY",
+      'What are ways to account for volatility changes?',
+    ],
+    [],
+  );
   const optimisticUserContentRef = useRef(null);
   const chartsMountRef = useRef(null);
   const [chartError, setChartError] = useState('');
@@ -695,6 +703,16 @@ export function StrategyPage() {
   const showPseudocodeDiff = hasNonEmptyOutputText(pseudocodeDiff);
   const paramsJsonText = paramsJsonFromOutput(output);
   const showParamsPanel = paramsJsonText != null;
+  const currentThreadMeta = useMemo(
+    () => threads.find((t) => t?.thread_id && t.thread_id === threadId) || null,
+    [threads, threadId],
+  );
+  const strategyAvailable =
+    (!loading && Array.isArray(messages) && messages.length > 0) ||
+    (Number.isFinite(Number(currentThreadMeta?.message_count)) &&
+      Number(currentThreadMeta?.message_count) > 0);
+  const deployDisabled = loading || showProcessing || !strategyAvailable || Boolean(viewingRunId);
+  const deployTitle = deployDisabled ? 'Strategy not available yet' : 'Deploy live';
 
   return (
     <main className="layout">
@@ -824,6 +842,27 @@ export function StrategyPage() {
         </div>
 
         <form ref={chatFormRef} className="chat-input" onSubmit={handleSubmit}>
+          {!loading && messages.length === 0 ? (
+            <section className="home-prompts chat-suggested-prompts" aria-label="Suggested prompts">
+              <ul className="home-prompt-list">
+                {emptyThreadPrompts.map((p) => (
+                  <li key={p} className="home-prompt-item">
+                    <button
+                      type="button"
+                      className="home-prompt"
+                      disabled={showProcessing}
+                      onClick={() => {
+                        setDraft(p);
+                        setTimeout(() => chatFormRef.current?.requestSubmit(), 0);
+                      }}
+                    >
+                      {p}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
           <label htmlFor="message" className="sr-only">
             Message
           </label>
@@ -857,9 +896,11 @@ export function StrategyPage() {
             <button
               type="button"
               className="button-deploy-live"
+              disabled={deployDisabled}
               onClick={() => window.alert('Live trading is not yet available. Stay tuned for updates!')}
               aria-label="Deploy live"
-              title="Deploy live"
+              aria-disabled={deployDisabled}
+              title={deployTitle}
             >
               <span aria-hidden>🚀</span>
             </button>

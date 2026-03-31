@@ -239,6 +239,22 @@ textarea {
   padding-top: 18px;
 }
 
+.chat-suggested-prompts {
+  border-top: 0;
+  padding-top: 0;
+  margin-bottom: 14px;
+}
+
+.chat-suggested-prompts .home-prompt {
+  background: rgba(15, 23, 42, 0.06);
+  border-color: rgba(15, 23, 42, 0.14);
+}
+
+.chat-suggested-prompts .home-prompt:hover {
+  background: rgba(15, 23, 42, 0.09);
+  border-color: rgba(15, 23, 42, 0.18);
+}
+
 .home-prompt-list {
   list-style: none;
   padding: 0;
@@ -1033,6 +1049,21 @@ li {
   border-color: rgba(14, 116, 144, 0.4);
   box-shadow: 0 0 0 1px rgba(14, 116, 144, 0.25);
   color: var(--accent-strong);
+}
+
+.button-deploy-live:disabled {
+  opacity: 0.45;
+  cursor: default;
+  box-shadow: none;
+  border-color: var(--line);
+  color: var(--muted);
+  filter: grayscale(1);
+}
+
+.button-deploy-live:disabled:hover {
+  border-color: var(--line);
+  box-shadow: none;
+  color: var(--muted);
 }
 
 .button-deploy-live:focus-visible {
