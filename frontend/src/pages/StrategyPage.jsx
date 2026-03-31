@@ -86,7 +86,7 @@ function isoDateTodayKey() {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function MessageBubble({ message, activeRunId, onViewRun }) {
+function MessageBubble({ message, activeRunId, onViewRun, onRevertRun, revertDisabled }) {
   const isAssistant = message.role === 'assistant';
   const hasRunId = isAssistant && message.run_id;
   const isActive = hasRunId && message.run_id === activeRunId;
@@ -100,6 +100,37 @@ function MessageBubble({ message, activeRunId, onViewRun }) {
       onKeyDown={hasRunId ? (e) => { if (e.key === 'Enter' || e.key === ' ') onViewRun(message.run_id); } : undefined}
     >
       <span className="message-role">{isAssistant ? 'Agent' : 'You'}</span>
+      {hasRunId ? (
+        <button
+          type="button"
+          className="message-revert-button"
+          disabled={Boolean(revertDisabled)}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onRevertRun?.(message.run_id);
+          }}
+          title="Revert thread to this point"
+          aria-label="Revert thread to this point"
+        >
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path
+              d="M8.5 12l-4.5-4.5L8.5 3"
+              stroke="currentColor"
+              strokeWidth="2.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M4 7.5h11.5c3.9 0 7 3.1 7 7s-3.1 7-7 7H12"
+              stroke="currentColor"
+              strokeWidth="2.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+      ) : null}
       {isAssistant ? (
         <div className="message-markdown">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || ''}</ReactMarkdown>
@@ -256,6 +287,7 @@ export function StrategyPage() {
   const [chartError, setChartError] = useState('');
   const [viewingRunId, setViewingRunId] = useState(null);
   const [historicalCanvas, setHistoricalCanvas] = useState(null);
+  const [reverting, setReverting] = useState(false);
 
   async function handleViewRun(runId) {
     if (runId === viewingRunId) {
@@ -273,6 +305,53 @@ export function StrategyPage() {
       setViewingRunId(runId);
     } catch (err) {
       setError(err.message);
+    }
+  }
+
+  async function handleRevertRun(runId) {
+    if (!threadId || !runId || reverting) {
+      return;
+    }
+    if (viewingRunId) {
+      return;
+    }
+    const ok = window.confirm(
+      'Revert this thread to this agent message? This will delete all later strategy runs for this thread.',
+    );
+    if (!ok) return;
+    setReverting(true);
+    setError('');
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/threads/${encodeURIComponent(threadId)}/revert`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ run_id: runId }),
+        },
+      );
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to revert thread');
+      }
+
+      const refreshed = await fetch(
+        `${API_BASE_URL}/strategy?thread_id=${encodeURIComponent(threadId)}`,
+      );
+      if (!refreshed.ok) {
+        throw new Error('Reverted, but failed to reload thread');
+      }
+      const next = await refreshed.json();
+      setMessages(next.messages || []);
+      setCanvas(next.canvas || {});
+      setServerJob({
+        status: next.status ?? null,
+        statusText: next.status_text || '',
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReverting(false);
     }
   }
 
@@ -737,6 +816,8 @@ export function StrategyPage() {
               message={message}
               activeRunId={viewingRunId}
               onViewRun={handleViewRun}
+              onRevertRun={handleRevertRun}
+              revertDisabled={reverting || showProcessing || Boolean(viewingRunId)}
             />
           ))}
           {showProcessing ? <ChatProcessingSpinner label={processingLabel} /> : null}

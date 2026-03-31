@@ -126,6 +126,48 @@ def delete_thread(thread_id: str) -> tuple:
         session.close()
 
 
+@strategy_blueprint.post("/threads/<thread_id>/revert")
+def revert_thread(thread_id: str) -> tuple:
+    thread_id = (thread_id or "").strip()
+    if not thread_id:
+        return _validation_error("thread_id is required")
+    if not thread_id_allowed(thread_id):
+        return _validation_error("invalid thread_id")
+
+    payload = request.get_json(silent=True) or {}
+    run_id = str(payload.get("run_id", "")).strip()
+    if not run_id:
+        return _validation_error("run_id is required")
+
+    session = SessionLocal()
+    try:
+        target = session.get(Strategy, run_id)
+        if target is None or target.thread_id != thread_id:
+            return _validation_error("strategy not found")
+        if target.created_at is None:
+            return _validation_error("strategy has no created_at")
+
+        deleted = (
+            session.query(Strategy)
+            .filter(Strategy.thread_id == thread_id, Strategy.created_at > target.created_at)
+            .delete(synchronize_session=False)
+        )
+        session.commit()
+        return (
+            jsonify(
+                {
+                    "ok": True,
+                    "thread_id": thread_id,
+                    "reverted_to_run_id": run_id,
+                    "deleted_runs": deleted,
+                }
+            ),
+            200,
+        )
+    finally:
+        session.close()
+
+
 def _validation_error(message: str) -> tuple:
     return (
         jsonify(
