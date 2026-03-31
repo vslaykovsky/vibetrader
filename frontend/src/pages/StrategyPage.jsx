@@ -46,6 +46,46 @@ function ChatProcessingSpinner({ label }) {
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
 
+function formatThreadLabel(threadId) {
+  const t = String(threadId || '').trim();
+  if (!t) return 'Unknown thread';
+  return t.length > 12 ? `${t.slice(0, 8)}…${t.slice(-4)}` : t;
+}
+
+function threadDisplayName(thread) {
+  const n = typeof thread?.strategy_name === 'string' ? thread.strategy_name.trim() : '';
+  if (n) return n;
+  return 'Untitled strategy';
+}
+
+function parseIsoTime(value) {
+  if (typeof value !== 'string') return null;
+  let t = value.trim();
+  if (!t) return null;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(t) && !/[zZ]|[+-]\d{2}:\d{2}$/.test(t)) {
+    t = `${t}Z`;
+  }
+  t = t.replace(/(\.\d{3})\d+([zZ]|[+-]\d{2}:\d{2})$/, '$1$2');
+  const ms = Date.parse(t);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function dateKeyFromIso(value) {
+  if (typeof value !== 'string') return null;
+  const t = value.trim();
+  if (!t) return null;
+  const m = t.match(/^(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1] : null;
+}
+
+function isoDateTodayKey() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 function MessageBubble({ message, activeRunId, onViewRun }) {
   const isAssistant = message.role === 'assistant';
   const hasRunId = isAssistant && message.run_id;
@@ -205,6 +245,9 @@ export function StrategyPage() {
   const [submitting, setSubmitting] = useState(false);
   const [serverJob, setServerJob] = useState({ status: null, statusText: '' });
   const [error, setError] = useState('');
+  const [threads, setThreads] = useState([]);
+  const [threadsError, setThreadsError] = useState('');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const chatEndRef = useRef(null);
   const chatFormRef = useRef(null);
   const optimisticUserContentRef = useRef(null);
@@ -235,6 +278,24 @@ export function StrategyPage() {
   useEffect(() => {
     const controller = new AbortController();
 
+    async function loadThreads() {
+      try {
+        setThreadsError('');
+        const response = await fetch(`${API_BASE_URL}/threads`, { signal: controller.signal });
+        if (!response.ok) {
+          setThreadsError(`Failed to load threads (${response.status})`);
+          return;
+        }
+        const payload = await response.json().catch(() => ({}));
+        const list = Array.isArray(payload.threads) ? payload.threads : [];
+        setThreads(list);
+      } catch (loadError) {
+        if (loadError.name !== 'AbortError') {
+          setThreadsError(loadError instanceof Error ? loadError.message : String(loadError));
+        }
+      }
+    }
+
     async function loadThread() {
       try {
         setLoading(true);
@@ -262,9 +323,35 @@ export function StrategyPage() {
       }
     }
 
+    loadThreads();
     loadThread();
     return () => controller.abort();
   }, [threadId]);
+
+  useEffect(() => {
+    if (!sidebarOpen) {
+      return undefined;
+    }
+    const controller = new AbortController();
+    (async () => {
+      try {
+        setThreadsError('');
+        const response = await fetch(`${API_BASE_URL}/threads`, { signal: controller.signal });
+        if (!response.ok) {
+          setThreadsError(`Failed to load threads (${response.status})`);
+          return;
+        }
+        const payload = await response.json().catch(() => ({}));
+        const list = Array.isArray(payload.threads) ? payload.threads : [];
+        setThreads(list);
+      } catch (loadError) {
+        if (loadError.name !== 'AbortError') {
+          setThreadsError(loadError instanceof Error ? loadError.message : String(loadError));
+        }
+      }
+    })();
+    return () => controller.abort();
+  }, [sidebarOpen]);
 
   useEffect(() => {
     if (serverJob.status !== 'running') {
@@ -466,6 +553,27 @@ export function StrategyPage() {
         ? 'Sending…'
         : 'Working…';
 
+  const sortedThreads = [...threads].sort((a, b) => {
+    const at = parseIsoTime(a?.latest_created_at) ?? -1;
+    const bt = parseIsoTime(b?.latest_created_at) ?? -1;
+    return bt - at;
+  });
+
+  const todayKey = isoDateTodayKey();
+  const groupedThreads = sortedThreads.reduce((acc, t) => {
+    const key = dateKeyFromIso(t?.latest_created_at) || 'Unknown date';
+    if (!acc[key]) {
+      acc[key] = [];
+    }
+    acc[key].push(t);
+    return acc;
+  }, {});
+  const groupKeys = Object.keys(groupedThreads).sort((a, b) => {
+    if (a === 'Unknown date') return 1;
+    if (b === 'Unknown date') return -1;
+    return b.localeCompare(a);
+  });
+
   const output = displayOutput;
   const strategyName = strategyNameFromOutput(output);
   const summaryText = output && typeof output === 'object' ? output['summary.txt'] : undefined;
@@ -479,11 +587,99 @@ export function StrategyPage() {
 
   return (
     <main className="layout">
+      {sidebarOpen ? (
+        <div
+          className="sidebar-backdrop"
+          role="presentation"
+          onClick={() => setSidebarOpen(false)}
+        />
+      ) : null}
+      <aside className={`sidebar-drawer${sidebarOpen ? ' is-open' : ''}`} aria-label="Threads">
+        <div className="sidebar-header">
+          <div className="sidebar-title">Threads</div>
+          <button
+            type="button"
+            className="sidebar-close"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Close sidebar"
+          >
+            ×
+          </button>
+        </div>
+        <nav className="sidebar-list" aria-label="Thread list">
+          {threadsError ? <div className="sidebar-empty muted">{threadsError}</div> : null}
+          {!threadsError && sortedThreads.length === 0 ? (
+            <div className="sidebar-empty muted">No threads yet.</div>
+          ) : null}
+          {!threadsError && sortedThreads.length > 0 ? (
+            groupKeys.map((key) => {
+              const label = key === todayKey ? 'Today' : key;
+              return (
+                <div key={key} className="sidebar-group">
+                  <div className="sidebar-group-title">{label}</div>
+                  <div className="sidebar-group-items">
+                    {groupedThreads[key].map((t) => {
+                      const tid = t?.thread_id;
+                      const active = typeof tid === 'string' && tid === threadId;
+                      return (
+                        <button
+                          key={tid}
+                          type="button"
+                          className={`sidebar-item${active ? ' is-active' : ''}`}
+                          onClick={() => {
+                            if (typeof tid === 'string' && tid.trim()) {
+                              setSidebarOpen(false);
+                              navigate(`/strategy/${tid}`);
+                            }
+                          }}
+                          title={typeof tid === 'string' ? tid : undefined}
+                        >
+                          <div className="sidebar-item-badge" aria-label="Message count">
+                            <span className="sidebar-item-badge-icon" aria-hidden>
+                              <svg viewBox="0 0 24 24" fill="none">
+                                <path
+                                  d="M7.5 18.25v2.6c0 .38.43.6.74.38l3.07-2.16h5.9c2.5 0 4.54-2.04 4.54-4.54V8.55c0-2.5-2.04-4.54-4.54-4.54H7.74C5.24 4.01 3.2 6.05 3.2 8.55v5.98c0 2.18 1.55 4 3.6 4.4Z"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <span className="sidebar-item-badge-count">
+                              {Number.isFinite(Number(t?.message_count)) ? Number(t?.message_count) : 0}
+                            </span>
+                          </div>
+                          <div className="sidebar-item-title">{threadDisplayName(t)}</div>
+                          <div className="sidebar-item-subtitle">
+                            {t?.status === 'running'
+                              ? (t?.status_text?.trim() || 'Running…')
+                              : ''}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })
+          ) : null}
+        </nav>
+      </aside>
       <section className="chat-panel">
         <header className="chat-header">
           <div className="chat-header-top">
             <div>
-              <span className="app-logo">VibeTrader</span>
+              <div className="chat-brand">
+                <button
+                  type="button"
+                  className="sidebar-toggle"
+                  onClick={() => setSidebarOpen(true)}
+                  aria-label="Open sidebar"
+                >
+                  ☰
+                </button>
+                <span className="app-logo">VibeTrader</span>
+              </div>
             </div>
             <button
               type="button"

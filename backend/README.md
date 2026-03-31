@@ -17,6 +17,8 @@ The SQLite database is stored at `backend/db/db.sqlite`.
 
 `GET /strategy?thread_id=<uuid>` returns the current thread state and creates an empty row if it does not exist.
 
+`GET /threads` returns a time-ordered list of threads, ordered by latest run.
+
 `POST /strategy` accepts:
 
 ```json

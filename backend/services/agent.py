@@ -437,12 +437,19 @@ def build_agent_reply(
         if params_path.is_file():
             with open(params_path, "r", encoding="utf-8") as f:
                 strategy_parameters = f.read()
+        pseudocode = workspace / "output" / "pseudocode.txt"
+        if pseudocode.is_file():
+            with open(pseudocode, "r", encoding="utf-8") as f:
+                pseudocode = f.read()
         strategy_help = f"""Help message of the current strategy script:
 python src/strategy.py --help
 {strategy_help}
 
 Current strategy parameters (can be overridden with --params JSON argument):
 {strategy_parameters}
+
+Current strategy pseudocode:
+{pseudocode}
 """
     else:
         strategy_help = "Note that script src/strategy.py hasn't been generated yet. Need to run update_strategy first."
@@ -451,7 +458,7 @@ Current strategy parameters (can be overridden with --params JSON argument):
         *_stored_messages_to_lc(messages),
     ]
 
-    max_iterations = 10
+    max_iterations = 20
     llm = ChatOpenRouter(
         model=model,
         openai_api_key=api_key,

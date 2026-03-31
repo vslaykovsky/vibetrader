@@ -5,7 +5,7 @@ import threading
 import time
 
 from flask import Blueprint, Response, current_app, jsonify, request
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from db.models import Strategy
@@ -14,6 +14,23 @@ from services.agent import build_agent_reply, canvas_with_output, thread_id_allo
 from langsmith import traceable
 
 strategy_blueprint = Blueprint("strategy", __name__)
+
+def _strategy_name_from_canvas(canvas: dict | None) -> str:
+    if not isinstance(canvas, dict):
+        return ""
+    output = canvas.get("output")
+    if not isinstance(output, dict):
+        return ""
+    data = output.get("data.json")
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError:
+            return ""
+    if not isinstance(data, dict):
+        return ""
+    name = data.get("strategy_name")
+    return name.strip() if isinstance(name, str) else ""
 
 
 def serialize_strategy(strategy: Strategy, *, live_output: bool = True) -> dict:
@@ -39,6 +56,53 @@ def _latest_strategy(session: Session, thread_id: str) -> Strategy | None:
         .order_by(desc(Strategy.created_at))
         .first()
     )
+
+
+@strategy_blueprint.get("/threads")
+def list_threads() -> tuple:
+    session = SessionLocal()
+    try:
+        latest_per_thread = (
+            session.query(
+                Strategy.thread_id.label("thread_id"),
+                func.max(Strategy.created_at).label("latest_created_at"),
+            )
+            .group_by(Strategy.thread_id)
+            .subquery()
+        )
+        rows = (
+            session.query(Strategy)
+            .join(
+                latest_per_thread,
+                (Strategy.thread_id == latest_per_thread.c.thread_id)
+                & (Strategy.created_at == latest_per_thread.c.latest_created_at),
+            )
+            .order_by(desc(Strategy.created_at))
+            .all()
+        )
+        return (
+            jsonify(
+                {
+                    "threads": [
+                        {
+                            "thread_id": row.thread_id,
+                            "latest_run_id": row.id,
+                            "latest_created_at": row.created_at.isoformat()
+                            if row.created_at
+                            else None,
+                            "message_count": len(row.messages or []),
+                            "strategy_name": _strategy_name_from_canvas(row.canvas),
+                            "status": row.status,
+                            "status_text": row.status_text or "",
+                        }
+                        for row in rows
+                    ]
+                }
+            ),
+            200,
+        )
+    finally:
+        session.close()
 
 
 def _validation_error(message: str) -> tuple:
