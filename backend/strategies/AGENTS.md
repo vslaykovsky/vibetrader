@@ -47,4 +47,4 @@ The frontend rewires this import at runtime. Do NOT use default imports, do NOT 
 
 - output/summary.txt Additionally update summary of the strategy in output/summary.txt This should be a concise single paragraph description of logic used by the strategy. Mention exact values of strategy parameters in the summary. If the user prompt is in non-english language, use the same language to produce the summary and strategy_name
 
-- output/pseudocode.txt Store high level concise pseudocode of the strategy into output/pseudocode.txt. No comments, only pseudocode itself
+- output/pseudocode.txt Store high level concise pseudocode of the strategy into output/pseudocode.txt. No comments, only pseudocode itself. If the user prompt is in non-english language, use the same language to produce the pseudocode
