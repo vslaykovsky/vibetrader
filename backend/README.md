@@ -2,6 +2,12 @@
 
 Flask API for the strategy-building chat application.
 
+## What it does
+
+- Persists thread state (messages + metadata) in SQLite
+- Exposes endpoints used by the frontend chat UI
+- Manages per-thread strategy workspaces under `backend/strategies/<THREAD_UUID>/`
+
 ## Run
 
 ```bash
