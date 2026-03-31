@@ -712,6 +712,9 @@ export function StrategyPage() {
                   ☰
                 </button>
                 <span className="app-logo">VibeTrader</span>
+                <span className="app-beta-badge" aria-label="Beta">
+                  Beta
+                </span>
               </div>
             </div>
             <button

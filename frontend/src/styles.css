@@ -322,6 +322,23 @@ textarea {
   color: var(--text);
 }
 
+.app-beta-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(13, 148, 136, 0.12);
+  color: var(--accent-strong);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.68rem;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transform: translateY(-3px);
+}
+
 .button-new-thread {
   flex-shrink: 0;
   border: 1px solid var(--line);
