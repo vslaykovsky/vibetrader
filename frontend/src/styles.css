@@ -1009,6 +1009,37 @@ li {
   transition: border-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
 }
 
+.button-deploy-live {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
+}
+
+.button-deploy-live span {
+  font-size: 18px;
+  line-height: 1;
+  display: block;
+}
+
+.button-deploy-live:hover {
+  border-color: rgba(14, 116, 144, 0.4);
+  box-shadow: 0 0 0 1px rgba(14, 116, 144, 0.25);
+  color: var(--accent-strong);
+}
+
+.button-deploy-live:focus-visible {
+  outline: 2px solid rgba(14, 116, 144, 0.35);
+  outline-offset: 2px;
+}
+
 .button-delete-thread:hover {
   border-color: rgba(190, 18, 60, 0.45);
   box-shadow: 0 0 0 1px rgba(190, 18, 60, 0.3);

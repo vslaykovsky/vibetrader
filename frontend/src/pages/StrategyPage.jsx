@@ -385,7 +385,7 @@ export function StrategyPage() {
       );
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.error || 'Failed to delete thread');
+        throw new Error(payload.error || 'Failed to delete strategy');
       }
       const list = await refreshThreads();
       const sorted = [...list].sort((a, b) => {
@@ -856,11 +856,20 @@ export function StrategyPage() {
           <div className="canvas-hero-actions">
             <button
               type="button"
+              className="button-deploy-live"
+              onClick={() => window.alert('Live trading is not yet available. Stay tuned for updates!')}
+              aria-label="Deploy live"
+              title="Deploy live"
+            >
+              <span aria-hidden>🚀</span>
+            </button>
+            <button
+              type="button"
               className="button-delete-thread"
               onClick={handleDeleteThread}
               disabled={deletingThread || showProcessing || Boolean(viewingRunId)}
-              aria-label="Delete thread"
-              title={viewingRunId ? 'Return to current thread to delete' : 'Delete thread'}
+              aria-label="Delete strategy"
+              title={viewingRunId ? 'Return to current thread to delete' : 'Delete strategy'}
             >
               <svg viewBox="0 0 24 24" fill="none" aria-hidden>
                 <path
