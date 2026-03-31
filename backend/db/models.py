@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Index, String
+from sqlalchemy import JSON, DateTime, Index, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -26,6 +26,7 @@ class Strategy(Base):
     thread_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     messages: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     canvas: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    code: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="success")
     status_text: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)

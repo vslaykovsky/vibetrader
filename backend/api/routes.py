@@ -10,7 +10,13 @@ from sqlalchemy.orm import Session
 
 from db.models import Strategy
 from db.session import SessionLocal
-from services.agent import build_agent_reply, canvas_with_output, thread_id_allowed
+from services.agent import (
+    build_agent_reply,
+    canvas_with_output,
+    read_strategy_code,
+    restore_strategy_workspace_from_snapshot,
+    thread_id_allowed,
+)
 from langsmith import traceable
 
 strategy_blueprint = Blueprint("strategy", __name__)
@@ -153,6 +159,12 @@ def revert_thread(thread_id: str) -> tuple:
             .delete(synchronize_session=False)
         )
         session.commit()
+
+        restore_strategy_workspace_from_snapshot(
+            thread_id,
+            code=getattr(target, "code", "") or "",
+            canvas=dict(getattr(target, "canvas", {}) or {}),
+        )
         return (
             jsonify(
                 {
@@ -217,11 +229,13 @@ def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str, model: str) ->
                 })
                 strategy.messages = messages
                 strategy.canvas = agent_result["canvas"]
+                strategy.code = read_strategy_code(thread_id)
                 strategy.status = "success"
                 strategy.status_text = ""
             except Exception as exc:
                 strategy.status = "failure"
                 strategy.status_text = str(exc)[:512]
+                strategy.code = read_strategy_code(thread_id)
             session.add(strategy)
             session.commit()
         finally:
@@ -292,12 +306,14 @@ def post_strategy() -> tuple:
 
         prev_messages = list(latest.messages or []) if latest else []
         prev_canvas = dict(latest.canvas or {}) if latest else {}
+        prev_code = getattr(latest, "code", "") if latest else ""
         messages = prev_messages + [{"role": "user", "content": content}]
 
         new_strategy = Strategy(
             thread_id=thread_id,
             messages=messages,
             canvas=prev_canvas,
+            code=prev_code or read_strategy_code(thread_id),
             status="running",
             status_text="Starting…",
         )

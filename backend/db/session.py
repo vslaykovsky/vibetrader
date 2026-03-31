@@ -30,6 +30,7 @@ def ensure_strategy_columns(eng: Engine) -> None:
                 "  thread_id VARCHAR(36) NOT NULL,"
                 "  messages JSON NOT NULL DEFAULT '[]',"
                 "  canvas JSON NOT NULL DEFAULT '{}',"
+                "  code TEXT NOT NULL DEFAULT '',"
                 "  status VARCHAR(32) NOT NULL DEFAULT 'success',"
                 "  status_text VARCHAR(512) NOT NULL DEFAULT '',"
                 "  created_at DATETIME NOT NULL DEFAULT (datetime('now'))"
@@ -41,11 +42,21 @@ def ensure_strategy_columns(eng: Engine) -> None:
             old_colnames = {r[1] for r in old_cols}
             has_status = "status" in old_colnames
             has_status_text = "status_text" in old_colnames
-            if has_status and has_status_text:
+            has_code = "code" in old_colnames
+            if has_status and has_status_text and has_code:
+                src_cols = "thread_id, messages, canvas, code, status, status_text"
+                dst_cols = src_cols
+            elif has_status and has_status_text:
                 src_cols = "thread_id, messages, canvas, status, status_text"
+                dst_cols = src_cols
+            elif has_status and has_code:
+                src_cols = "thread_id, messages, canvas, code, status"
                 dst_cols = src_cols
             elif has_status:
                 src_cols = "thread_id, messages, canvas, status"
+                dst_cols = src_cols
+            elif has_code:
+                src_cols = "thread_id, messages, canvas, code"
                 dst_cols = src_cols
             else:
                 src_cols = "thread_id, messages, canvas"
@@ -74,4 +85,8 @@ def ensure_strategy_columns(eng: Engine) -> None:
         if "created_at" not in colnames:
             conn.execute(
                 text("ALTER TABLE strategy ADD COLUMN created_at DATETIME NOT NULL DEFAULT (datetime('now'))")
+            )
+        if "code" not in colnames:
+            conn.execute(
+                text("ALTER TABLE strategy ADD COLUMN code TEXT NOT NULL DEFAULT ''")
             )

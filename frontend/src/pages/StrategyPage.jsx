@@ -312,9 +312,8 @@ export function StrategyPage() {
     if (!threadId || !runId || reverting) {
       return;
     }
-    if (viewingRunId) {
-      return;
-    }
+    setViewingRunId(null);
+    setHistoricalCanvas(null);
     const ok = window.confirm(
       'Revert this thread to this agent message? This will delete all later strategy runs for this thread.',
     );
@@ -817,7 +816,7 @@ export function StrategyPage() {
               activeRunId={viewingRunId}
               onViewRun={handleViewRun}
               onRevertRun={handleRevertRun}
-              revertDisabled={reverting || showProcessing || Boolean(viewingRunId)}
+              revertDisabled={reverting || showProcessing}
             />
           ))}
           {showProcessing ? <ChatProcessingSpinner label={processingLabel} /> : null}

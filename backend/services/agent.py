@@ -107,6 +107,50 @@ def ensure_strategy_workspace(thread_id: str) -> Path:
 def strategy_root_for_thread(thread_id: str) -> Path:
     return ensure_strategy_workspace(thread_id)
 
+
+def read_strategy_code(thread_id: str) -> str:
+    root = ensure_strategy_workspace(thread_id)
+    path = root / "src" / "strategy.py"
+    if not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def restore_strategy_workspace_from_snapshot(
+    thread_id: str,
+    *,
+    code: str | None,
+    canvas: dict[str, Any] | None,
+) -> None:
+    root = ensure_strategy_workspace(thread_id)
+
+    src_dir = root / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "strategy.py").write_text(code or "", encoding="utf-8")
+
+    output_dir = root / "output"
+    shutil.rmtree(output_dir, ignore_errors=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if not isinstance(canvas, dict):
+        return
+    output = canvas.get("output")
+    if not isinstance(output, dict):
+        return
+
+    for filename, contents in output.items():
+        if not isinstance(filename, str) or not filename:
+            continue
+        out_path = output_dir / filename
+        if out_path.name != filename:
+            continue
+        if isinstance(contents, (dict, list)) and out_path.suffix.lower() == ".json":
+            out_path.write_text(json.dumps(contents, indent=2, sort_keys=True), encoding="utf-8")
+        elif isinstance(contents, str):
+            out_path.write_text(contents, encoding="utf-8")
+        else:
+            out_path.write_text(str(contents), encoding="utf-8")
+
 AGENT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",

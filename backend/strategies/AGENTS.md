@@ -5,7 +5,7 @@ Important: do not run src/strategy.py, it will be run by the user instead!
 
 ## Building the scaffold
 
-Source files must be stored under `src/`. Entry point is `src/strategy.py`.
+Source files must be stored under `src/`. Entry point is `src/strategy.py`. All strategy Python code must be stored in the single file `src/strategy.py` only. Do not add additional `.py` files.
 
 ### `output/params.json`
 
