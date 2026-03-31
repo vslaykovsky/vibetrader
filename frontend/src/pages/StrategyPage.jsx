@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { randomUUID } from '../randomUUID.js';
@@ -711,10 +711,12 @@ export function StrategyPage() {
                 >
                   ☰
                 </button>
-                <span className="app-logo">VibeTrader</span>
-                <span className="app-beta-badge" aria-label="Beta">
-                  Beta
-                </span>
+                <Link to="/" className="app-home-link" aria-label="Go to homepage">
+                  <span className="app-logo">VibeTrader</span>
+                  <span className="app-beta-badge" aria-label="Beta">
+                    Beta
+                  </span>
+                </Link>
               </div>
             </div>
             <button

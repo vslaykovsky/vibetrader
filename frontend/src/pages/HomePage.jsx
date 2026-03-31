@@ -31,7 +31,8 @@ export function HomePage() {
 
             <div className="home-actions">
               <button className="home-cta" type="button" onClick={() => navigate(`/strategy/${createThreadId()}`)}>
-                Start a new strategy thread
+              <span role="img" aria-label="rocket" style={{ marginRight: '0.5em' }}>🚀</span>
+              Build your strategy <span role="img" aria-label="rocket" style={{ marginRight: '0.5em' }}>🚀</span>
               </button>
               <div className="home-badges" aria-label="Supported markets and features">
                 <span className="home-badge">Stocks</span>
