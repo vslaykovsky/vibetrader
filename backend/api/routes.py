@@ -105,6 +105,27 @@ def list_threads() -> tuple:
         session.close()
 
 
+@strategy_blueprint.delete("/threads/<thread_id>")
+def delete_thread(thread_id: str) -> tuple:
+    thread_id = (thread_id or "").strip()
+    if not thread_id:
+        return _validation_error("thread_id is required")
+    if not thread_id_allowed(thread_id):
+        return _validation_error("invalid thread_id")
+
+    session = SessionLocal()
+    try:
+        deleted = (
+            session.query(Strategy)
+            .filter_by(thread_id=thread_id)
+            .delete(synchronize_session=False)
+        )
+        session.commit()
+        return jsonify({"ok": True, "thread_id": thread_id, "deleted_runs": deleted}), 200
+    finally:
+        session.close()
+
+
 def _validation_error(message: str) -> tuple:
     return (
         jsonify(

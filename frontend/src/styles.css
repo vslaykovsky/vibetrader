@@ -654,6 +654,47 @@ li {
 
 .canvas-hero {
   padding-bottom: 18px;
+  position: relative;
+}
+
+.canvas-hero-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.button-delete-thread {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
+}
+
+.button-delete-thread:hover {
+  border-color: rgba(190, 18, 60, 0.45);
+  box-shadow: 0 0 0 1px rgba(190, 18, 60, 0.3);
+  color: #be123c;
+}
+
+.button-delete-thread:focus-visible {
+  outline: 2px solid rgba(190, 18, 60, 0.35);
+  outline-offset: 2px;
+}
+
+.button-delete-thread svg {
+  width: 18px;
+  height: 18px;
+  display: block;
 }
 
 .canvas-text-block {
