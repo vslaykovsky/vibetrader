@@ -22,9 +22,10 @@ SYSTEM_PROMPT = f"""You help users design trading strategies in chat.
 Workflow
 
 * Before the first update_strategy, request any missing details needed to build the strategy (e.g., ticker, candlestick period, time range, stop loss, take profit, other parameters).
-* To modify code call update_strategy with a brief task describing only the changes. Match the user’s language. Only run update_strategy if the required logic is changed. If only CLI arguments of strategy are changed, call run_strategy instead.
-* To re-run a backtest without changes, call run_strategy with the full command (e.g. 'python src/strategy.py --ticker SPY --backtest').  Use the strategy script's --help output to pick the right flags.
-* To run parameter optimization, call run_strategy with the --hyperopt flag (if available).
+* To modify code call update_strategy with a brief task describing only the changes. Match the user’s language. Only run update_strategy when strategy logic or structure must change. Never call update_strategy when the user only wants to try different values for parameters that already exist in output/params.json (or are already defined by the strategy’s parameter model); use run_strategy instead.
+* If the user only tweaks existing parameters (different ticker, dates, thresholds, etc.), call run_strategy with python src/strategy.py --backtest and pass overrides as a single --params argument whose value is a JSON object (shell-escaped), merged over output/params.json for that run. Do not call update_strategy for that.
+* To re-run a backtest with the saved params file unchanged, call run_strategy with e.g. python src/strategy.py --backtest. Use the strategy script's --help output if needed.
+* To run parameter optimization, call run_strategy with python src/strategy.py --hyperopt (if the strategy implements it).
 Always respond in the user’s language.
 
 Notes
@@ -133,8 +134,8 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             "name": RUN_STRATEGY_TOOL_NAME,
             "description": (
                 "Run a strategy command in this thread's workspace (no Codex, no code edits). "
-                "Provide the full shell command to execute (e.g. 'python src/strategy.py --ticker SPY --backtest'). "
-                "Use the strategy script's --help output to pick the right flags. "
+                "Use python src/strategy.py --backtest; override params with --params '<JSON object>' (merged over output/params.json). "
+                "Use python src/strategy.py --hyperopt when optimizing. "
                 "Refreshes output/data.json on success."
             ),
             "parameters": {
@@ -142,7 +143,10 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "Full shell command to run (e.g. 'python src/strategy.py --ticker SPY --backtest --candlestick-period 1Day').",
+                        "description": (
+                            "Full shell command, e.g. python src/strategy.py --backtest or "
+                            "python src/strategy.py --backtest --params '{\"ticker\":\"SPY\",\"fast_period\":12}'"
+                        ),
                     },
                 },
                 "required": ["command"],
@@ -428,7 +432,20 @@ def build_agent_reply(
     workspace = strategy_root_for_thread(thread_id)
     strategy_help = _strategy_script_help(workspace)
     if strategy_help:
-        strategy_help = f"\n\nStrategy script --help output:\n{strategy_help}"
+        strategy_parameters = ""
+        params_path = workspace / "output" / "params.json"
+        if params_path.is_file():
+            with open(params_path, "r", encoding="utf-8") as f:
+                strategy_parameters = f.read()
+        strategy_help = f"""Help message of the current strategy script:
+python src/strategy.py --help
+{strategy_help}
+
+Current strategy parameters (can be overridden with --params JSON argument):
+{strategy_parameters}
+"""
+    else:
+        strategy_help = "Note that script src/strategy.py hasn't been generated yet. Need to run update_strategy first."
     chat_messages: list[BaseMessage] = [
         SystemMessage(content=SYSTEM_PROMPT.format(strategy_help=strategy_help)),
         *_stored_messages_to_lc(messages),

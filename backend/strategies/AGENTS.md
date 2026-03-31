@@ -5,19 +5,21 @@ Important: do not run src/strategy.py, it will be run by the user instead!
 
 ## Building the scaffold
 
-Source files must be stored under src folder. 
-Entry point is src/strategy.py 
-This must support the following options:
---ticker TICKER
---candlestick-period TIMEFRAME  # optional; Alpaca bar timeframe (e.g. 1Day, 1Hour); default 1Day
---start-test-date DATE  # optional, by default 2y from today
---end-test-date DATE  # optional, by default today. 
---backtest  # this runs the backtest and produces output/data.json with stats and chart data. Additionally this should print out parameters and stats to stdout
+Source files must be stored under `src/`. Entry point is `src/strategy.py`.
 
-Following parameters are optional and only need to be implemented if asked by the user:
---hyperopt  # this runs hyperopt optimization of strategy parameters. Parameters should be printed out to stdout and stored into output/params.json and automatically picked up by src/strategy.py 
---start-train-date # optional, by default 7 years from today. This is start date for --hypeopt data
---end-train-date # optional, by default 2 years from today. This is end date for --hypeopt data
+### `output/params.json`
+
+All constant parameters for the strategy must live in `output/params.json`. That includes everything needed to run the strategy and the backtest: for example ticker, candlestick/bar timeframe (e.g. Alpaca `1Day`, `1Hour`), backtest window (`start_test_date`, `end_test_date` or equivalent), every fixed numeric or boolean strategy input, and—when hyperopt is implemented—the hyperopt training window (`start_train_date`, `end_train_date` or equivalent) and any hyperopt configuration. There must be no duplicate sources of truth: the script reads this file instead of hardcoding those constants elsewhere. Ship or generate a valid `output/params.json` with sensible defaults so a fresh workspace can run.
+
+### CLI
+
+`src/strategy.py` must support only these flags (no separate flags for ticker, timeframe, or dates):
+
+- `--backtest` — Load `output/params.json`, apply optional `--params` overrides for this run only, run the backtest, write `output/data.json` with stats and chart data, and print parameters and stats to stdout.
+
+- `--hyperopt` — Run hyperparameter optimization (using ranges and training window defined in `output/params.json` or strategy code as appropriate). Print results to stdout and write the optimized parameters to `output/params.json` so a subsequent `python src/strategy.py --backtest` picks them up. 
+
+- `--params JSON` — Optional; use together with `--backtest`. `JSON` is a single JSON object (quote the argument for the shell). Merge it over the object loaded from `output/params.json` for this run only; do not write merged values back into `output/params.json`. Top-level keys in `--params` override the same keys from the file. Invalid JSON must fail with a clear error.
 
 ## Data sources
 
