@@ -86,7 +86,15 @@ function isoDateTodayKey() {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function MessageBubble({ message, activeRunId, onViewRun, onRevertRun, revertDisabled }) {
+function MessageBubble({
+  message,
+  activeRunId,
+  onViewRun,
+  onRevertRun,
+  revertDisabled,
+  showViewStrategy,
+  onViewStrategy,
+}) {
   const isAssistant = message.role === 'assistant';
   const hasRunId = isAssistant && message.run_id;
   const isActive = hasRunId && message.run_id === activeRunId;
@@ -129,6 +137,19 @@ function MessageBubble({ message, activeRunId, onViewRun, onRevertRun, revertDis
               strokeLinejoin="round"
             />
           </svg>
+        </button>
+      ) : null}
+      {showViewStrategy && hasRunId ? (
+        <button
+          type="button"
+          className="message-view-strategy-button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onViewStrategy?.(message.run_id);
+          }}
+        >
+          View strategy
         </button>
       ) : null}
       {isAssistant ? (
@@ -296,6 +317,8 @@ export function StrategyPage() {
   const [viewingRunId, setViewingRunId] = useState(null);
   const [historicalCanvas, setHistoricalCanvas] = useState(null);
   const [reverting, setReverting] = useState(false);
+  const [isNarrow, setIsNarrow] = useState(false);
+  const [mobileCanvasOpen, setMobileCanvasOpen] = useState(false);
 
   async function handleViewRun(runId) {
     if (runId === viewingRunId) {
@@ -314,6 +337,11 @@ export function StrategyPage() {
     } catch (err) {
       setError(err.message);
     }
+  }
+
+  async function handleViewStrategy(runId) {
+    await handleViewRun(runId);
+    setMobileCanvasOpen(true);
   }
 
   async function handleRevertRun(runId) {
@@ -454,6 +482,27 @@ export function StrategyPage() {
     loadThread();
     return () => controller.abort();
   }, [threadId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return undefined;
+    }
+    const mq = window.matchMedia('(max-width: 980px)');
+    const update = () => {
+      const narrow = Boolean(mq.matches);
+      setIsNarrow(narrow);
+      if (!narrow) {
+        setMobileCanvasOpen(false);
+      }
+    };
+    update();
+    if (typeof mq.addEventListener === 'function') {
+      mq.addEventListener('change', update);
+      return () => mq.removeEventListener('change', update);
+    }
+    mq.addListener(update);
+    return () => mq.removeListener(update);
+  }, []);
 
   useEffect(() => {
     if (!sidebarOpen) {
@@ -703,6 +752,11 @@ export function StrategyPage() {
   const showPseudocodeDiff = hasNonEmptyOutputText(pseudocodeDiff);
   const paramsJsonText = paramsJsonFromOutput(output);
   const showParamsPanel = paramsJsonText != null;
+  const hasAnyCanvasData =
+    showSummary ||
+    showPseudocode ||
+    showParamsPanel ||
+    hasRenderableChartOutput(output);
   const currentThreadMeta = useMemo(
     () => threads.find((t) => t?.thread_id && t.thread_id === threadId) || null,
     [threads, threadId],
@@ -715,7 +769,7 @@ export function StrategyPage() {
   const deployTitle = deployDisabled ? 'Strategy not available yet' : 'Deploy live';
 
   return (
-    <main className="layout">
+    <main className={`layout${isNarrow ? ' layout-narrow' : ''}${mobileCanvasOpen ? ' is-mobile-canvas-open' : ''}`}>
       {sidebarOpen ? (
         <div
           className="sidebar-backdrop"
@@ -808,7 +862,7 @@ export function StrategyPage() {
                   ☰
                 </button>
                 <Link to="/" className="app-home-link" aria-label="Go to homepage">
-                  <span className="app-logo">VibeTrader</span>
+                  <span className="app-logo">TraderChat</span>
                   <span className="app-beta-badge" aria-label="Beta">
                     Beta
                   </span>
@@ -819,8 +873,18 @@ export function StrategyPage() {
               type="button"
               className="button-new-thread"
               onClick={() => navigate(`/strategy/${randomUUID()}`)}
+              aria-label="New strategy"
+              title="New strategy"
             >
-              New strategy
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path
+                  d="M12 5v14M5 12h14"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                />
+              </svg>
+              <span className="sr-only">New strategy</span>
             </button>
           </div>
         </header>
@@ -833,8 +897,10 @@ export function StrategyPage() {
               message={message}
               activeRunId={viewingRunId}
               onViewRun={handleViewRun}
+              onViewStrategy={handleViewStrategy}
               onRevertRun={handleRevertRun}
               revertDisabled={reverting || showProcessing}
+              showViewStrategy={isNarrow && !mobileCanvasOpen && hasAnyCanvasData}
             />
           ))}
           {showProcessing ? <ChatProcessingSpinner label={processingLabel} /> : null}
@@ -866,26 +932,40 @@ export function StrategyPage() {
           <label htmlFor="message" className="sr-only">
             Message
           </label>
-          <textarea
-            id="message"
-            placeholder="Describe your strategy in your own words..."
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                chatFormRef.current?.requestSubmit();
-              }
-            }}
-            rows={4}
-          />
-          <div className="chat-actions">
-            <span className="status chat-actions-status">
- 
-            </span>
-            <button type="submit" disabled={showProcessing}>
-              Send
+          <div className="chat-compose">
+            <textarea
+              id="message"
+              placeholder="Describe your strategy in your own words..."
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  chatFormRef.current?.requestSubmit();
+                }
+              }}
+              rows={4}
+            />
+            <button
+              type="submit"
+              className="chat-send-button"
+              disabled={showProcessing}
+              aria-label="Send message"
+              title="Send"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                style={{ transform: 'rotate(90deg)' }}
+                aria-hidden
+              >
+                <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
+              </svg>
             </button>
+          </div>
+          <div className="chat-actions">
+            <span className="status chat-actions-status"></span>
           </div>
         </form>
       </section>
@@ -893,6 +973,17 @@ export function StrategyPage() {
       <section className="canvas-panel canvas-panel-charts">
         <header className="canvas-hero">
           <div className="canvas-hero-actions">
+            {isNarrow ? (
+              <button
+                type="button"
+                className="button-close-canvas"
+                onClick={() => setMobileCanvasOpen(false)}
+                aria-label="Close strategy view"
+                title="Close"
+              >
+                ×
+              </button>
+            ) : null}
             <button
               type="button"
               className="button-deploy-live"
