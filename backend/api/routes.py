@@ -353,6 +353,7 @@ def strategy_stream():
 
     def generate():
         last_snapshot = None
+        last_keepalive = time.monotonic()
         while True:
             session = SessionLocal()
             try:
@@ -363,15 +364,23 @@ def strategy_stream():
                 if snapshot != last_snapshot:
                     last_snapshot = snapshot
                     yield f"data: {snapshot}\n\n"
+                    last_keepalive = time.monotonic()
                 done = strategy.status != "running"
             finally:
                 session.close()
             if done:
                 break
+            if (time.monotonic() - last_keepalive) >= 15:
+                yield ": keepalive\n\n"
+                last_keepalive = time.monotonic()
             time.sleep(0.5)
 
     return Response(
         generate(),
         mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )

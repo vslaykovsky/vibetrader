@@ -3,6 +3,9 @@ kind: Service
 metadata:
   name: vibetrader-backend
   namespace: vibetrader
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+    cloud.google.com/backend-config: '{"default": "vibetrader-frontend-backendconfig"}'
 spec:
   selector:
     app: vibetrader-backend

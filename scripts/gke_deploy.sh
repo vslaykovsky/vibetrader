@@ -6,6 +6,8 @@ gcloud container clusters get-credentials "${CLUSTER}" --region "us-central1" --
 
 kubectl apply -f deploy/gke/namespace.yaml
 
+kubectl apply -f deploy/gke/frontend-backendconfig.yaml
+
 kubectl apply -f deploy/gke/frontend-deployment.yaml
 kubectl apply -f deploy/gke/frontend-service.yaml
 

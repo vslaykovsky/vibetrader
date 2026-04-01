@@ -21,5 +21,5 @@ COPY . /app
 
 EXPOSE 8080
 
-CMD ["sh", "-lc", "if [ -n \"${OPENAI_API_KEY:-}\" ]; then printenv OPENAI_API_KEY | codex login --with-api-key; fi; exec gunicorn -b 0.0.0.0:8080 app:app"]
+CMD ["sh", "-lc", "if [ -n \"${OPENAI_API_KEY:-}\" ]; then printenv OPENAI_API_KEY | codex login --with-api-key; fi; exec gunicorn -b 0.0.0.0:8080 --timeout 0 --graceful-timeout 30 --keep-alive 5 app:app"]
 

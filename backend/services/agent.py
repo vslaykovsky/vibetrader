@@ -269,7 +269,8 @@ def _run_strategy_backtest(
     parts = shlex.split(command)
     if parts and parts[0] == "python":
         parts[0] = sys.executable
-    return _run_logged_subprocess("strategy backtest", parts, str(cwd), timeout=300)
+    timeout_s = int(os.getenv("STRATEGY_BACKTEST_TIMEOUT_S", "1800"))
+    return _run_logged_subprocess("strategy backtest", parts, str(cwd), timeout=timeout_s)
 
 
 def _strategy_script_help(workspace: Path) -> str:
