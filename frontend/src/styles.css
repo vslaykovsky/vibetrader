@@ -381,9 +381,9 @@ textarea {
 }
 
 .sidebar-toggle {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
   border: 0;
   padding: 0;
   background: transparent;
@@ -392,11 +392,11 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 2.05rem;
+  font-size: 1.55rem;
   line-height: 1;
   flex-shrink: 0;
-  margin-left: -14px;
-  transform: translateY(-3px);
+  margin-left: -10px;
+  transform: translateY(-2px);
 }
 
 .sidebar-toggle:hover {
@@ -677,8 +677,12 @@ textarea {
 .canvas-hero h2,
 .empty-state h2 {
   margin: 6px 0 10px;
-  font-size: clamp(1.6rem, 3vw, 2.4rem);
+  font-size: clamp(1.35rem, 2.4vw, 2rem);
   line-height: 1;
+}
+
+.canvas-hero .canvas-hero-title {
+  font-size: clamp(1.05rem, 1.7vw, 1.35rem);
 }
 
 .chat-header p,
@@ -935,13 +939,14 @@ li {
 }
 
 .button-back-to-current {
-  margin-top: 8px;
+  margin-top: 0;
   border: 1px solid var(--accent);
   border-radius: 999px;
-  padding: 6px 14px;
+  padding: 4px 10px;
   background: transparent;
   color: var(--accent-strong);
   font-size: 0.82rem;
+  line-height: 1.1;
   cursor: pointer;
   transition: background 0.15s ease;
 }
@@ -1096,44 +1101,46 @@ li {
 
 .canvas-hero {
   padding-bottom: 18px;
-  position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
 .canvas-hero-actions {
-  position: absolute;
-  top: 0;
-  right: 0;
+  position: static;
   display: inline-flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
+  justify-content: flex-end;
+  margin-bottom: 10px;
 }
 
 .button-delete-thread {
   width: 42px;
   height: 42px;
   border-radius: 14px;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.75);
+  border: 0;
+  background: transparent;
   color: var(--muted);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
+  transition: color 0.15s ease, transform 0.15s ease;
 }
 
 .button-deploy-live {
   width: 42px;
   height: 42px;
   border-radius: 14px;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.75);
+  border: 0;
+  background: transparent;
   color: var(--muted);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
+  transition: color 0.15s ease, transform 0.15s ease;
 }
 
 .button-deploy-live span {
@@ -1143,24 +1150,22 @@ li {
 }
 
 .button-deploy-live:hover {
-  border-color: rgba(14, 116, 144, 0.4);
-  box-shadow: 0 0 0 1px rgba(14, 116, 144, 0.25);
   color: var(--accent-strong);
+  transform: translateY(-1px);
 }
 
 .button-deploy-live:disabled {
   opacity: 0.45;
   cursor: default;
   box-shadow: none;
-  border-color: var(--line);
   color: var(--muted);
   filter: grayscale(1);
 }
 
 .button-deploy-live:disabled:hover {
-  border-color: var(--line);
   box-shadow: none;
   color: var(--muted);
+  transform: none;
 }
 
 .button-deploy-live:focus-visible {
@@ -1169,9 +1174,8 @@ li {
 }
 
 .button-delete-thread:hover {
-  border-color: rgba(190, 18, 60, 0.45);
-  box-shadow: 0 0 0 1px rgba(190, 18, 60, 0.3);
   color: #be123c;
+  transform: translateY(-1px);
 }
 
 .button-delete-thread:focus-visible {
@@ -1411,12 +1415,27 @@ li {
     grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   }
 
+  .sidebar-drawer {
+    width: 100vw;
+    height: 100dvh;
+    background: rgba(248, 250, 252, 0.98);
+    border-right: 0;
+    box-shadow: none;
+  }
+
   .layout.layout-narrow {
     grid-template-rows: minmax(0, 1fr);
   }
 
   .layout.layout-narrow .canvas-panel {
-    display: none;
+    display: flex;
+    position: fixed;
+    inset: 0;
+    border-radius: 0;
+    transform: translateX(102%);
+    transition: transform 0.18s ease;
+    z-index: 45;
+    pointer-events: none;
   }
 
   .layout.layout-narrow.is-mobile-canvas-open .chat-panel {
@@ -1424,20 +1443,27 @@ li {
   }
 
   .layout.layout-narrow.is-mobile-canvas-open .canvas-panel {
-    display: flex;
+    transform: translateX(0);
+    pointer-events: auto;
   }
+
 }
 
 .message-view-strategy-button {
-  margin-left: 12px;
   border: 1px solid rgba(15, 23, 42, 0.14);
   border-radius: 999px;
-  padding: 6px 10px;
+  padding: 4px 10px;
   background: rgba(13, 148, 136, 0.1);
   color: var(--accent-strong);
   cursor: pointer;
   font-size: 0.82rem;
   font-weight: 650;
+}
+
+.message-view-strategy-row {
+  margin-top: 12px;
+  display: flex;
+  justify-content: center;
 }
 
 .message-view-strategy-button:hover {
@@ -1454,22 +1480,25 @@ li {
   width: 42px;
   height: 42px;
   border-radius: 14px;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.75);
+  border: 0;
+  background: transparent;
   color: var(--muted);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.8rem;
-  line-height: 1;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
+  transition: color 0.15s ease, transform 0.15s ease;
+}
+
+.button-close-canvas svg {
+  width: 22px;
+  height: 22px;
+  display: block;
 }
 
 .button-close-canvas:hover {
-  border-color: rgba(15, 23, 42, 0.18);
-  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.12);
   color: var(--text);
+  transform: translateY(-1px);
 }
 
 .button-close-canvas:focus-visible {

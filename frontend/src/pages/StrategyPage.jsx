@@ -98,14 +98,32 @@ function MessageBubble({
   const isAssistant = message.role === 'assistant';
   const hasRunId = isAssistant && message.run_id;
   const isActive = hasRunId && message.run_id === activeRunId;
+  const handleClick = hasRunId
+    ? () => {
+        if (showViewStrategy) {
+          onViewStrategy?.(message.run_id);
+        } else {
+          onViewRun(message.run_id);
+        }
+      }
+    : undefined;
   return (
     <div
       className={`message message-${message.role}${hasRunId ? ' message-clickable' : ''}${isActive ? ' message-active-run' : ''}`}
-      title={hasRunId ? 'Click to view strategy output' : undefined}
-      onClick={hasRunId ? () => onViewRun(message.run_id) : undefined}
+      title={hasRunId ? (showViewStrategy ? 'Tap to view strategy' : 'Click to view strategy output') : undefined}
+      onClick={handleClick}
       role={hasRunId ? 'button' : undefined}
       tabIndex={hasRunId ? 0 : undefined}
-      onKeyDown={hasRunId ? (e) => { if (e.key === 'Enter' || e.key === ' ') onViewRun(message.run_id); } : undefined}
+      onKeyDown={
+        hasRunId
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleClick?.();
+              }
+            }
+          : undefined
+      }
     >
       <span className="message-role">{isAssistant ? 'Agent' : 'You'}</span>
       {hasRunId ? (
@@ -139,19 +157,6 @@ function MessageBubble({
           </svg>
         </button>
       ) : null}
-      {showViewStrategy && hasRunId ? (
-        <button
-          type="button"
-          className="message-view-strategy-button"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            onViewStrategy?.(message.run_id);
-          }}
-        >
-          View strategy
-        </button>
-      ) : null}
       {isAssistant ? (
         <div className="message-markdown">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || ''}</ReactMarkdown>
@@ -159,6 +164,21 @@ function MessageBubble({
       ) : (
         <p>{message.content}</p>
       )}
+      {showViewStrategy && hasRunId ? (
+        <div className="message-view-strategy-row">
+          <button
+            type="button"
+            className="message-view-strategy-button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onViewStrategy?.(message.run_id);
+            }}
+          >
+            View strategy
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -765,7 +785,7 @@ export function StrategyPage() {
     (!loading && Array.isArray(messages) && messages.length > 0) ||
     (Number.isFinite(Number(currentThreadMeta?.message_count)) &&
       Number(currentThreadMeta?.message_count) > 0);
-  const deployDisabled = loading || showProcessing || !strategyAvailable || Boolean(viewingRunId);
+  const deployDisabled = loading || showProcessing || !strategyAvailable;
   const deployTitle = deployDisabled ? 'Strategy not available yet' : 'Deploy live';
 
   return (
@@ -973,15 +993,13 @@ export function StrategyPage() {
       <section className="canvas-panel canvas-panel-charts">
         <header className="canvas-hero">
           <div className="canvas-hero-actions">
-            {isNarrow ? (
+            {viewingRunId ? (
               <button
                 type="button"
-                className="button-close-canvas"
-                onClick={() => setMobileCanvasOpen(false)}
-                aria-label="Close strategy view"
-                title="Close"
+                className="button-back-to-current"
+                onClick={() => { setViewingRunId(null); setHistoricalCanvas(null); }}
               >
-                ×
+                Back to current
               </button>
             ) : null}
             <button
@@ -1013,17 +1031,26 @@ export function StrategyPage() {
                 />
               </svg>
             </button>
+            {isNarrow ? (
+              <button
+                type="button"
+                className="button-close-canvas"
+                onClick={() => setMobileCanvasOpen(false)}
+                aria-label="Close strategy view"
+                title="Close"
+              >
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path
+                    d="M6 6l12 12M18 6L6 18"
+                    stroke="currentColor"
+                    strokeWidth="2.6"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+            ) : null}
           </div>
-          <h2>{strategyName || 'Strategy'}</h2>
-          {viewingRunId ? (
-            <button
-              type="button"
-              className="button-back-to-current"
-              onClick={() => { setViewingRunId(null); setHistoricalCanvas(null); }}
-            >
-              Back to current
-            </button>
-          ) : null}
+          <h2 className="canvas-hero-title">{strategyName || 'Strategy'}</h2>
         </header>
         {showSummary ? (
           <article className="canvas-text-block" aria-label="Strategy summary">
