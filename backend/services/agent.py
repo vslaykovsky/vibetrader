@@ -44,6 +44,7 @@ STRATEGIES_DIR = Path(__file__).resolve().parents[1] / "strategies"
 STRATEGY_AGENTS_TEMPLATE = STRATEGIES_DIR / "AGENTS.md"
 UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
 RUN_STRATEGY_TOOL_NAME = "run_strategy"
+ANALYSE_CODE_TOOL_NAME = "analyse_code"
 
 ProgressCallback = Callable[[str], None] | None
 
@@ -198,6 +199,26 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": ANALYSE_CODE_TOOL_NAME,
+            "description": (
+                "Answer a question about the current strategy's code/params in this thread. "
+                "Use for quick code comprehension without modifying files."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "A natural-language question about the current strategy code.",
+                    }
+                },
+                "required": ["question"],
+            },
+        },
+    },
 ]
 
 
@@ -205,6 +226,68 @@ def _tail(s: str, max_chars: int = 12_000) -> str:
     if len(s) <= max_chars:
         return s
     return s[-max_chars:]
+
+
+def _read_strategy_params_text(thread_id: str) -> str:
+    root = ensure_strategy_workspace(thread_id)
+    params_path = root / "output" / "params.json"
+    if not params_path.is_file():
+        return ""
+    try:
+        return params_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+@traceable(name="run_analyse_code")
+def run_analyse_code(
+    *,
+    thread_id: str,
+    question: str,
+    model: str,
+    api_key: str,
+) -> dict[str, Any]:
+    q = (question or "").strip()
+    if not q:
+        return {"ok": False, "error": "question is empty"}
+    if not thread_id_allowed(thread_id):
+        return {"ok": False, "error": "invalid thread_id"}
+    if not (api_key or "").strip():
+        return {"ok": False, "error": "OPENROUTER_API_KEY is not configured"}
+
+    code = read_strategy_code(thread_id)
+    params_text = _read_strategy_params_text(thread_id)
+
+    analysis_system = (
+        "You are a code analyst for a trading strategy project. "
+        "Answer the user's question using ONLY the provided strategy code and params. "
+        "Be concise: 1-4 sentences. If the answer cannot be determined, say what is missing."
+    )
+    context = (
+        "Strategy params (JSON, may be empty):\n"
+        f"{_tail(params_text, 40_000)}\n\n"
+        "Strategy code (Python, may be empty):\n"
+        f"{_tail(code, 80_000)}"
+    )
+
+    llm = ChatOpenRouter(
+        model=model,
+        openai_api_key=api_key,
+        request_timeout=120,
+        default_headers={
+            "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "http://localhost:5173"),
+            "X-Title": os.getenv("OPENROUTER_APP_NAME", "VibeTrader Strategy Builder"),
+        },
+    )
+    msg = llm.invoke(
+        [
+            SystemMessage(content=analysis_system),
+            SystemMessage(content=context),
+            HumanMessage(content=q),
+        ]
+    )
+    answer = _aimessage_plain_text(msg).strip()
+    return {"ok": True, "answer": answer}
 
 
 def _strategy_output_file_key(filename: str) -> str:
@@ -385,7 +468,11 @@ def run_rerun_backtest(
 
 
 def _tool_handlers_for_thread(
-    thread_id: str, on_progress: ProgressCallback = None
+    thread_id: str,
+    *,
+    model: str,
+    api_key: str,
+    on_progress: ProgressCallback = None,
 ) -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
     def _update(args: dict[str, Any]) -> dict[str, Any]:
         return run_update_strategy(thread_id, str(args.get("task", "")), on_progress=on_progress)
@@ -394,9 +481,18 @@ def _tool_handlers_for_thread(
         command = str(args.get("command", ""))
         return run_rerun_backtest(thread_id, command, on_progress=on_progress)
 
+    def _analyse(args: dict[str, Any]) -> dict[str, Any]:
+        return run_analyse_code(
+            thread_id=thread_id,
+            question=str(args.get("question", "")),
+            model=model,
+            api_key=api_key,
+        )
+
     return {
         UPDATE_STRATEGY_TOOL_NAME: _update,
         RUN_STRATEGY_TOOL_NAME: _rerun,
+        ANALYSE_CODE_TOOL_NAME: _analyse,
     }
 
 
@@ -519,7 +615,12 @@ Current strategy pseudocode:
         },
     )
     llm_tools = llm.bind_tools(AGENT_TOOLS)
-    tool_handlers = _tool_handlers_for_thread(thread_id, on_progress=on_progress)
+    tool_handlers = _tool_handlers_for_thread(
+        thread_id,
+        model=model,
+        api_key=api_key,
+        on_progress=on_progress,
+    )
 
     for _ in range(max_iterations):
         if on_progress:

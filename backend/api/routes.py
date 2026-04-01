@@ -6,12 +6,14 @@ import time
 
 from flask import Blueprint, Response, current_app, jsonify, request
 import logging
+from pathlib import Path
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from db.models import Strategy
 from db.session import SessionLocal
 from services.agent import (
+    STRATEGIES_DIR,
     build_agent_reply,
     canvas_with_output,
     read_strategy_code,
@@ -283,8 +285,16 @@ def get_strategy() -> tuple:
 
     session = SessionLocal()
     try:
+        workspace = Path(STRATEGIES_DIR) / thread_id
+        needs_restore = not workspace.is_dir()
         strategy = get_or_create_strategy(session, thread_id)
         session.commit()
+        if needs_restore:
+            restore_strategy_workspace_from_snapshot(
+                thread_id,
+                code=getattr(strategy, "code", "") or "",
+                canvas=dict(getattr(strategy, "canvas", {}) or {}),
+            )
         return jsonify(serialize_strategy(strategy)), 200
     finally:
         session.close()
