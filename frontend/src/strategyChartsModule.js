@@ -42,18 +42,17 @@ const __LWC__ = globalThis[${JSON.stringify(VIBE_LWC_GLOBAL)}];
 if (!__LWC__) {
   throw new Error('Lightweight Charts not available');
 }
-const LightweightCharts = new Proxy(__LWC__, {
-  get(target, prop, receiver) {
-    if (prop === 'createChart') {
-      return (container, options) => {
-        const chart = target.createChart(container, options);
-        __vibeCharts.push(chart);
-        return chart;
-      };
-    }
-    return Reflect.get(target, prop, receiver);
-  },
-});
+const LightweightCharts = Object.fromEntries(
+  Object.keys(__LWC__).map(k =>
+    k === 'createChart'
+      ? [k, (container, options) => {
+          const chart = __LWC__.createChart(container, options);
+          __vibeCharts.push(chart);
+          return chart;
+        }]
+      : [k, __LWC__[k]]
+  )
+);
 ${bindings}
 ${body}
 
