@@ -29,8 +29,5 @@ spec:
           envFrom:
             - configMapRef:
                 name: vibetrader-config
-                optional: true
-            - secretRef:
-                name: vibetrader-secrets
-                optional: true
+                optional: false
 

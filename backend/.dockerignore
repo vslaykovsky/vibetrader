@@ -8,3 +8,7 @@ __pycache__
 db/db.sqlite
 db/*.sqlite
 
+# Exclude per-thread strategy workspaces from Docker build context
+strategies/*
+!strategies/AGENTS.md
+
