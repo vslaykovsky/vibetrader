@@ -5,6 +5,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @openai/codex \
+    && npm cache clean --force
+
 RUN pip install --no-cache-dir --upgrade pip
 
 COPY requirements.txt /app/requirements.txt

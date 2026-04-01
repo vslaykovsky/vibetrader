@@ -27,6 +27,9 @@ spec:
             - name: PORT
               value: "8080"
           envFrom:
+            - configMapRef:
+                name: vibetrader-config
+                optional: true
             - secretRef:
                 name: vibetrader-secrets
                 optional: true
