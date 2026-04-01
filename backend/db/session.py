@@ -1,21 +1,33 @@
 from __future__ import annotations
 
 import uuid
+import os
 from pathlib import Path
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.engine import URL
 from sqlalchemy.orm import sessionmaker
 
 
 DB_PATH = Path(__file__).resolve().parent / "db.sqlite"
-DATABASE_URL = f"sqlite:///{DB_PATH}"
+DEFAULT_DATABASE_URL = URL.create(
+    drivername="postgresql+psycopg",
+    username="postgres",
+    password=os.getenv("POSTGRES_PASSWORD", ""),
+    host=os.getenv("POSTGRES_HOST", "localhost"),
+    port=5432,
+    database="postgres",
+)
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip() or DEFAULT_DATABASE_URL
 
 engine = create_engine(DATABASE_URL, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
 def ensure_strategy_columns(eng: Engine) -> None:
+    if eng.dialect.name != "sqlite":
+        return
     with eng.begin() as conn:
         rows = conn.execute(text("PRAGMA table_info(strategy)")).fetchall()
         if not rows:

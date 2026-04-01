@@ -1,13 +1,8 @@
-import lightweightChartsUrl from 'lightweight-charts?url';
+import * as ImportedLightweightCharts from 'lightweight-charts';
 
-function resolveLwcSpecifierForBlobImport(specifier) {
-  if (/^https?:\/\//i.test(specifier)) {
-    return specifier;
-  }
-  if (typeof window === 'undefined' || !window.location?.href) {
-    return specifier;
-  }
-  return new URL(specifier, window.location.href).href;
+const VIBE_LWC_GLOBAL = '__vibeLightweightCharts';
+if (typeof window !== 'undefined') {
+  window[VIBE_LWC_GLOBAL] = ImportedLightweightCharts;
 }
 
 function stripLightweightChartsImports(source) {
@@ -41,9 +36,12 @@ function stripLightweightChartsImports(source) {
   return { bindings: parts.join(''), body: remaining };
 }
 
-function buildModuleSource(bindings, body, lwcImportHref) {
+function buildModuleSource(bindings, body) {
   return `const __vibeCharts = [];
-import * as __LWC__ from ${JSON.stringify(lwcImportHref)};
+const __LWC__ = globalThis[${JSON.stringify(VIBE_LWC_GLOBAL)}];
+if (!__LWC__) {
+  throw new Error('Lightweight Charts not available');
+}
 const LightweightCharts = new Proxy(__LWC__, {
   get(target, prop, receiver) {
     if (prop === 'createChart') {
@@ -70,8 +68,7 @@ export async function loadStrategyChartsModule(userSource) {
   if (!bindings.trim()) {
     bindings = `const { createChart, LineSeries, CandlestickSeries, AreaSeries, HistogramSeries, BaselineSeries, ColorType } = LightweightCharts;\n`;
   }
-  const lwcImportHref = resolveLwcSpecifierForBlobImport(lightweightChartsUrl);
-  const full = buildModuleSource(bindings, body, lwcImportHref);
+  const full = buildModuleSource(bindings, body);
   const blob = new Blob([full], { type: 'text/javascript' });
   const url = URL.createObjectURL(blob);
   try {

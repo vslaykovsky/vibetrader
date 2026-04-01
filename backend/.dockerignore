@@ -5,8 +5,6 @@ __pycache__
 .mypy_cache
 .git
 .DS_Store
-db/db.sqlite
-db/*.sqlite
 
 # Exclude per-thread strategy workspaces from Docker build context
 strategies/*

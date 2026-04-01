@@ -4,7 +4,7 @@ Flask API for the strategy-building chat application.
 
 ## What it does
 
-- Persists thread state (messages + metadata) in SQLite
+- Persists thread state (messages + metadata) in Postgres
 - Exposes endpoints used by the frontend chat UI
 - Manages per-thread strategy workspaces under `backend/strategies/<THREAD_UUID>/`
 
@@ -17,7 +17,11 @@ pip install -r backend/requirements.txt
 python backend/app.py
 ```
 
-The SQLite database is stored at `backend/db/db.sqlite`.
+Set `DATABASE_URL` to point at your Postgres instance. Example:
+
+```bash
+export DATABASE_URL="postgresql+psycopg://vibetrader:vibetrader@localhost:5432/vibetrader"
+```
 
 ## API
 
