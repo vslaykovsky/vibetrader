@@ -538,7 +538,19 @@ Current strategy pseudocode:
             if handler is None:
                 tool_payload: dict[str, Any] = {"ok": False, "error": f"unknown tool: {name}"}
             else:
-                tool_payload = handler(parsed_args)
+                try:
+                    tool_payload = handler(parsed_args)
+                except Exception as e:
+                    logger.exception(
+                        "tool execution failed",
+                        extra={
+                            "thread_id": thread_id,
+                            "tool_name": name,
+                            "tool_call_id": tid,
+                            "tool_args": parsed_args,
+                        },
+                    )
+                    tool_payload = {"ok": False, "error": f"tool execution failed: {type(e).__name__}: {e}"}
             chat_messages.append(
                 ToolMessage(content=json.dumps(tool_payload), tool_call_id=tid)
             )

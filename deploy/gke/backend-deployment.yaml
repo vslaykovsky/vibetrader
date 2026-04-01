@@ -15,14 +15,14 @@ spec:
     spec:
       containers:
         - name: backend
-          image: BACKEND_IMAGE
+          image: us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-backend:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
           resources:
             requests:
               cpu: "500m"
-              memory: "768Mi"
+              memory: "2Gi"
           env:
             - name: PORT
               value: "8080"

@@ -5,6 +5,7 @@ import threading
 import time
 
 from flask import Blueprint, Response, current_app, jsonify, request
+import logging
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,7 @@ from services.agent import (
 from langsmith import traceable
 
 strategy_blueprint = Blueprint("strategy", __name__)
+logger = logging.getLogger(__name__)
 
 def _strategy_name_from_canvas(canvas: dict | None) -> str:
     if not isinstance(canvas, dict):
@@ -215,6 +217,10 @@ def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str, model: str) ->
             messages = list(strategy.messages or [])
             canvas = dict(strategy.canvas or {})
             try:
+                logger.info(
+                    "agent job started",
+                    extra={"thread_id": thread_id, "run_id": run_id, "model": model},
+                )
                 agent_result = build_agent_reply(
                     model=model,
                     messages=messages,
@@ -233,6 +239,10 @@ def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str, model: str) ->
                 strategy.status = "success"
                 strategy.status_text = ""
             except Exception as exc:
+                logger.exception(
+                    "agent job failed",
+                    extra={"thread_id": thread_id, "run_id": run_id, "model": model},
+                )
                 strategy.status = "failure"
                 strategy.status_text = str(exc)[:512]
                 strategy.code = read_strategy_code(thread_id)
