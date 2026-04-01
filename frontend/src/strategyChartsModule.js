@@ -47,6 +47,7 @@ const LightweightCharts = Object.fromEntries(
     k === 'createChart'
       ? [k, (container, options) => {
           const chart = __LWC__.createChart(container, options);
+          chart.applyOptions({ layout: { attributionLogo: false } });
           __vibeCharts.push(chart);
           return chart;
         }]
