@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vibetrader-frontend
+  namespace: vibetrader
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vibetrader-frontend
+  template:
+    metadata:
+      labels:
+        app: vibetrader-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: FRONTEND_IMAGE
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "256Mi"
+

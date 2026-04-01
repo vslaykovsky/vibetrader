@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vibetrader-backend
+  namespace: vibetrader
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vibetrader-backend
+  template:
+    metadata:
+      labels:
+        app: vibetrader-backend
+    spec:
+      containers:
+        - name: backend
+          image: BACKEND_IMAGE
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "768Mi"
+          env:
+            - name: PORT
+              value: "8080"
+          envFrom:
+            - secretRef:
+                name: vibetrader-secrets
+                optional: true
+
