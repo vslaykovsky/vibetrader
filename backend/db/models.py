@@ -34,3 +34,18 @@ class Strategy(Base):
     __table_args__ = (
         Index("ix_strategy_thread_created", "thread_id", "created_at"),
     )
+
+    def __str__(self):
+        def _short(value):
+            s = str(value)
+            return s[:50] + ("…" if len(s) > 50 else "")
+        return (
+            f"<Strategy id={self.id} "
+            f"thread_id={self.thread_id} "
+            f"messages={_short(self.messages)} "
+            f"canvas={_short(self.canvas)} "
+            f"code={_short(self.code)!r} "
+            f"status={self.status} "
+            f"status_text={_short(self.status_text)!r} "
+            f"created_at={self.created_at}>"
+        )

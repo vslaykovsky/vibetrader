@@ -27,6 +27,7 @@ Workflow
 * To re-run a backtest with the saved params file unchanged, call run_strategy with e.g. python src/strategy.py --backtest. Use the strategy script's --help output if needed.
 * To run parameter optimization, call run_strategy with python src/strategy.py --hyperopt (if the strategy implements it).
 Always respond in the user’s language.
+* rerun backtest after update_strategy to refresh output/data.json.
 
 Notes
 
@@ -238,7 +239,11 @@ def _read_strategy_output_dir(thread_id: str) -> dict[str, Any]:
 def canvas_with_output(existing_canvas: dict[str, Any], thread_id: str) -> dict[str, Any]:
     merged = dict(existing_canvas)
     if thread_id_allowed(thread_id):
-        merged["output"] = _read_strategy_output_dir(thread_id)
+        existing_output = merged.get("output")
+        if not isinstance(existing_output, dict):
+            existing_output = {}
+        disk_output = _read_strategy_output_dir(thread_id)
+        merged["output"] = {**existing_output, **disk_output} if disk_output else dict(existing_output)
     else:
         merged["output"] = {}
     return merged

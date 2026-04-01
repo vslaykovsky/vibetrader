@@ -41,11 +41,8 @@ def _strategy_name_from_canvas(canvas: dict | None) -> str:
     return name.strip() if isinstance(name, str) else ""
 
 
-def serialize_strategy(strategy: Strategy, *, live_output: bool = True) -> dict:
-    if live_output:
-        canvas = canvas_with_output(dict(strategy.canvas or {}), strategy.thread_id)
-    else:
-        canvas = dict(strategy.canvas or {})
+def serialize_strategy(strategy: Strategy) -> dict:
+    canvas = dict(strategy.canvas or {})
     return {
         "id": strategy.id,
         "thread_id": strategy.thread_id,
@@ -58,12 +55,14 @@ def serialize_strategy(strategy: Strategy, *, live_output: bool = True) -> dict:
 
 
 def _latest_strategy(session: Session, thread_id: str) -> Strategy | None:
-    return (
+    # Build the query
+    query = (
         session.query(Strategy)
         .filter_by(thread_id=thread_id)
         .order_by(desc(Strategy.created_at))
-        .first()
     )
+    # Log the SQL query for debugging/inspection
+    return query.first()
 
 
 @strategy_blueprint.get("/threads")
@@ -234,7 +233,7 @@ def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str, model: str) ->
                     "run_id": run_id,
                 })
                 strategy.messages = messages
-                strategy.canvas = agent_result["canvas"]
+                strategy.canvas = canvas_with_output(dict(agent_result["canvas"] or {}), thread_id)
                 strategy.code = read_strategy_code(thread_id)
                 strategy.status = "success"
                 strategy.status_text = ""
@@ -272,7 +271,7 @@ def get_strategy() -> tuple:
             strategy = session.get(Strategy, run_id)
             if strategy is None:
                 return _validation_error("strategy not found")
-            return jsonify(serialize_strategy(strategy, live_output=False)), 200
+            return jsonify(serialize_strategy(strategy)), 200
         finally:
             session.close()
 
