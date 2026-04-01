@@ -4,7 +4,15 @@ set -euo pipefail
 PROJECT_ID="traderchat"
 REGION="us-central1"
 REPOSITORY="traderchat"
-TAG="v1"
+TAG="${TAG:-}"
+
+if [[ -z "${TAG}" ]]; then
+GIT_SHA="$(git rev-parse --short HEAD)"
+DIRTY_SUFFIX=""
+git diff --quiet || DIRTY_SUFFIX="-dirty"
+git diff --cached --quiet || DIRTY_SUFFIX="-dirty"
+TAG="${GIT_SHA}${DIRTY_SUFFIX}"
+fi
 
 : "${PROJECT_ID:?set PROJECT_ID}"
 : "${REGION:?set REGION (e.g. us-central1)}"

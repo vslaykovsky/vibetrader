@@ -4,10 +4,18 @@ set -euo pipefail
 PROJECT_ID="traderchat"
 REGION="us-central1"
 REPOSITORY="traderchat"
-TAG="v1"
+TAG="${TAG:-}"
+
+if [[ -z "${TAG}" ]]; then
+GIT_SHA="$(git rev-parse --short HEAD)"
+DIRTY_SUFFIX=""
+git diff --quiet || DIRTY_SUFFIX="-dirty"
+git diff --cached --quiet || DIRTY_SUFFIX="-dirty"
+TAG="${GIT_SHA}${DIRTY_SUFFIX}"
+fi
 CLUSTER=autopilot-cluster-1
-FRONTEND_IMAGE=us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-frontend:v1
-BACKEND_IMAGE=us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-backend:v1
+FRONTEND_IMAGE="us-central1-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/vibetrader-frontend:${TAG}"
+BACKEND_IMAGE="us-central1-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/vibetrader-backend:${TAG}"
 
 
 : "${CLUSTER:?set CLUSTER}"
@@ -31,6 +39,9 @@ kubectl apply -f deploy/gke/frontend-service.yaml
 
 kubectl apply -f "${tmpdir}/backend-deployment.yaml"
 kubectl apply -f deploy/gke/backend-service.yaml
+
+kubectl -n vibetrader rollout restart deploy/vibetrader-frontend
+kubectl -n vibetrader rollout restart deploy/vibetrader-backend
 
 kubectl -n vibetrader rollout status deploy/vibetrader-backend
 kubectl -n vibetrader rollout status deploy/vibetrader-frontend
