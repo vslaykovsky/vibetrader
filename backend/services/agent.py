@@ -22,15 +22,12 @@ SYSTEM_PROMPT = f"""You help users design trading strategies in chat.
 Workflow
 
 * Before the first update_strategy, request any missing details needed to build the strategy (e.g., ticker, candlestick period, time range, stop loss, take profit, other parameters).
-* To modify code call update_strategy with a brief task describing only the changes. Match the user’s language. Only run update_strategy when strategy logic or structure must change. Never call update_strategy when the user only wants to try different values for parameters that already exist in output/params.json (or are already defined by the strategy’s parameter model); use run_strategy instead.
-* If the user only tweaks existing parameters (different ticker, dates, thresholds, etc.), call run_strategy with python src/strategy.py --backtest and pass overrides as a single --params argument whose value is a JSON object (shell-escaped), merged over output/params.json for that run. Do not call update_strategy for that.
-* To re-run a backtest with the saved params file unchanged, call run_strategy with e.g. python src/strategy.py --backtest. Use the strategy script's --help output if needed.
-* To run parameter optimization, call run_strategy with python src/strategy.py --hyperopt (if the strategy implements it).
-Always respond in the user’s language.
+* To modify code call update_strategy with a brief task describing only the changes. Match the user’s language. Only run update_strategy when strategy logic or structure must change. 
+* If the user only tweaks existing parameters (different ticker, dates, thresholds, optimization parameters etc.), call run_strategy with `python src/strategy.py --backtest` or `python src/strategy.py --hyperopt`; optionally pass parameters_json as a JSON string so the tool writes output/params.json before the run. Do not call update_strategy for that!
+* Always respond in the user’s language.
 * rerun backtest after update_strategy to refresh output/data.json.
 
 Notes
-
 * update_strategy generates strategy code and charts; it can also include hyperparameter optimization code.
 * Strategies can use Alpaca market data.
 * Backtesting is supported; live trading is not.
@@ -180,7 +177,8 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             "name": RUN_STRATEGY_TOOL_NAME,
             "description": (
                 "Run a strategy command in this thread's workspace (no Codex, no code edits). "
-                "Use python src/strategy.py --backtest; override params with --params '<JSON object>' (merged over output/params.json). "
+                "Use python src/strategy.py --backtest; optional parameters_json (a JSON string) is parsed and written to output/params.json before the command runs. "
+                "Override params with --params '<JSON object>' (merged over output/params.json) when needed. "
                 "Use python src/strategy.py --hyperopt when optimizing. "
                 "Refreshes output/data.json on success."
             ),
@@ -192,6 +190,12 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                         "description": (
                             "Full shell command, e.g. python src/strategy.py --backtest or "
                             "python src/strategy.py --backtest --params '{\"ticker\":\"SPY\",\"fast_period\":12}'"
+                        ),
+                    },
+                    "parameters_json": {
+                        "type": "string",
+                        "description": (
+                            "If provided, must be valid JSON; replaces output/params.json with the parsed value before running the command."
                         ),
                     },
                 },
@@ -339,7 +343,7 @@ def _run_codex_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
         "exec",
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
-        "--model", "gpt-5.4",
+        "--model", "gpt-5.4-mini",
         "-c", "service_tier=fast",
         "-c", "model_verbosity=low",
         "-c", "features.fast_mode=true",
@@ -348,8 +352,8 @@ def _run_codex_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     return _run_logged_subprocess("codex exec", cmd, str(cwd), timeout=600)
 
 
-@traceable(name="run_strategy_backtest")
-def _run_strategy_backtest(
+@traceable(name="run_strategy")
+def _run_strategy(
     command: str,
     cwd: Path,
 ) -> subprocess.CompletedProcess[str]:
@@ -445,6 +449,7 @@ def run_rerun_backtest(
     thread_id: str,
     command: str,
     on_progress: ProgressCallback = None,
+    parameters_json: str | None = None,
 ) -> dict[str, Any]:
     if not thread_id_allowed(thread_id):
         return {"ok": False, "error": "invalid thread_id"}
@@ -452,9 +457,22 @@ def run_rerun_backtest(
     if not command:
         return {"ok": False, "error": "command is empty"}
     root = ensure_strategy_workspace(thread_id)
+    if parameters_json is not None:
+        raw = parameters_json.strip()
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return {"ok": False, "error": "parameters_json is not valid JSON"}
+            out_dir = root / "output"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "params.json").write_text(
+                json.dumps(parsed, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
     if on_progress:
         on_progress("Running backtest…")
-    bt = _run_strategy_backtest(command, root)
+    bt = _run_strategy(command, root)
     result: dict[str, Any] = {
         "command": command,
         "backtest_returncode": bt.returncode,
@@ -479,7 +497,11 @@ def _tool_handlers_for_thread(
 
     def _rerun(args: dict[str, Any]) -> dict[str, Any]:
         command = str(args.get("command", ""))
-        return run_rerun_backtest(thread_id, command, on_progress=on_progress)
+        raw_params = args.get("parameters_json")
+        parameters_json = raw_params if isinstance(raw_params, str) else None
+        return run_rerun_backtest(
+            thread_id, command, on_progress=on_progress, parameters_json=parameters_json
+        )
 
     def _analyse(args: dict[str, Any]) -> dict[str, Any]:
         return run_analyse_code(

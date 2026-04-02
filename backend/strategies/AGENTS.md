@@ -14,12 +14,8 @@ All constant parameters for the strategy must live in `output/params.json`. That
 ### CLI
 
 `src/strategy.py` must support only these flags (no separate flags for ticker, timeframe, or dates):
-
-- `--backtest` — Load `output/params.json`, apply optional `--params` overrides for this run only, run the backtest, write `output/data.json` with stats and chart data, and print parameters and stats to stdout.
-
+- `--backtest` — Load `output/params.json`,  run the backtest, write `output/data.json` with stats and chart data, and print parameters and stats to stdout.
 - `--hyperopt` — Run hyperparameter optimization (using ranges and training window defined in `output/params.json` or strategy code as appropriate). Print results to stdout and write the optimized parameters to `output/params.json` so a subsequent `python src/strategy.py --backtest` picks them up. 
-
-- `--params JSON` — Optional; use together with `--backtest`. `JSON` is a single JSON object (quote the argument for the shell). Merge it over the object loaded from `output/params.json` for this run only; do not write merged values back into `output/params.json`. Top-level keys in `--params` override the same keys from the file. Invalid JSON must fail with a clear error.
 
 ## Data sources
 
