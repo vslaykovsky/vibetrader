@@ -55,7 +55,7 @@ ANALYSE_CODE_TOOL_NAME = "analyse_code"
 
 ProgressCallback = Callable[[str], None] | None
 
-CODING_TOOL = 'claude'
+CODING_TOOL = 'codex'
 
 logger = logging.getLogger(__name__)
 

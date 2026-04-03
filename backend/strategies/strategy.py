@@ -4,7 +4,6 @@ import math
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from enum import Enum
 from pathlib import Path
 
 import numpy as np
@@ -49,11 +48,6 @@ def save_json(path: Path, payload: dict) -> None:
         f.write("\n")
 
 
-class TickerType(str, Enum):
-    STOCK = "stock"
-    CRYPTO = "crypto"
-
-
 def timeframe_from_string(value: str) -> TimeFrame:
     normalized = str(value).strip().lower()
     if normalized in {"1day", "day", "1d"}:
@@ -86,70 +80,90 @@ def _as_ohlcv_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def fetch_bars(
-    ticker_type: TickerType,
+def _drop_wide_spread_bars(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    hi = out["high"].astype(float)
+    lo = out["low"].astype(float)
+    spread = hi - lo
+    keep = (hi > 0) & (spread <= 0.3 * hi)
+    return out.loc[keep]
+
+
+def _alpaca_keys() -> tuple[str, str]:
+    api_key = os.environ.get("ALPACA_API_KEY")
+    secret_key = os.environ.get("ALPACA_SECRET_KEY")
+    if not api_key or not secret_key:
+        raise RuntimeError("ALPACA_API_KEY and ALPACA_SECRET_KEY must be set")
+    return api_key, secret_key
+
+
+def fetch_stock_bars(
     ticker: str,
     start_test_date: str,
     end_test_date: str,
     history_padding_days: int,
     timeframe: str,
 ) -> pd.DataFrame:
-    api_key = os.environ.get("ALPACA_API_KEY")
-    secret_key = os.environ.get("ALPACA_SECRET_KEY")
-    if not api_key or not secret_key:
-        raise RuntimeError("ALPACA_API_KEY and ALPACA_SECRET_KEY must be set")
+    api_key, secret_key = _alpaca_keys()
     tf = timeframe_from_string(timeframe)
-    if ticker_type == TickerType.STOCK:
-        client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
-        start = datetime.fromisoformat(start_test_date) - timedelta(days=int(history_padding_days))
-        end = datetime.fromisoformat(end_test_date)
-        request = StockBarsRequest(
-            symbol_or_symbols=ticker,
-            start=start,
-            end=end,
-            timeframe=tf,
-        )
-        bars = client.get_stock_bars(request)
-        df = bars.df if hasattr(bars, "df") else pd.DataFrame(bars)
-        if df.empty:
-            raise RuntimeError("No market data returned from Alpaca.")
-        if isinstance(df.index, pd.MultiIndex):
-            df = df.xs(ticker, level=0).copy()
-        else:
-            df = df.copy()
-        return _as_ohlcv_dataframe(df)
-    if ticker_type == TickerType.CRYPTO:
-        client = CryptoHistoricalDataClient(api_key, secret_key)
-        symbol = normalize_crypto_symbol(ticker)
-        start = pd.Timestamp(start_test_date, tz="UTC")
-        end = pd.Timestamp(end_test_date, tz="UTC") + pd.Timedelta(days=1)
-        request = CryptoBarsRequest(
-            symbol_or_symbols=symbol,
-            start=start.to_pydatetime(),
-            end=end.to_pydatetime(),
-            timeframe=tf,
-        )
-        barset = client.get_crypto_bars(request, feed=CryptoFeed.US)
-        df = barset.df.copy()
-        if isinstance(df.index, pd.MultiIndex):
-            df = df.reset_index()
-            if "timestamp" in df.columns:
-                df = df.rename(columns={"timestamp": "time"})
-            elif "index" in df.columns:
-                df = df.rename(columns={"index": "time"})
-        elif "timestamp" in df.columns:
+    client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
+    start = datetime.fromisoformat(start_test_date) - timedelta(days=int(history_padding_days))
+    end = datetime.fromisoformat(end_test_date)
+    request = StockBarsRequest(
+        symbol_or_symbols=ticker,
+        start=start,
+        end=end,
+        timeframe=tf,
+    )
+    bars = client.get_stock_bars(request)
+    df = bars.df if hasattr(bars, "df") else pd.DataFrame(bars)
+    if df.empty:
+        raise RuntimeError("No market data returned from Alpaca.")
+    if isinstance(df.index, pd.MultiIndex):
+        df = df.xs(ticker, level=0).copy()
+    else:
+        df = df.copy()
+    return _drop_wide_spread_bars(_as_ohlcv_dataframe(df))
+
+
+def fetch_crypto_bars(
+    ticker: str,
+    start_test_date: str,
+    end_test_date: str,
+    timeframe: str,
+) -> pd.DataFrame:
+    api_key, secret_key = _alpaca_keys()
+    tf = timeframe_from_string(timeframe)
+    client = CryptoHistoricalDataClient(api_key, secret_key)
+    symbol = normalize_crypto_symbol(ticker)
+    start = pd.Timestamp(start_test_date, tz="UTC")
+    end = pd.Timestamp(end_test_date, tz="UTC") + pd.Timedelta(days=1)
+    request = CryptoBarsRequest(
+        symbol_or_symbols=symbol,
+        start=start.to_pydatetime(),
+        end=end.to_pydatetime(),
+        timeframe=tf,
+    )
+    barset = client.get_crypto_bars(request, feed=CryptoFeed.US)
+    df = barset.df.copy()
+    if isinstance(df.index, pd.MultiIndex):
+        df = df.reset_index()
+        if "timestamp" in df.columns:
             df = df.rename(columns={"timestamp": "time"})
-        if "symbol" in df.columns:
-            df = df[df["symbol"] == symbol].copy()
-        if "time" not in df.columns:
-            df = df.reset_index().rename(columns={df.index.name or "index": "time"})
-        df["time"] = pd.to_datetime(df["time"], utc=True)
-        df = df.sort_values("time")
-        if "symbol" in df.columns:
-            df = df.drop(columns=["symbol"])
-        df = df.set_index("time")
-        return _as_ohlcv_dataframe(df)
-    raise ValueError(f"Unsupported ticker_type: {ticker_type!r}")
+        elif "index" in df.columns:
+            df = df.rename(columns={"index": "time"})
+    elif "timestamp" in df.columns:
+        df = df.rename(columns={"timestamp": "time"})
+    if "symbol" in df.columns:
+        df = df[df["symbol"] == symbol].copy()
+    if "time" not in df.columns:
+        df = df.reset_index().rename(columns={df.index.name or "index": "time"})
+    df["time"] = pd.to_datetime(df["time"], utc=True)
+    df = df.sort_values("time")
+    if "symbol" in df.columns:
+        df = df.drop(columns=["symbol"])
+    df = df.set_index("time")
+    return _drop_wide_spread_bars(_as_ohlcv_dataframe(df))
 
 
 def run_backtest() -> None:
