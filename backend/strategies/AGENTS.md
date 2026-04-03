@@ -11,7 +11,7 @@ Source files must be stored under `src/`. Entry point is `src/strategy.py`. All 
 - `--backtest` — Load `output/params.json`,  runs the backtest, write `output/data.json` with performance stats and all data necessary to render charts, prints performance stats to stdout.
 - `--help` — help message
 
-Optional: implement `--hyperopt` only when the user asks to train or optimize parameters. It runs hyperparameter optimization (using ranges and training window defined in `output/params.json` or strategy code as appropriate), prints results to stdout, and writes optimized parameters to `output/params.json` so a subsequent `python src/strategy.py --backtest` picks them up.
+Optional: implement `--hyperopt` only when the user asks to train or optimize parameters. It runs hyperparameter optimization (using ranges and training window defined in `output/params.json` or strategy code as appropriate), prints results to stdout, and writes optimized parameters to `output/params.json` so a subsequent `python src/strategy.py --backtest` picks them up. Use optuna or other appropriate tool. Set hardstop timeout of 120 seconds when running --hyperopt.  
 
 ## Data sources
 
@@ -40,6 +40,8 @@ Notes:
 - When showing buy/sell signals, use createSeriesMarkers to add markers to a chart. 
 - Don't render header with strategy name, only render charts with their titles. Generate chart titles in the language of user's prompt. 
 - When showing equity curve, add benchmark curve as well. 
+- All time-based charts must use the same time scale and the same logical time range on the x-axis (same min/max over the backtest window) so the frontend can keep scroll and zoom synchronized across charts.
+- For non time-based charts (histograms, bar plots, scatter plots etc) use chart.js charts: https://www.chartjs.org/docs/latest/getting-started/
 - output/charts.js is loaded as an ES module on the frontend. It MUST start with a named import from 'lightweight-charts', for example:
 ```
 import { createChart } from 'lightweight-charts';

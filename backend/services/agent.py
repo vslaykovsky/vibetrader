@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+import shlex
 import subprocess
 import sys
 import time
@@ -25,7 +26,7 @@ Workflow
 * Before the first update_strategy, request any missing details needed to build the strategy (e.g., ticker, candlestick period, time range, stop loss, take profit, other parameters). 
 * Do not implement --hyperopt flag by default! Only implement it if the user asks for training/hyperparameter optimization of parameters.
 * To modify code call update_strategy with a brief task describing only the changes. Match the user’s language. 
-* If the user only tweaks existing parameters (different ticker, dates, thresholds, optimization parameters etc.), call run_strategy with `python src/strategy.py --backtest` instead of update_strategy; optionally pass parameters_json as a JSON string so the tool writes output/params.json before the run. 
+* If the user only tweaks existing parameters (different ticker, dates, thresholds, optimization parameters etc.), call run_strategy with `python src/strategy.py --backtest` instead of update_strategy; optionally pass parameters_json as a JSON string so the tool merges values into output/params.json before the run. 
 * If the user asks for training/hyperparameter optimization of parameters, then 
    1. make sure that the strategy implements `--hyperopt` flag. If it doesn't, then implement it with update_strategy call. 
    2. use `python src/strategy.py --hyperopt` to train or optimize parameters.
@@ -44,6 +45,7 @@ Answer in plain text. No JSON or markup unless the user asks."""
 
 STRATEGIES_DIR = Path(__file__).resolve().parents[1] / "strategies"
 STRATEGY_AGENTS_TEMPLATE = STRATEGIES_DIR / "AGENTS.md"
+STRATEGY_CLAUDE_TEMPLATE = STRATEGIES_DIR / "CLAUDE.md"
 STRATEGY_CODE_TEMPLATE = STRATEGIES_DIR / "strategy.py"
 UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
 RUN_STRATEGY_TOOL_NAME = "run_strategy"
@@ -52,6 +54,8 @@ RUN_STRATEGY_TOOL_MESSAGE_MAX_JSON = 4096
 ANALYSE_CODE_TOOL_NAME = "analyse_code"
 
 ProgressCallback = Callable[[str], None] | None
+
+CODING_TOOL = 'claude'
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +112,9 @@ def ensure_strategy_workspace(thread_id: str) -> Path:
     dest_agents = workspace / "AGENTS.md"
     if not dest_agents.is_file() and STRATEGY_AGENTS_TEMPLATE.is_file():
         shutil.copy2(STRATEGY_AGENTS_TEMPLATE, dest_agents)
+    dest_claude = workspace / "CLAUDE.md"
+    if not dest_claude.is_file() and STRATEGY_CLAUDE_TEMPLATE.is_file():
+        shutil.copy2(STRATEGY_CLAUDE_TEMPLATE, dest_claude)
     src_dir = workspace / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
     dest_strategy = src_dir / "strategy.py"
@@ -170,7 +177,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             "name": UPDATE_STRATEGY_TOOL_NAME,
             "description": (
                 "Change the trading strategy in this thread's strategies/<thread_id>/ folder using "
-                "Codex exec in full-auto mode, then re-run the backtest to refresh output/data.json."
+                "the configured coding agent (Codex or Claude Code), then re-run the backtest to refresh output/data.json."
             ),
             "parameters": {
                 "type": "object",
@@ -189,8 +196,8 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": RUN_STRATEGY_TOOL_NAME,
             "description": (
-                "Run a strategy command in this thread's workspace (no Codex, no code edits). "
-                "Use python src/strategy.py --backtest; optional parameters_json (a JSON string) is parsed and written to output/params.json before the command runs. "
+                "Run a strategy command in this thread's workspace (no coding agent, no code edits). "
+                "Use python src/strategy.py --backtest; optional parameters_json (a JSON string) is parsed and merged into output/params.json (recursive merge) before the command runs. "
                 "Override params with --params '<JSON object>' (merged over output/params.json) when needed. "
                 "Use python src/strategy.py --hyperopt only when the user asked to optimize and the workspace strategy implements it. "
                 "Refreshes output/data.json on success."
@@ -208,7 +215,9 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                     "parameters_json": {
                         "type": "string",
                         "description": (
-                            "If provided, must be valid JSON; replaces output/params.json with the parsed value before running the command."
+                            "If provided, must be valid JSON. Object values are merged recursively into existing output/params.json "
+                            "(nested dicts merged by key, lists merged by index with recursive dict merge where both sides are objects; "
+                            "scalars and mismatched types take the new value). Non-object JSON replaces the file."
                         ),
                     },
                 },
@@ -381,12 +390,25 @@ def _run_codex_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     return _run_logged_subprocess("codex exec", cmd, str(cwd), timeout=600)
 
 
+@traceable(name="run_claude_exec")
+def _run_claude_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    cmd: list[str] = ['claude', '--output-format', 'json', '--permission-mode', 'bypassPermissions']
+    cmd.extend(["-p", task ])
+    return _run_logged_subprocess("claude", cmd, str(cwd), timeout=600)
+
+
+def _run_coding_agent_exec(task: str, cwd: Path) -> tuple[str, subprocess.CompletedProcess[str]]:
+    tool = CODING_TOOL    
+    if tool == "claude":
+        return tool, _run_claude_exec(task, cwd)
+    return tool, _run_codex_exec(task, cwd)
+
+
 @traceable(name="run_strategy")
 def _run_strategy(
     command: str,
     cwd: Path,
 ) -> subprocess.CompletedProcess[str]:
-    import shlex
     parts = shlex.split(command)
     if parts and parts[0] == "python":
         parts[0] = sys.executable
@@ -457,20 +479,56 @@ def run_update_strategy(
 
     if on_progress:
         on_progress("Updating strategy…")
-    codegen = _run_codex_exec(task, root)
+    runner, codegen = _run_coding_agent_exec(task, root)
 
     _generate_pseudocode_diff(root)
 
     result: dict[str, Any] = {
-        "runner": "codex",
+        "runner": runner,
         "codex_returncode": codegen.returncode,
         "codex_stdout": _tail(codegen.stdout or ""),
         "codex_stderr": _tail(codegen.stderr or ""),
         "ok": codegen.returncode == 0,
     }
     if codegen.returncode != 0:
-        result["error"] = "codex exec failed"
+        result["error"] = "claude code failed" if runner == "claude" else "codex exec failed"
     return result
+
+
+def _read_params_json_object(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+        if not text:
+            return {}
+        data = json.loads(text)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _deep_merge_json_values(base: Any, overlay: Any) -> Any:
+    if isinstance(base, dict) and isinstance(overlay, dict):
+        out = dict(base)
+        for key, value in overlay.items():
+            if key in out:
+                out[key] = _deep_merge_json_values(out[key], value)
+            else:
+                out[key] = value
+        return out
+    if isinstance(base, list) and isinstance(overlay, list):
+        length = max(len(base), len(overlay))
+        merged: list[Any] = []
+        for i in range(length):
+            if i >= len(base):
+                merged.append(overlay[i])
+            elif i >= len(overlay):
+                merged.append(base[i])
+            else:
+                merged.append(_deep_merge_json_values(base[i], overlay[i]))
+        return merged
+    return overlay
 
 
 @traceable(name="run_rerun_backtest")
@@ -495,8 +553,14 @@ def run_rerun_backtest(
                 return {"ok": False, "error": "parameters_json is not valid JSON"}
             out_dir = root / "output"
             out_dir.mkdir(parents=True, exist_ok=True)
-            (out_dir / "params.json").write_text(
-                json.dumps(parsed, indent=2, sort_keys=True),
+            params_path = out_dir / "params.json"
+            if isinstance(parsed, dict):
+                existing = _read_params_json_object(params_path)
+                to_write = _deep_merge_json_values(existing, parsed)
+            else:
+                to_write = parsed
+            params_path.write_text(
+                json.dumps(to_write, indent=2, sort_keys=True),
                 encoding="utf-8",
             )
     if on_progress:
