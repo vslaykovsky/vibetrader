@@ -229,11 +229,15 @@ def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str, model: str) ->
                     thread_id=thread_id,
                     on_progress=persist_status_text,
                 )
-                messages.append({
+                assistant_entry: dict = {
                     "role": "assistant",
                     "content": agent_result["message"],
                     "run_id": run_id,
-                })
+                }
+                rd = agent_result.get("reply_duration_ms")
+                if isinstance(rd, int) and rd >= 0:
+                    assistant_entry["reply_duration_ms"] = rd
+                messages.append(assistant_entry)
                 strategy.messages = messages
                 strategy.canvas = canvas_with_output(dict(agent_result["canvas"] or {}), thread_id)
                 strategy.code = read_strategy_code(thread_id)

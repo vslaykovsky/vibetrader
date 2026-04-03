@@ -9,9 +9,10 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
-
+from datetime import datetime, timedelta
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from services.chat_openrouter import ChatOpenRouter
@@ -21,17 +22,21 @@ SYSTEM_PROMPT = f"""You help users design trading strategies in chat.
 
 Workflow
 
-* Before the first update_strategy, request any missing details needed to build the strategy (e.g., ticker, candlestick period, time range, stop loss, take profit, other parameters).
-* To modify code call update_strategy with a brief task describing only the changes. Match the user’s language. Only run update_strategy when strategy logic or structure must change. 
-* If the user only tweaks existing parameters (different ticker, dates, thresholds, optimization parameters etc.), call run_strategy with `python src/strategy.py --backtest` or `python src/strategy.py --hyperopt`; optionally pass parameters_json as a JSON string so the tool writes output/params.json before the run. Do not call update_strategy for that!
+* Before the first update_strategy, request any missing details needed to build the strategy (e.g., ticker, candlestick period, time range, stop loss, take profit, other parameters). 
+* Do not implement --hyperopt flag by default! Only implement it if the user asks for training/hyperparameter optimization of parameters.
+* To modify code call update_strategy with a brief task describing only the changes. Match the user’s language. 
+* If the user only tweaks existing parameters (different ticker, dates, thresholds, optimization parameters etc.), call run_strategy with `python src/strategy.py --backtest` instead of update_strategy; optionally pass parameters_json as a JSON string so the tool writes output/params.json before the run. 
+* If the user asks for training/hyperparameter optimization of parameters, then 
+   1. make sure that the strategy implements `--hyperopt` flag. If it doesn't, then implement it with update_strategy call. 
+   2. use `python src/strategy.py --hyperopt` to train or optimize parameters.
 * Always respond in the user’s language.
-* rerun backtest after update_strategy to refresh output/data.json.
+* rerun backtest after each update_strategy run to refresh output/data.json.
 
 Notes
-* update_strategy generates strategy code and charts; it can also include hyperparameter optimization code.
+* update_strategy generates strategy code and charts.
 * Strategies can use Alpaca market data.
 * Backtesting is supported; live trading is not.
-* Today's date is {datetime.now().strftime("%Y-%m-%d")}.
+* Today's date is {(datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")}.
 
 {{strategy_help}}
 
@@ -39,8 +44,11 @@ Answer in plain text. No JSON or markup unless the user asks."""
 
 STRATEGIES_DIR = Path(__file__).resolve().parents[1] / "strategies"
 STRATEGY_AGENTS_TEMPLATE = STRATEGIES_DIR / "AGENTS.md"
+STRATEGY_CODE_TEMPLATE = STRATEGIES_DIR / "strategy.py"
 UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
 RUN_STRATEGY_TOOL_NAME = "run_strategy"
+UPDATE_STRATEGY_TOOL_MESSAGE_MAX_JSON = 1024
+RUN_STRATEGY_TOOL_MESSAGE_MAX_JSON = 4096
 ANALYSE_CODE_TOOL_NAME = "analyse_code"
 
 ProgressCallback = Callable[[str], None] | None
@@ -100,6 +108,11 @@ def ensure_strategy_workspace(thread_id: str) -> Path:
     dest_agents = workspace / "AGENTS.md"
     if not dest_agents.is_file() and STRATEGY_AGENTS_TEMPLATE.is_file():
         shutil.copy2(STRATEGY_AGENTS_TEMPLATE, dest_agents)
+    src_dir = workspace / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    dest_strategy = src_dir / "strategy.py"
+    if not dest_strategy.is_file() and STRATEGY_CODE_TEMPLATE.is_file():
+        shutil.copy2(STRATEGY_CODE_TEMPLATE, dest_strategy)
     return workspace
 
 
@@ -179,7 +192,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                 "Run a strategy command in this thread's workspace (no Codex, no code edits). "
                 "Use python src/strategy.py --backtest; optional parameters_json (a JSON string) is parsed and written to output/params.json before the command runs. "
                 "Override params with --params '<JSON object>' (merged over output/params.json) when needed. "
-                "Use python src/strategy.py --hyperopt when optimizing. "
+                "Use python src/strategy.py --hyperopt only when the user asked to optimize and the workspace strategy implements it. "
                 "Refreshes output/data.json on success."
             ),
             "parameters": {
@@ -230,6 +243,22 @@ def _tail(s: str, max_chars: int = 12_000) -> str:
     if len(s) <= max_chars:
         return s
     return s[-max_chars:]
+
+
+def _trim_tool_payload_streams(
+    payload: dict[str, Any],
+    max_json_len: int,
+    out_key: str,
+    err_key: str,
+) -> dict[str, Any]:
+    out = dict(payload)
+    if max_json_len <= 0:
+        out[out_key] = ""
+        out[err_key] = ""
+        return out
+    out[out_key] = _tail(str(out.get(out_key, "") or ""), max_json_len)
+    out[err_key] = _tail(str(out.get(err_key, "") or ""), max_json_len)
+    return out
 
 
 def _read_strategy_params_text(thread_id: str) -> str:
@@ -586,6 +615,11 @@ def build_agent_reply(
     thread_id: str,
     on_progress: ProgressCallback = None,
 ) -> dict[str, Any]:
+    t0 = time.perf_counter()
+
+    def _reply_duration_ms() -> int:
+        return int(round((time.perf_counter() - t0) * 1000))
+
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
 
     if not api_key:
@@ -595,6 +629,7 @@ def build_agent_reply(
                 "Set the key to enable live agent responses."
             ),
             "canvas": canvas_with_output(existing_canvas, thread_id),
+            "reply_duration_ms": _reply_duration_ms(),
         }
 
     workspace = strategy_root_for_thread(thread_id)
@@ -660,6 +695,7 @@ Current strategy pseudocode:
             return {
                 "message": content,
                 "canvas": canvas_with_output(existing_canvas, thread_id),
+                "reply_duration_ms": _reply_duration_ms(),
             }
         for tc in tool_calls:
             name, parsed_args, tid = _tool_call_parts(tc)
@@ -680,8 +716,23 @@ Current strategy pseudocode:
                         },
                     )
                     tool_payload = {"ok": False, "error": f"tool execution failed: {type(e).__name__}: {e}"}
+            limited = tool_payload
+            if name == UPDATE_STRATEGY_TOOL_NAME:
+                limited = _trim_tool_payload_streams(
+                    tool_payload,
+                    UPDATE_STRATEGY_TOOL_MESSAGE_MAX_JSON,
+                    "codex_stdout",
+                    "codex_stderr",
+                )
+            elif name == RUN_STRATEGY_TOOL_NAME:
+                limited = _trim_tool_payload_streams(
+                    tool_payload,
+                    RUN_STRATEGY_TOOL_MESSAGE_MAX_JSON,
+                    "backtest_stdout",
+                    "backtest_stderr",
+                )
             chat_messages.append(
-                ToolMessage(content=json.dumps(tool_payload), tool_call_id=tid)
+                ToolMessage(content=json.dumps(limited), tool_call_id=tid)
             )
 
     raise Exception("Agent stopped: maximum tool iterations reached without a final reply.")

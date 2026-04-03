@@ -9,4 +9,5 @@ __pycache__
 # Exclude per-thread strategy workspaces from Docker build context
 strategies/*
 !strategies/AGENTS.md
+!strategies/strategy.py
 

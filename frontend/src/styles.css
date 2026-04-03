@@ -705,6 +705,40 @@ li {
   color: var(--accent-strong);
 }
 
+.message-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.message-header-row > .message-role {
+  flex-shrink: 0;
+}
+
+.message-header-end {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.message-role-reply-time {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  line-height: 1.2;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
 .chat-stream {
   min-height: 0;
   overflow-y: auto;
@@ -742,16 +776,13 @@ li {
   background: transparent;
   color: var(--muted);
   padding: 2px;
-  margin-left: 10px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   vertical-align: middle;
   border-radius: 10px;
-  position: absolute;
-  top: 10px;
-  right: 12px;
+  flex-shrink: 0;
 }
 
 .message-revert-button svg {
@@ -777,10 +808,6 @@ li {
 .message-revert-button:focus-visible {
   outline: 2px solid rgba(13, 148, 136, 0.55);
   outline-offset: 3px;
-}
-
-.message-assistant {
-  padding-right: 46px;
 }
 
 .message-markdown {
@@ -955,8 +982,8 @@ li {
   background: rgba(13, 148, 136, 0.08);
 }
 
-.chat-processing .message-role {
-  display: block;
+.chat-processing .message-header-row {
+  width: 100%;
 }
 
 .chat-spinner-row {

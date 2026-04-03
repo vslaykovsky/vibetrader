@@ -35,7 +35,9 @@ function ChatProcessingSpinner({ label }) {
       aria-live="polite"
       aria-label="Agent is responding"
     >
-      <span className="message-role">Agent</span>
+      <div className="message-header-row">
+        <span className="message-role">Agent</span>
+      </div>
       <div className="chat-spinner-row">
         <span className="chat-spinner" aria-hidden />
         <span className="chat-processing-label">{text}</span>
@@ -88,6 +90,22 @@ function isoDateTodayKey() {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function formatReplyDurationMs(ms) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) {
+    return '';
+  }
+  if (ms < 1000) {
+    return `${Math.round(ms)}ms`;
+  }
+  const s = ms / 1000;
+  if (s < 60) {
+    return `${s < 10 ? s.toFixed(1) : Math.round(s)}s`;
+  }
+  const m = Math.floor(s / 60);
+  const rs = Math.round(s - m * 60);
+  return `${m}m ${rs}s`;
+}
+
 function MessageBubble({
   message,
   activeRunId,
@@ -100,6 +118,13 @@ function MessageBubble({
   const isAssistant = message.role === 'assistant';
   const hasRunId = isAssistant && message.run_id;
   const isActive = hasRunId && message.run_id === activeRunId;
+  const replyMs =
+    isAssistant &&
+    typeof message.reply_duration_ms === 'number' &&
+    Number.isFinite(message.reply_duration_ms) &&
+    message.reply_duration_ms >= 0
+      ? message.reply_duration_ms
+      : null;
   const handleClick = hasRunId
     ? () => {
         if (showViewStrategy) {
@@ -127,38 +152,53 @@ function MessageBubble({
           : undefined
       }
     >
-      <span className="message-role">{isAssistant ? 'Agent' : 'You'}</span>
-      {hasRunId ? (
-        <button
-          type="button"
-          className="message-revert-button"
-          disabled={Boolean(revertDisabled)}
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            onRevertRun?.(message.run_id);
-          }}
-          title="Revert thread to this point"
-          aria-label="Revert thread to this point"
-        >
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path
-              d="M8.5 12l-4.5-4.5L8.5 3"
-              stroke="currentColor"
-              strokeWidth="2.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            <path
-              d="M4 7.5h11.5c3.9 0 7 3.1 7 7s-3.1 7-7 7H12"
-              stroke="currentColor"
-              strokeWidth="2.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
-      ) : null}
+      <div className="message-header-row">
+        <span className="message-role">{isAssistant ? 'Agent' : 'You'}</span>
+        {replyMs != null || hasRunId ? (
+          <div className="message-header-end">
+            {replyMs != null ? (
+              <span
+                className="message-role-reply-time"
+                title={`${replyMs} ms`}
+                aria-label={`Reply took ${formatReplyDurationMs(replyMs)}`}
+              >
+                {formatReplyDurationMs(replyMs)}
+              </span>
+            ) : null}
+            {hasRunId ? (
+              <button
+                type="button"
+                className="message-revert-button"
+                disabled={Boolean(revertDisabled)}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onRevertRun?.(message.run_id);
+                }}
+                title="Revert thread to this point"
+                aria-label="Revert thread to this point"
+              >
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path
+                    d="M8.5 12l-4.5-4.5L8.5 3"
+                    stroke="currentColor"
+                    strokeWidth="2.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M4 7.5h11.5c3.9 0 7 3.1 7 7s-3.1 7-7 7H12"
+                    stroke="currentColor"
+                    strokeWidth="2.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
       {isAssistant ? (
         <div className="message-markdown">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || ''}</ReactMarkdown>
