@@ -17,6 +17,7 @@ from services.agent import (
     build_agent_reply,
     canvas_with_output,
     read_strategy_code,
+    redact_secret_json_values_for_user,
     restore_strategy_workspace_from_snapshot,
     thread_id_allowed,
 )
@@ -44,11 +45,12 @@ def _strategy_name_from_canvas(canvas: dict | None) -> str:
 
 
 def serialize_strategy(strategy: Strategy) -> dict:
-    canvas = dict(strategy.canvas or {})
+    canvas = redact_secret_json_values_for_user(dict(strategy.canvas or {}))
+    messages = redact_secret_json_values_for_user(list(strategy.messages or []))
     return {
         "id": strategy.id,
         "thread_id": strategy.thread_id,
-        "messages": strategy.messages or [],
+        "messages": messages,
         "canvas": canvas,
         "status": strategy.status,
         "status_text": strategy.status_text or "",

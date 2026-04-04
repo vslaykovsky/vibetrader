@@ -17,6 +17,7 @@ Optional: implement `--hyperopt` only when the user asks to train or optimize pa
 
 Use Alpaca market data api. Use python API: https://alpaca.markets/sdks/python/market_data.html#market-data
 Use environment variables to access Alpaca: ALPACA_API_KEY, ALPACA_SECRET_KEY
+Make sure remove broken bars with high-low > 30% * high
 
 ## Special files
 

@@ -381,7 +381,7 @@ def _run_codex_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
         "exec",
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
-        "--model", "gpt-5.4-mini",
+        # "--model", "gpt-5.4-mini",
         "-c", "service_tier=fast",
         "-c", "model_verbosity=low",
         "-c", "features.fast_mode=true",
@@ -478,7 +478,7 @@ def run_update_strategy(
         shutil.copy2(pseudocode, pseudocode_old)
 
     if on_progress:
-        on_progress("Updating strategy…")
+        on_progress("Updating strategy, this may take a few minutes…")
     runner, codegen = _run_coding_agent_exec(task, root)
 
     _generate_pseudocode_diff(root)
@@ -529,6 +529,48 @@ def _deep_merge_json_values(base: Any, overlay: Any) -> Any:
                 merged.append(_deep_merge_json_values(base[i], overlay[i]))
         return merged
     return overlay
+
+
+_REDACT_JSON_KEYS_FOR_USER = frozenset(
+    {
+        "openrouter_api_key",
+        "langsmith_api_key",
+        "openai_api_key",
+        "alpaca_secret_key",
+        "postgres_password",
+    }
+)
+
+
+def _is_secret_json_key(key: str) -> bool:
+    n = (key or "").strip().lower().replace("-", "_")
+    return n in _REDACT_JSON_KEYS_FOR_USER
+
+
+def redact_secret_json_values_for_user(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        out: dict[Any, Any] = {}
+        for k, v in obj.items():
+            ks = str(k) if k is not None else ""
+            if _is_secret_json_key(ks):
+                out[k] = ""
+            else:
+                out[k] = redact_secret_json_values_for_user(v)
+        return out
+    if isinstance(obj, list):
+        return [redact_secret_json_values_for_user(x) for x in obj]
+    if isinstance(obj, str):
+        stripped = obj.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            try:
+                parsed = json.loads(obj)
+            except json.JSONDecodeError:
+                return obj
+            if isinstance(parsed, (dict, list)):
+                redacted = redact_secret_json_values_for_user(parsed)
+                return json.dumps(redacted, indent=2, sort_keys=True)
+        return obj
+    return obj
 
 
 @traceable(name="run_rerun_backtest")
