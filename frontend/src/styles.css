@@ -71,13 +71,10 @@ textarea {
   background: rgba(255, 255, 255, 0.4);
 }
 
-.home-brand {
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 0.92rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--accent-strong);
-  font-weight: 700;
+.home-header-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .home-main {

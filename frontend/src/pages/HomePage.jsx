@@ -24,7 +24,12 @@ export function HomePage() {
     <div className="home">
       <div className="home-shell">
         <header className="home-header">
-          <span className="home-brand">TraderChat</span>
+          <div className="home-header-brand">
+            <span className="app-logo">TraderChat</span>
+            <span className="app-beta-badge" aria-label="Beta">
+              Beta
+            </span>
+          </div>
           {!loading && (
             user ? (
               <div className="auth-user-area">
