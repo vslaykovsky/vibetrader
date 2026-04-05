@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { randomUUID } from '../randomUUID.js';
+import { useAuth } from '../AuthContext';
 
 function createThreadId() {
   return randomUUID();
@@ -8,6 +9,7 @@ function createThreadId() {
 
 export function HomePage() {
   const navigate = useNavigate();
+  const { user, loading, signInWithGoogle, signOut } = useAuth();
   const examplePrompts = useMemo(
     () => [
       'Turn my manual strategy into rules I can backtest',
@@ -21,6 +23,26 @@ export function HomePage() {
   return (
     <div className="home">
       <div className="home-shell">
+        <header className="home-header">
+          <span className="home-brand">TraderChat</span>
+          {!loading && (
+            user ? (
+              <div className="auth-user-area">
+                {user.user_metadata?.avatar_url && (
+                  <img className="auth-avatar" src={user.user_metadata.avatar_url} alt="" />
+                )}
+                <span className="auth-name">{user.user_metadata?.full_name || user.email}</span>
+                <button type="button" className="auth-btn auth-btn-secondary" onClick={signOut}>
+                  Sign out
+                </button>
+              </div>
+            ) : (
+              <button type="button" className="auth-btn" onClick={signInWithGoogle}>
+                Sign in with Google
+              </button>
+            )
+          )}
+        </header>
         <main className="home-main">
           <section className="home-hero">
             <h1 className="home-title">An AI chat that builds a profitable trading strategy for you.</h1>
@@ -30,10 +52,17 @@ export function HomePage() {
             </p>
 
             <div className="home-actions">
-              <button className="home-cta" type="button" onClick={() => navigate(`/strategy/${createThreadId()}`)}>
-              <span role="img" aria-label="rocket" style={{ marginRight: '0.5em' }}>🚀</span>
-              Build your strategy <span role="img" aria-label="rocket" style={{ marginRight: '0.5em' }}>🚀</span>
-              </button>
+              {user ? (
+                <button className="home-cta" type="button" onClick={() => navigate(`/strategy/${createThreadId()}`)}>
+                  <span role="img" aria-label="rocket" style={{ marginRight: '0.5em' }}>🚀</span>
+                  Build your strategy <span role="img" aria-label="rocket" style={{ marginRight: '0.5em' }}>🚀</span>
+                </button>
+              ) : (
+                <button className="home-cta" type="button" onClick={signInWithGoogle}>
+                  <span role="img" aria-label="rocket" style={{ marginRight: '0.5em' }}>🚀</span>
+                  Sign in to get started <span role="img" aria-label="rocket" style={{ marginRight: '0.5em' }}>🚀</span>
+                </button>
+              )}
               <div className="home-badges" aria-label="Supported markets and features">
                 <span className="home-badge">Stocks</span>
                 <span className="home-badge">Crypto</span>
@@ -87,7 +116,7 @@ export function HomePage() {
               </div>
             </div>
             <div className="home-shot-note">
-              Add real images later (these placeholders won’t break builds if you haven’t added assets yet).
+              Add real images later (these placeholders won't break builds if you haven't added assets yet).
             </div>
           </section>
 
@@ -99,7 +128,13 @@ export function HomePage() {
                   <button
                     type="button"
                     className="home-prompt"
-                    onClick={() => navigate(`/strategy/${createThreadId()}`, { state: { draft: p } })}
+                    onClick={() => {
+                      if (user) {
+                        navigate(`/strategy/${createThreadId()}`, { state: { draft: p } });
+                      } else {
+                        signInWithGoogle();
+                      }
+                    }}
                   >
                     {p}
                   </button>
@@ -116,4 +151,3 @@ export function HomePage() {
     </div>
   );
 }
-

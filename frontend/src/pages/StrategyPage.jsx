@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { randomUUID } from '../randomUUID.js';
 import { loadStrategyChartsModule } from '../strategyChartsModule.js';
+import { useAuth } from '../AuthContext';
 
 function DiffView({ diff }) {
   const lines = (diff || '').split('\n');
@@ -352,6 +353,7 @@ function attachSyncedTimeScales(charts) {
 export function StrategyPage() {
   const { threadId } = useParams();
   const navigate = useNavigate();
+  const { user, signOut, getAccessToken } = useAuth();
   const [messages, setMessages] = useState([]);
   const [canvas, setCanvas] = useState({});
   const [draft, setDraft] = useState('');
@@ -382,6 +384,13 @@ export function StrategyPage() {
   const [isNarrow, setIsNarrow] = useState(false);
   const [mobileCanvasOpen, setMobileCanvasOpen] = useState(false);
 
+  const authFetch = useCallback(async (url, options = {}) => {
+    const token = await getAccessToken();
+    const headers = { ...options.headers };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetch(url, { ...options, headers });
+  }, [getAccessToken]);
+
   async function handleViewRun(runId) {
     if (runId === viewingRunId) {
       setViewingRunId(null);
@@ -389,7 +398,7 @@ export function StrategyPage() {
       return;
     }
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `${API_BASE_URL}/strategy?id=${encodeURIComponent(runId)}`,
       );
       if (!response.ok) throw new Error('Failed to load strategy run');
@@ -419,7 +428,7 @@ export function StrategyPage() {
     setReverting(true);
     setError('');
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `${API_BASE_URL}/threads/${encodeURIComponent(threadId)}/revert`,
         {
           method: 'POST',
@@ -432,7 +441,7 @@ export function StrategyPage() {
         throw new Error(payload.error || 'Failed to revert thread');
       }
 
-      const refreshed = await fetch(
+      const refreshed = await authFetch(
         `${API_BASE_URL}/strategy?thread_id=${encodeURIComponent(threadId)}`,
       );
       if (!refreshed.ok) {
@@ -454,7 +463,7 @@ export function StrategyPage() {
 
   async function refreshThreads(signal) {
     setThreadsError('');
-    const response = await fetch(`${API_BASE_URL}/threads`, signal ? { signal } : undefined);
+    const response = await authFetch(`${API_BASE_URL}/threads`, signal ? { signal } : undefined);
     if (!response.ok) {
       throw new Error(`Failed to load threads (${response.status})`);
     }
@@ -477,7 +486,7 @@ export function StrategyPage() {
     setDeletingThread(true);
     setError('');
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `${API_BASE_URL}/threads/${encodeURIComponent(threadId)}`,
         { method: 'DELETE' },
       );
@@ -517,7 +526,7 @@ export function StrategyPage() {
       try {
         setLoading(true);
         setError('');
-        const response = await fetch(
+        const response = await authFetch(
           `${API_BASE_URL}/strategy?thread_id=${encodeURIComponent(threadId)}`,
           { signal: controller.signal },
         );
@@ -588,37 +597,47 @@ export function StrategyPage() {
       return undefined;
     }
 
-    const evtSource = new EventSource(
-      `${API_BASE_URL}/strategy/stream?thread_id=${encodeURIComponent(threadId)}`,
-    );
+    let evtSource;
+    let cancelled = false;
 
-    evtSource.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        setMessages(payload.messages || []);
-        setCanvas(payload.canvas || {});
-        setServerJob({
-          status: payload.status ?? null,
-          statusText: payload.status_text || '',
-        });
-        if (payload.status !== 'running') {
-          setSubmitting(false);
-          evtSource.close();
+    (async () => {
+      const token = await getAccessToken();
+      if (cancelled) return;
+      const url = new URL(`${API_BASE_URL}/strategy/stream`, window.location.origin);
+      url.searchParams.set('thread_id', threadId);
+      if (token) url.searchParams.set('access_token', token);
+
+      evtSource = new EventSource(url.toString());
+
+      evtSource.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          setMessages(payload.messages || []);
+          setCanvas(payload.canvas || {});
+          setServerJob({
+            status: payload.status ?? null,
+            statusText: payload.status_text || '',
+          });
+          if (payload.status !== 'running') {
+            setSubmitting(false);
+            evtSource.close();
+          }
+        } catch {
+          /* ignore malformed events */
         }
-      } catch {
-        /* ignore malformed events */
-      }
-    };
+      };
 
-    evtSource.onerror = () => {
-      evtSource.close();
-      setSubmitting(false);
-    };
+      evtSource.onerror = () => {
+        evtSource.close();
+        setSubmitting(false);
+      };
+    })();
 
     return () => {
-      evtSource.close();
+      cancelled = true;
+      evtSource?.close();
     };
-  }, [threadId, serverJob.status]);
+  }, [threadId, serverJob.status, getAccessToken]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -709,7 +728,7 @@ export function StrategyPage() {
 
     let payload = {};
     try {
-      const response = await fetch(`${API_BASE_URL}/strategy`, {
+      const response = await authFetch(`${API_BASE_URL}/strategy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ thread_id: threadId, message }),
@@ -931,23 +950,35 @@ export function StrategyPage() {
                 </Link>
               </div>
             </div>
-            <button
-              type="button"
-              className="button-new-thread"
-              onClick={() => navigate(`/strategy/${randomUUID()}`)}
-              aria-label="New strategy"
-              title="New strategy"
-            >
-              <svg viewBox="0 0 24 24" fill="none" aria-hidden>
-                <path
-                  d="M12 5v14M5 12h14"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                />
-              </svg>
-              <span className="sr-only">New strategy</span>
-            </button>
+            <div className="chat-header-actions">
+              <button
+                type="button"
+                className="button-new-thread"
+                onClick={() => navigate(`/strategy/${randomUUID()}`)}
+                aria-label="New strategy"
+                title="New strategy"
+              >
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path
+                    d="M12 5v14M5 12h14"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                  />
+                </svg>
+                <span className="sr-only">New strategy</span>
+              </button>
+              {user && (
+                <div className="auth-user-area">
+                  {user.user_metadata?.avatar_url && (
+                    <img className="auth-avatar" src={user.user_metadata.avatar_url} alt="" />
+                  )}
+                  <button type="button" className="auth-btn auth-btn-secondary" onClick={signOut}>
+                    Sign out
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
