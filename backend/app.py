@@ -14,7 +14,7 @@ from flask_cors import CORS
 
 from api.routes import strategy_blueprint
 from db.models import Base
-from db.session import engine, ensure_strategy_columns
+from db.session import engine, ensure_strategy_columns, ensure_strategy_created_by_column
 import logging
 from logging.handlers import RotatingFileHandler
 import json
@@ -27,10 +27,19 @@ def create_app() -> Flask:
     app.config["OPENROUTER_MODEL"] = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
     app.config["REQUEST_ID_HEADER"] = os.getenv("REQUEST_ID_HEADER", "X-Request-Id")
 
-    CORS(app, resources={r"/*": {"origins": "*"}})
+    CORS(
+        app,
+        resources={
+            r"/*": {
+                "origins": "*",
+                "allow_headers": ["Authorization", "Content-Type", "X-Request-Id"],
+            }
+        },
+    )
 
     Base.metadata.create_all(bind=engine)
     ensure_strategy_columns(engine)
+    ensure_strategy_created_by_column(engine)
 
     app.register_blueprint(strategy_blueprint)
 

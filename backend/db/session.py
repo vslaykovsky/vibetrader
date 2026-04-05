@@ -102,3 +102,26 @@ def ensure_strategy_columns(eng: Engine) -> None:
             conn.execute(
                 text("ALTER TABLE strategy ADD COLUMN code TEXT NOT NULL DEFAULT ''")
             )
+
+
+def ensure_strategy_created_by_column(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    insp = inspect(eng)
+    if not insp.has_table("strategy"):
+        return
+    cols = {c["name"] for c in insp.get_columns("strategy")}
+    if "created_by" in cols:
+        return
+    added = False
+    with eng.begin() as conn:
+        if "user_id" in cols:
+            conn.execute(text("ALTER TABLE strategy RENAME COLUMN user_id TO created_by"))
+        else:
+            conn.execute(text("ALTER TABLE strategy ADD COLUMN created_by VARCHAR(255)"))
+            added = True
+    if added:
+        with eng.begin() as conn:
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_strategy_created_by ON strategy (created_by)")
+            )

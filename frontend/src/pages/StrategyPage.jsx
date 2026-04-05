@@ -354,6 +354,7 @@ export function StrategyPage() {
   const { threadId } = useParams();
   const navigate = useNavigate();
   const { user, signOut, getAccessToken } = useAuth();
+  const signedInUserId = user?.id ?? null;
   const [messages, setMessages] = useState([]);
   const [canvas, setCanvas] = useState({});
   const [draft, setDraft] = useState('');
@@ -510,6 +511,11 @@ export function StrategyPage() {
   }
 
   useEffect(() => {
+    if (!signedInUserId) {
+      setThreads([]);
+      setThreadsError('');
+      return undefined;
+    }
     const controller = new AbortController();
 
     async function loadThreads() {
@@ -552,7 +558,7 @@ export function StrategyPage() {
     loadThreads();
     loadThread();
     return () => controller.abort();
-  }, [threadId]);
+  }, [threadId, signedInUserId]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
@@ -576,7 +582,7 @@ export function StrategyPage() {
   }, []);
 
   useEffect(() => {
-    if (!sidebarOpen) {
+    if (!sidebarOpen || !signedInUserId) {
       return undefined;
     }
     const controller = new AbortController();
@@ -590,7 +596,7 @@ export function StrategyPage() {
       }
     })();
     return () => controller.abort();
-  }, [sidebarOpen]);
+  }, [sidebarOpen, signedInUserId]);
 
   useEffect(() => {
     if (serverJob.status !== 'running') {

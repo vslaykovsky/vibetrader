@@ -59,21 +59,21 @@ def serialize_strategy(strategy: Strategy) -> dict:
     }
 
 
-def _latest_strategy(session: Session, thread_id: str, user_id: str | None = None) -> Strategy | None:
+def _latest_strategy(session: Session, thread_id: str, created_by: str | None = None) -> Strategy | None:
     query = (
         session.query(Strategy)
         .filter_by(thread_id=thread_id)
         .order_by(desc(Strategy.created_at))
     )
-    if user_id:
-        query = query.filter(Strategy.user_id == user_id)
+    if created_by:
+        query = query.filter(Strategy.created_by == created_by)
     return query.first()
 
 
 @strategy_blueprint.get("/threads")
 @require_auth
 def list_threads() -> tuple:
-    user_id = g.user_id
+    uid = g.user_id
     session = SessionLocal()
     try:
         latest_per_thread = (
@@ -81,7 +81,7 @@ def list_threads() -> tuple:
                 Strategy.thread_id.label("thread_id"),
                 func.max(Strategy.created_at).label("latest_created_at"),
             )
-            .filter(Strategy.user_id == user_id)
+            .filter(Strategy.created_by == uid)
             .group_by(Strategy.thread_id)
             .subquery()
         )
@@ -92,7 +92,7 @@ def list_threads() -> tuple:
                 (Strategy.thread_id == latest_per_thread.c.thread_id)
                 & (Strategy.created_at == latest_per_thread.c.latest_created_at),
             )
-            .filter(Strategy.user_id == user_id)
+            .filter(Strategy.created_by == uid)
             .order_by(desc(Strategy.created_at))
             .all()
         )
@@ -134,7 +134,7 @@ def delete_thread(thread_id: str) -> tuple:
     try:
         deleted = (
             session.query(Strategy)
-            .filter_by(thread_id=thread_id, user_id=g.user_id)
+            .filter_by(thread_id=thread_id, created_by=g.user_id)
             .delete(synchronize_session=False)
         )
         session.commit()
@@ -160,14 +160,14 @@ def revert_thread(thread_id: str) -> tuple:
     session = SessionLocal()
     try:
         target = session.get(Strategy, run_id)
-        if target is None or target.thread_id != thread_id or target.user_id != g.user_id:
+        if target is None or target.thread_id != thread_id or target.created_by != g.user_id:
             return _validation_error("strategy not found")
         if target.created_at is None:
             return _validation_error("strategy has no created_at")
 
         deleted = (
             session.query(Strategy)
-            .filter(Strategy.thread_id == thread_id, Strategy.user_id == g.user_id, Strategy.created_at > target.created_at)
+            .filter(Strategy.thread_id == thread_id, Strategy.created_by == g.user_id, Strategy.created_at > target.created_at)
             .delete(synchronize_session=False)
         )
         session.commit()
@@ -267,10 +267,10 @@ def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str, model: str) ->
 
 
 @traceable(name="get_or_create_strategy")
-def get_or_create_strategy(session: Session, thread_id: str, user_id: str) -> Strategy:
-    latest = _latest_strategy(session, thread_id, user_id=user_id)
+def get_or_create_strategy(session: Session, thread_id: str, created_by: str) -> Strategy:
+    latest = _latest_strategy(session, thread_id, created_by=created_by)
     if latest is None:
-        latest = Strategy(thread_id=thread_id, user_id=user_id, messages=[], canvas={})
+        latest = Strategy(thread_id=thread_id, created_by=created_by, messages=[], canvas={})
         session.add(latest)
         session.flush()
     return latest
@@ -280,13 +280,13 @@ def get_or_create_strategy(session: Session, thread_id: str, user_id: str) -> St
 @require_auth
 @traceable(name="get_strategy")
 def get_strategy() -> tuple:
-    user_id = g.user_id
+    uid = g.user_id
     run_id = request.args.get("id", "").strip()
     if run_id:
         session = SessionLocal()
         try:
             strategy = session.get(Strategy, run_id)
-            if strategy is None or strategy.user_id != user_id:
+            if strategy is None or strategy.created_by != uid:
                 return _validation_error("strategy not found")
             return jsonify(serialize_strategy(strategy)), 200
         finally:
@@ -302,7 +302,7 @@ def get_strategy() -> tuple:
     try:
         workspace = Path(STRATEGIES_DIR) / thread_id
         needs_restore = not workspace.is_dir()
-        strategy = get_or_create_strategy(session, thread_id, user_id=user_id)
+        strategy = get_or_create_strategy(session, thread_id, created_by=uid)
         session.commit()
         if needs_restore:
             restore_strategy_workspace_from_snapshot(
@@ -319,7 +319,7 @@ def get_strategy() -> tuple:
 @require_auth
 @traceable(name="post_strategy")
 def post_strategy() -> tuple:
-    user_id = g.user_id
+    uid = g.user_id
     payload = request.get_json(silent=True) or {}
     thread_id = str(payload.get("thread_id", "")).strip()
     content = str(payload.get("message", "")).strip()
@@ -333,7 +333,7 @@ def post_strategy() -> tuple:
 
     session = SessionLocal()
     try:
-        latest = _latest_strategy(session, thread_id, user_id=user_id)
+        latest = _latest_strategy(session, thread_id, created_by=uid)
         if latest is not None and latest.status == "running":
             session.commit()
             out = serialize_strategy(latest)
@@ -347,7 +347,7 @@ def post_strategy() -> tuple:
 
         new_strategy = Strategy(
             thread_id=thread_id,
-            user_id=user_id,
+            created_by=uid,
             messages=messages,
             canvas=prev_canvas,
             code=prev_code or read_strategy_code(thread_id),
@@ -379,7 +379,7 @@ def strategy_stream():
     if not thread_id or not thread_id_allowed(thread_id):
         return _validation_error("invalid or missing thread_id")
 
-    user_id = g.user_id
+    uid = g.user_id
 
     def generate():
         last_snapshot = None
@@ -387,7 +387,7 @@ def strategy_stream():
         while True:
             session = SessionLocal()
             try:
-                strategy = _latest_strategy(session, thread_id, user_id=user_id)
+                strategy = _latest_strategy(session, thread_id, created_by=uid)
                 if strategy is None:
                     break
                 snapshot = json.dumps(serialize_strategy(strategy), sort_keys=True)

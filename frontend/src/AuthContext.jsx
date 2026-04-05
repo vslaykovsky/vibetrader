@@ -34,8 +34,20 @@ export function AuthProvider({ children }) {
   }
 
   async function getAccessToken() {
-    const { data: { session: s } } = await supabase.auth.getSession();
-    return s?.access_token ?? null;
+    const { data: { session }, error } = await supabase.auth.getSession();
+    if (error || !session) return null;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const refreshIfBefore = nowSec + 120;
+    if (session.expires_at != null && session.expires_at < refreshIfBefore) {
+      const { data, error: refErr } = await supabase.auth.refreshSession();
+      if (!refErr && data.session?.access_token) {
+        return data.session.access_token;
+      }
+      if (session.expires_at < nowSec) {
+        return null;
+      }
+    }
+    return session.access_token ?? null;
   }
 
   const value = {

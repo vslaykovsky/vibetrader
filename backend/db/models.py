@@ -24,7 +24,7 @@ class Strategy(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     thread_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    user_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     messages: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     canvas: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     code: Mapped[str] = mapped_column(Text, nullable=False, default="")
