@@ -37,7 +37,9 @@ Workflow
 
 Notes
 * update_strategy edits the workspace strategy code via the coding agent; layout, CLI modes, and how results are surfaced follow AGENTS.md in that workspace.
-* Strategies can use Alpaca market data.
+* Market data providers: use Alpaca for all non-Russian markets; use MOEX (moexalgo/Algopack) for Russian instruments/markets.
+* Auto provider selection is allowed and preferred when uncertain: try Alpaca first, then MOEX.
+* Do not use yfinance or ask the user to switch to yfinance.
 * Backtesting is supported; live trading is not.
 * Today's date is {(datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")}.
 

@@ -7,3 +7,4 @@ dist
 package-lock.json
 backend/strategies/*/
 !backend/strategies/*.*
+.leegheid.md

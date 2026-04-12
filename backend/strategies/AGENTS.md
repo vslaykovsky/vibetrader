@@ -8,7 +8,7 @@ Backtest strategies and emit JSON the frontend uses for charts and metrics.
 ## Layout
 
 - **`strategy.py`** — entry point; all authored strategy and backtest logic lives here.
-- **`utils.py`** — shared helpers (Alpaca, paths, JSON). Import only; never edit, replace, or delete.
+- **`utils.py`** — shared helpers (Alpaca, moexalgo algopack, paths, JSON). Import only; never edit, replace, or delete.
 - **No other `.py` files** in this folder (only `strategy.py` and `utils.py`).
 
 ## `strategy.py` CLI
@@ -28,10 +28,17 @@ Implementing **`--backtest`**, **`--eda`**, and **`--hyperopt`** is optional; sh
 ## Data
 
 - [Alpaca Market Data (Python)](https://alpaca.markets/sdks/python/market_data.html#market-data)
-- Credentials: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`
+  - Credentials: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`
+- [MOEX Market Data](https://moexalgo.github.io/docs/api) 
+  - Credentials: `MOEX_API_KEY` for Algopack access.
+- Provider choice rule:
+  - Use **Alpaca** for all markets except Russia.
+  - Use **MOEX** for Russian instruments/markets.
+  - Auto mode is allowed: try providers in this order **Alpaca -> MOEX**.
+- Keep the same OHLCV dataframe format from `utils.py` (`open`, `high`, `low`, `close`, `volume` with datetime index).
 - Drop bars where `(high - low) > 0.30 * high` (broken prints).
 - Make sure to use dotted versions of ticker symbols where applicable. E.g. for BRK-B use BRK.B when fetching data from Alpaca. 
-- Do NOT use yfinance. Only use Alpaca API to access market data. 
+- Do NOT use yfinance. Use only helpers from `utils.py` to access market data (Alpaca/MOEX).
 - Today's data is not available, use only past data for analysis and strategies. 
 
 ## `output/params.json`

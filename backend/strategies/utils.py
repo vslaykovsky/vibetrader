@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from dataclasses import dataclass
+from typing import Optional
 import pandas as pd
 
 from alpaca.data.enums import CryptoFeed
@@ -10,10 +11,15 @@ from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDa
 from alpaca.data.requests import CryptoBarsRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+from moexalgo import session as moex_session
+from moexalgo import Ticker
+
+
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = ROOT / "output"
 PARAMS_PATH = OUTPUT_DIR / "params.json"
 DATA_PATH = OUTPUT_DIR / "data.json"
+AVAILABLE_PROVIDERS = {"auto", "alpaca", "moex"}
 
 
 @dataclass
@@ -43,15 +49,33 @@ def save_json(path: Path, payload: dict) -> None:
         f.write("\n")
 
 
-def timeframe_from_string(value: str) -> TimeFrame:
+def normalize_timeframe(value: str) -> str:
     normalized = str(value).strip().lower()
     if normalized in {"1day", "day", "1d"}:
-        return TimeFrame.Day
+        return "1d"
     if normalized in {"1hour", "hour", "1h"}:
-        return TimeFrame.Hour
+        return "1h"
     if normalized in {"1min", "1minute", "minute", "1m"}:
-        return TimeFrame.Minute
+        return "1m"
     raise ValueError(f"Unsupported timeframe: {value}")
+
+
+def timeframe_from_string(value: str) -> TimeFrame:
+    normalized = normalize_timeframe(value)
+    if normalized == "1d":
+        return TimeFrame.Day
+    if normalized == "1h":
+        return TimeFrame.Hour
+    return TimeFrame.Minute
+
+
+def period_from_string(value: str) -> int:
+    normalized = normalize_timeframe(value)
+    if normalized == "1d":
+        return 24
+    if normalized == "1h":
+        return 60
+    return 1
 
 
 def normalize_crypto_symbol(ticker: str) -> str:
@@ -61,6 +85,14 @@ def normalize_crypto_symbol(ticker: str) -> str:
     if len(t) > 3 and t.endswith("USD"):
         return f"{t[:-3]}/USD"
     return t
+
+
+def normalize_provider(provider: str) -> str:
+    if provider in {"moexalgo", "algopack"}:
+        provider = "moex"
+    if provider not in AVAILABLE_PROVIDERS:
+        raise RuntimeError("MARKET_DATA_PROVIDER must be one of: auto, alpaca, moex")
+    return provider
 
 
 def _as_ohlcv_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -99,6 +131,18 @@ def _end_datetime_capped_yesterday(end_test_date: str) -> datetime:
     return end
 
 
+def _market_data_provider_name(provider: Optional[str]) -> str:
+    if provider is not None:
+        return normalize_provider(provider)
+    
+    raw = os.environ.get("MARKET_DATA_PROVIDER")
+    if not raw or not raw.strip():
+        return "auto"
+
+    provider = raw.strip().lower()
+    return normalize_provider(provider)
+
+
 def _alpaca_keys() -> tuple[str, str]:
     api_key = os.environ.get("ALPACA_API_KEY")
     secret_key = os.environ.get("ALPACA_SECRET_KEY")
@@ -107,7 +151,51 @@ def _alpaca_keys() -> tuple[str, str]:
     return api_key, secret_key
 
 
-def fetch_stock_bars(
+def _moex_keys() -> str:
+    api_key = (os.environ.get("MOEX_API_KEY") or "").strip()
+    if not api_key:
+        raise RuntimeError("MOEX_API_KEY must be set")
+    return api_key
+
+
+def _fetch_moex_bars(
+    ticker: str,
+    start_test_date: str,
+    end_test_date: str,
+    history_padding_days: int,
+    timeframe: str,
+) -> pd.DataFrame:
+    moex_session.TOKEN = _moex_keys()
+    period = period_from_string(timeframe)
+
+    start = datetime.fromisoformat(start_test_date) - timedelta(days=int(history_padding_days))
+    end = _end_datetime_capped_yesterday(end_test_date)
+    secid = ticker.strip().upper()
+
+    bars = Ticker(secid).candles(
+        start=start.date().isoformat(),
+        end=end.date().isoformat(),
+        period=period,
+    )
+    df = bars if isinstance(bars, pd.DataFrame) else pd.DataFrame(bars)
+    if df.empty:
+        raise RuntimeError("No market data returned from MOEX.")
+
+    required_cols = ("begin", "open", "high", "low", "close", "volume")
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise RuntimeError(f"MOEX candles response missing columns: {', '.join(missing)}")
+
+    shaped = df.copy()
+    shaped["begin"] = pd.to_datetime(shaped["begin"], errors="coerce")
+    for col in ("open", "high", "low", "close", "volume"):
+        shaped[col] = pd.to_numeric(shaped[col], errors="coerce")
+    shaped = shaped.dropna(subset=["begin", "open", "high", "low", "close", "volume"])
+    shaped = shaped.set_index("begin")
+    return _drop_wide_spread_bars(_as_ohlcv_dataframe(shaped))
+
+
+def _fetch_alpaca_bars(
     ticker: str,
     start_test_date: str,
     end_test_date: str,
@@ -134,6 +222,60 @@ def fetch_stock_bars(
     else:
         df = df.copy()
     return _drop_wide_spread_bars(_as_ohlcv_dataframe(df))
+
+
+def fetch_stock_bars(
+    ticker: str,
+    start_test_date: str,
+    end_test_date: str,
+    history_padding_days: int,
+    timeframe: str,
+    provider: Optional[str] = None,
+) -> pd.DataFrame:
+    provider = _market_data_provider_name(provider=provider)
+    if provider == "alpaca":
+        return _fetch_alpaca_bars(
+            ticker=ticker,
+            start_test_date=start_test_date,
+            end_test_date=end_test_date,
+            history_padding_days=history_padding_days,
+            timeframe=timeframe,
+        )
+    if provider == "moex":
+        return _fetch_moex_bars(
+            ticker=ticker,
+            start_test_date=start_test_date,
+            end_test_date=end_test_date,
+            history_padding_days=history_padding_days,
+            timeframe=timeframe,
+        )
+
+    # auto mode: try Alpaca first for global symbols; fallback to MOEX.
+    alpaca_exc: Exception | None = None
+    try:
+        return _fetch_alpaca_bars(
+            ticker=ticker,
+            start_test_date=start_test_date,
+            end_test_date=end_test_date,
+            history_padding_days=history_padding_days,
+            timeframe=timeframe,
+        )
+    except Exception as exc:
+        alpaca_exc = exc
+
+    try:
+        return _fetch_moex_bars(
+            ticker=ticker,
+            start_test_date=start_test_date,
+            end_test_date=end_test_date,
+            history_padding_days=history_padding_days,
+            timeframe=timeframe,
+        )
+    except Exception as moex_exc:
+        raise RuntimeError(
+            "Unable to fetch market data with auto provider selection. "
+            f"Alpaca error: {alpaca_exc}; MOEX error: {moex_exc}"
+        ) from moex_exc
 
 
 def fetch_crypto_bars(
