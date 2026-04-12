@@ -14,7 +14,12 @@ from flask_cors import CORS
 
 from api.routes import strategy_blueprint
 from db.models import Base
-from db.session import engine, ensure_strategy_columns, ensure_strategy_created_by_column
+from db.session import (
+    engine,
+    ensure_strategy_columns,
+    ensure_strategy_created_by_column,
+    ensure_strategy_created_by_email_column,
+)
 import logging
 from logging.handlers import RotatingFileHandler
 import json
@@ -40,6 +45,7 @@ def create_app() -> Flask:
     Base.metadata.create_all(bind=engine)
     ensure_strategy_columns(engine)
     ensure_strategy_created_by_column(engine)
+    ensure_strategy_created_by_email_column(engine)
 
     app.register_blueprint(strategy_blueprint)
 

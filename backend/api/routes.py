@@ -267,10 +267,18 @@ def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str, model: str) ->
 
 
 @traceable(name="get_or_create_strategy")
-def get_or_create_strategy(session: Session, thread_id: str, created_by: str) -> Strategy:
+def get_or_create_strategy(
+    session: Session, thread_id: str, created_by: str, created_by_email: str | None = None
+) -> Strategy:
     latest = _latest_strategy(session, thread_id, created_by=created_by)
     if latest is None:
-        latest = Strategy(thread_id=thread_id, created_by=created_by, messages=[], canvas={})
+        latest = Strategy(
+            thread_id=thread_id,
+            created_by=created_by,
+            created_by_email=created_by_email,
+            messages=[],
+            canvas={},
+        )
         session.add(latest)
         session.flush()
     return latest
@@ -302,7 +310,9 @@ def get_strategy() -> tuple:
     try:
         workspace = Path(STRATEGIES_DIR) / thread_id
         needs_restore = not workspace.is_dir()
-        strategy = get_or_create_strategy(session, thread_id, created_by=uid)
+        strategy = get_or_create_strategy(
+            session, thread_id, created_by=uid, created_by_email=getattr(g, "user_email", None)
+        )
         session.commit()
         if needs_restore:
             restore_strategy_workspace_from_snapshot(
@@ -348,6 +358,7 @@ def post_strategy() -> tuple:
         new_strategy = Strategy(
             thread_id=thread_id,
             created_by=uid,
+            created_by_email=getattr(g, "user_email", None),
             messages=messages,
             canvas=prev_canvas,
             code=prev_code or read_strategy_code(thread_id),

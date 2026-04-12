@@ -200,6 +200,12 @@ def require_auth(fn):
             return jsonify({"error": "Invalid token"}), 401
 
         g.user_id = payload.get("sub")
+        raw_email = payload.get("email")
+        if isinstance(raw_email, str):
+            e = raw_email.strip()
+            g.user_email = e or None
+        else:
+            g.user_email = None
         if not g.user_id:
             logger.warning(
                 "auth 401: missing_sub method=%s path=%s role=%r aud=%r diag=%s",
