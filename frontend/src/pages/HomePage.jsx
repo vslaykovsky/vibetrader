@@ -2,6 +2,8 @@ import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { randomUUID } from '../randomUUID.js';
 import { useAuth } from '../AuthContext';
+import { useTheme } from '../ThemeContext';
+import { ProfileMenu } from '../ProfileMenu';
 
 function createThreadId() {
   return randomUUID();
@@ -23,6 +25,7 @@ function scrollToId(id) {
 export function HomePage() {
   const navigate = useNavigate();
   const { user, loading, signInWithGoogle, signOut } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const examplePrompts = useMemo(
     () => [
       'Turn my manual strategy into rules I can backtest',
@@ -61,16 +64,22 @@ export function HomePage() {
             </button>
           </div>
           <div className="home-nav-auth">
+            <button
+              type="button"
+              className="theme-toggle"
+              onClick={toggleTheme}
+              aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+              title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
+            >
+              <span className="home-ms" aria-hidden>
+                {theme === 'light' ? 'dark_mode' : 'light_mode'}
+              </span>
+            </button>
             {!loading &&
               (user ? (
                 <div className="home-nav-user">
-                  {user.user_metadata?.avatar_url && (
-                    <img className="auth-avatar" src={user.user_metadata.avatar_url} alt="" />
-                  )}
+                  <ProfileMenu user={user} signOut={signOut} surface="home" />
                   <span className="auth-name">{user.user_metadata?.full_name || user.email}</span>
-                  <button type="button" className="home-btn home-btn-secondary" onClick={signOut}>
-                    Sign out
-                  </button>
                   <button type="button" className="home-btn home-btn-primary" onClick={goStrategy}>
                     Open app
                   </button>

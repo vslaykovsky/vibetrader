@@ -5,6 +5,8 @@ import remarkGfm from 'remark-gfm';
 import { randomUUID } from '../randomUUID.js';
 import { renderCharts } from '../strategyChartRenderer.js';
 import { useAuth } from '../AuthContext';
+import { useTheme } from '../ThemeContext';
+import { ProfileMenu } from '../ProfileMenu';
 
 function ChatProcessingSpinner({ label }) {
   const text =
@@ -316,6 +318,7 @@ export function StrategyPage() {
   const { threadId } = useParams();
   const navigate = useNavigate();
   const { user, signOut, getAccessToken } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const signedInUserId = user?.id ?? null;
   const [messages, setMessages] = useState([]);
   const [canvas, setCanvas] = useState({});
@@ -900,6 +903,17 @@ export function StrategyPage() {
             <div className="chat-header-actions">
               <button
                 type="button"
+                className="theme-toggle"
+                onClick={toggleTheme}
+                aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+                title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
+              >
+                <span className="home-ms" aria-hidden>
+                  {theme === 'light' ? 'dark_mode' : 'light_mode'}
+                </span>
+              </button>
+              <button
+                type="button"
                 className="button-new-thread"
                 onClick={() => navigate(`/strategy/${randomUUID()}`)}
                 aria-label="New strategy"
@@ -917,12 +931,7 @@ export function StrategyPage() {
               </button>
               {user && (
                 <div className="auth-user-area">
-                  {user.user_metadata?.avatar_url && (
-                    <img className="auth-avatar" src={user.user_metadata.avatar_url} alt="" />
-                  )}
-                  <button type="button" className="auth-btn auth-btn-secondary" onClick={signOut}>
-                    Sign out
-                  </button>
+                  <ProfileMenu user={user} signOut={signOut} />
                 </div>
               )}
             </div>
