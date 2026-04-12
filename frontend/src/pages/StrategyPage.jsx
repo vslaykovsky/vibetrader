@@ -3,28 +3,8 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { randomUUID } from '../randomUUID.js';
-import { loadStrategyChartsModule } from '../strategyChartsModule.js';
+import { renderCharts } from '../strategyChartRenderer.js';
 import { useAuth } from '../AuthContext';
-
-function DiffView({ diff }) {
-  const lines = (diff || '').split('\n');
-  return (
-    <pre className="canvas-pseudocode-diff">
-      {lines.map((line, i) => {
-        let cls = 'diff-ctx';
-        if (line.startsWith('+')) cls = 'diff-add';
-        else if (line.startsWith('-')) cls = 'diff-del';
-        else if (line.startsWith('@@')) cls = 'diff-hunk';
-        return (
-          <span key={i} className={cls}>
-            {line}
-            {'\n'}
-          </span>
-        );
-      })}
-    </pre>
-  );
-}
 
 function ChatProcessingSpinner({ label }) {
   const text =
@@ -230,17 +210,32 @@ function hasRenderableChartOutput(output) {
   if (!output || typeof output !== 'object') {
     return false;
   }
-  const chartsSource = output['charts.js'];
-  const chartData = output['data.json'];
+  let chartData = output['data.json'];
+  if (typeof chartData === 'string') {
+    try {
+      chartData = JSON.parse(chartData);
+    } catch {
+      return false;
+    }
+  }
   return (
-    typeof chartsSource === 'string' &&
-    chartsSource.trim().length > 0 &&
-    chartData != null
+    chartData != null &&
+    typeof chartData === 'object' &&
+    Array.isArray(chartData.charts) &&
+    chartData.charts.length > 0
   );
 }
 
-function hasNonEmptyOutputText(value) {
-  return typeof value === 'string' && value.trim().length > 0;
+function strategyCliDescriptionFromOutput(output) {
+  if (!output || typeof output !== 'object') {
+    return undefined;
+  }
+  const raw = output.strategy_cli_description;
+  if (typeof raw !== 'string') {
+    return undefined;
+  }
+  const t = raw.trim();
+  return t.length ? t : undefined;
 }
 
 function paramsJsonFromOutput(output) {
@@ -281,43 +276,10 @@ function strategyNameFromOutput(output) {
   if (typeof data !== 'object' || data === null) {
     return '';
   }
-  const name = data.strategy_name;
+  const name = data.strategy_name ?? data.params?.strategy_name;
   return typeof name === 'string' && name.trim() ? name.trim() : '';
 }
 
-function normalizeLightweightChartTimes(data) {
-  if (!data || typeof data !== 'object' || !data.chart_data || typeof data.chart_data !== 'object') {
-    return data;
-  }
-  const chartData = data.chart_data;
-  const keys = [
-    'candles',
-    'mean',
-    'upper_band',
-    'lower_band',
-    'equity_curve',
-    'zscore',
-    'trade_markers',
-  ];
-  const nextCd = { ...chartData };
-  for (const key of keys) {
-    const arr = chartData[key];
-    if (!Array.isArray(arr)) {
-      continue;
-    }
-    nextCd[key] = arr.map((row) => {
-      if (!row || typeof row !== 'object') {
-        return row;
-      }
-      const t = row.time;
-      if (typeof t === 'string' && t.includes('T')) {
-        return { ...row, time: t.slice(0, 10) };
-      }
-      return row;
-    });
-  }
-  return { ...data, chart_data: nextCd };
-}
 
 function attachSyncedTimeScales(charts) {
   if (charts.length < 2) {
@@ -662,7 +624,6 @@ export function StrategyPage() {
       }
       return undefined;
     }
-    const chartsSource = output['charts.js'];
     let chartData = output['data.json'];
     if (typeof chartData === 'string') {
       try {
@@ -673,46 +634,29 @@ export function StrategyPage() {
         return undefined;
       }
     }
-    if (typeof chartsSource !== 'string' || !chartsSource.trim()) {
-      mount.innerHTML = '';
-      return undefined;
-    }
     if (chartData === null || typeof chartData !== 'object') {
       mount.innerHTML = '';
       return undefined;
     }
-    chartData = normalizeLightweightChartTimes(chartData);
+    if (!Array.isArray(chartData.charts) || chartData.charts.length === 0) {
+      mount.innerHTML = '';
+      return undefined;
+    }
     mount.innerHTML = '';
     const root = document.createElement('div');
     root.className = 'strategy-charts-root';
     mount.appendChild(root);
 
-    let cancelled = false;
-    const stateRef = { detachTimeScaleSync: undefined, revokeModuleUrl: undefined };
-
-    (async () => {
-      try {
-        const mod = await loadStrategyChartsModule(chartsSource);
-        if (cancelled) {
-          mod.revokeModuleUrl();
-          return;
-        }
-        stateRef.revokeModuleUrl = mod.revokeModuleUrl;
-        await mod.render_charts(root, chartData);
-        stateRef.detachTimeScaleSync = attachSyncedTimeScales(mod.getCollectedCharts());
-      } catch (err) {
-        if (!cancelled) {
-          setChartError(err instanceof Error ? err.message : String(err));
-        }
-      }
-    })();
+    let detachSync;
+    try {
+      const { lwCharts } = renderCharts(root, chartData);
+      detachSync = attachSyncedTimeScales(lwCharts);
+    } catch (err) {
+      setChartError(err instanceof Error ? err.message : String(err));
+    }
 
     return () => {
-      cancelled = true;
-      stateRef.detachTimeScaleSync?.();
-      stateRef.revokeModuleUrl?.();
-      stateRef.detachTimeScaleSync = undefined;
-      stateRef.revokeModuleUrl = undefined;
+      detachSync?.();
       mount.innerHTML = '';
     };
   }, [displayOutput]);
@@ -831,17 +775,12 @@ export function StrategyPage() {
 
   const output = displayOutput;
   const strategyName = strategyNameFromOutput(output);
-  const summaryText = output && typeof output === 'object' ? output['summary.txt'] : undefined;
-  const pseudocodeText = output && typeof output === 'object' ? output['pseudocode.txt'] : undefined;
-  const pseudocodeDiff = output && typeof output === 'object' ? output['pseudocode.diff'] : undefined;
-  const showSummary = hasNonEmptyOutputText(summaryText);
-  const showPseudocode = hasNonEmptyOutputText(pseudocodeText);
-  const showPseudocodeDiff = hasNonEmptyOutputText(pseudocodeDiff);
+  const cliDescriptionText = strategyCliDescriptionFromOutput(output);
+  const showCliDescription = cliDescriptionText != null;
   const paramsJsonText = paramsJsonFromOutput(output);
   const showParamsPanel = paramsJsonText != null;
   const hasAnyCanvasData =
-    showSummary ||
-    showPseudocode ||
+    showCliDescription ||
     showParamsPanel ||
     hasRenderableChartOutput(output);
   const currentThreadMeta = useMemo(
@@ -1131,28 +1070,16 @@ export function StrategyPage() {
           </div>
           <h2 className="canvas-hero-title">{strategyName || 'Strategy'}</h2>
         </header>
-        {showSummary ? (
-          <article className="canvas-text-block" aria-label="Strategy summary">
-            <h3 className="canvas-text-block-title">Summary</h3>
-            <div className="canvas-text-block-body">{summaryText}</div>
+        {showCliDescription ? (
+          <article className="canvas-text-block" aria-label="Strategy description">
+            <h3 className="canvas-text-block-title">Description</h3>
+            <div className="canvas-text-block-body">{cliDescriptionText}</div>
           </article>
         ) : null}
         {showParamsPanel ? (
           <details className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details">
             <summary className="canvas-pseudocode-summary">Strategy parameters</summary>
             <pre className="canvas-pseudocode">{paramsJsonText}</pre>
-          </details>
-        ) : null}
-        {showPseudocode ? (
-          <details className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details">
-            <summary className="canvas-pseudocode-summary">Pseudocode</summary>
-            {showPseudocodeDiff ? (
-              <details className="canvas-pseudocode-diff-details" open>
-                <summary className="canvas-pseudocode-diff-summary">Changes</summary>
-                <DiffView diff={pseudocodeDiff} />
-              </details>
-            ) : null}
-            <pre className="canvas-pseudocode">{pseudocodeText}</pre>
           </details>
         ) : null}
         {chartError ? <p className="canvas-chart-error">{chartError}</p> : null}

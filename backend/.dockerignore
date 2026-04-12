@@ -11,4 +11,5 @@ strategies/*
 !strategies/AGENTS.md
 !strategies/CLAUDE.md
 !strategies/strategy.py
+!strategies/utils.py
 

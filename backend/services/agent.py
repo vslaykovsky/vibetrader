@@ -6,6 +6,7 @@ from langsmith import traceable
 import json
 import logging
 import os
+import re
 import shutil
 import shlex
 import subprocess
@@ -27,14 +28,15 @@ Workflow
 * Do not implement --hyperopt flag by default! Only implement it if the user asks for training/hyperparameter optimization of parameters.
 * To modify code call update_strategy with a brief task describing only the changes. Match the user’s language. 
 * If the user only tweaks existing parameters (different ticker, dates, thresholds, optimization parameters etc.), call run_strategy with `python src/strategy.py --backtest` instead of update_strategy; optionally pass parameters_json as a JSON string so the tool merges values into output/params.json before the run. 
+* If the user asks for exploratory data analysis, market research, or charts/metrics **without** defining a tradable strategy (no signals, no backtest of rules), use `update_strategy` to implement or extend `--eda`, then run `python src/strategy.py --eda` to refresh output/data.json. Do not use `--backtest` or `--hyperopt` for that intent unless they switch to strategy building or optimization.
 * If the user asks for training/hyperparameter optimization of parameters, then 
    1. make sure that the strategy implements `--hyperopt` flag. If it doesn't, then implement it with update_strategy call. 
    2. use `python src/strategy.py --hyperopt` to train or optimize parameters.
 * Always respond in the user’s language.
-* rerun backtest after each update_strategy run to refresh output/data.json.
+* After each update_strategy run, refresh output/data.json with the right command: `python src/strategy.py --backtest` for strategy changes, or `python src/strategy.py --eda` when the thread is analysis-only or the change is EDA-focused.
 
 Notes
-* update_strategy generates strategy code and charts.
+* update_strategy updates this thread’s strategy script and related outputs (backtest and/or EDA, depending on the task).
 * Strategies can use Alpaca market data.
 * Backtesting is supported; live trading is not.
 * Today's date is {(datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")}.
@@ -47,6 +49,11 @@ STRATEGIES_DIR = Path(__file__).resolve().parents[1] / "strategies"
 STRATEGY_AGENTS_TEMPLATE = STRATEGIES_DIR / "AGENTS.md"
 STRATEGY_CLAUDE_TEMPLATE = STRATEGIES_DIR / "CLAUDE.md"
 STRATEGY_CODE_TEMPLATE = STRATEGIES_DIR / "strategy.py"
+STRATEGY_UTILS_TEMPLATE = STRATEGIES_DIR / "utils.py"
+STRATEGY_CODE_AGENT_PREFIX = (
+    "The file src/utils.py is read-only platform-managed shared code: do not edit, replace, "
+    "or delete it. Implement all Python changes in src/strategy.py only"
+)
 UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
 RUN_STRATEGY_TOOL_NAME = "run_strategy"
 UPDATE_STRATEGY_TOOL_MESSAGE_MAX_JSON = 1024
@@ -104,6 +111,13 @@ def thread_id_allowed(thread_id: str) -> bool:
     return True
 
 
+def _chmod_readonly(path: Path) -> None:
+    try:
+        path.chmod(0o444)
+    except OSError:
+        logger.warning("could not set read-only mode on %s", path)
+
+
 def ensure_strategy_workspace(thread_id: str) -> Path:
     if not thread_id_allowed(thread_id):
         raise ValueError("invalid thread_id")
@@ -120,6 +134,11 @@ def ensure_strategy_workspace(thread_id: str) -> Path:
     dest_strategy = src_dir / "strategy.py"
     if not dest_strategy.is_file() and STRATEGY_CODE_TEMPLATE.is_file():
         shutil.copy2(STRATEGY_CODE_TEMPLATE, dest_strategy)
+    dest_utils = src_dir / "utils.py"
+    if not dest_utils.is_file() and STRATEGY_UTILS_TEMPLATE.is_file():
+        shutil.copy2(STRATEGY_UTILS_TEMPLATE, dest_utils)
+    if dest_utils.is_file():
+        _chmod_readonly(dest_utils)
     return workspace
 
 
@@ -176,8 +195,9 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": UPDATE_STRATEGY_TOOL_NAME,
             "description": (
-                "Change the trading strategy in this thread's strategies/<thread_id>/ folder using "
-                "the configured coding agent (Codex or Claude Code), then re-run the backtest to refresh output/data.json."
+                "Change the strategy script or exploratory analysis in this thread's strategies/<thread_id>/ folder using "
+                "the configured coding agent (Codex or Claude Code); afterwards run python src/strategy.py --backtest or --eda "
+                "as appropriate to refresh output/data.json."
             ),
             "parameters": {
                 "type": "object",
@@ -197,7 +217,8 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             "name": RUN_STRATEGY_TOOL_NAME,
             "description": (
                 "Run a strategy command in this thread's workspace (no coding agent, no code edits). "
-                "Use python src/strategy.py --backtest; optional parameters_json (a JSON string) is parsed and merged into output/params.json (recursive merge) before the command runs. "
+                "Use python src/strategy.py --backtest for strategy runs; use python src/strategy.py --eda for exploratory analysis-only workspaces or analysis reruns. "
+                "Optional parameters_json (a JSON string) is parsed and merged into output/params.json (recursive merge) before the command runs. "
                 "Override params with --params '<JSON object>' (merged over output/params.json) when needed. "
                 "Use python src/strategy.py --hyperopt only when the user asked to optimize and the workspace strategy implements it. "
                 "Refreshes output/data.json on success."
@@ -208,7 +229,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                     "command": {
                         "type": "string",
                         "description": (
-                            "Full shell command, e.g. python src/strategy.py --backtest or "
+                            "Full shell command, e.g. python src/strategy.py --backtest, python src/strategy.py --eda, or "
                             "python src/strategy.py --backtest --params '{\"ticker\":\"SPY\",\"fast_period\":12}'"
                         ),
                     },
@@ -334,11 +355,19 @@ def run_analyse_code(
 
 def _strategy_output_file_key(filename: str) -> str:
     lower = filename.lower()
-    if lower == "charts.js":
-        return "charts.js"
     if lower == "data.json":
         return "data.json"
     return filename
+
+
+_IGNORED_STRATEGY_OUTPUT_FILES = frozenset(
+    {
+        "summary.txt",
+        "pseudocode.txt",
+        "pseudocode.diff",
+        "pseudocode.old",
+    }
+)
 
 
 def _read_strategy_output_dir(thread_id: str) -> dict[str, Any]:
@@ -348,6 +377,8 @@ def _read_strategy_output_dir(thread_id: str) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for path in sorted(output_dir.iterdir()):
         if not path.is_file():
+            continue
+        if path.name.lower() in _IGNORED_STRATEGY_OUTPUT_FILES:
             continue
         key = _strategy_output_file_key(path.name)
         raw = path.read_text(encoding="utf-8", errors="replace")
@@ -369,6 +400,14 @@ def canvas_with_output(existing_canvas: dict[str, Any], thread_id: str) -> dict[
             existing_output = {}
         disk_output = _read_strategy_output_dir(thread_id)
         merged["output"] = {**existing_output, **disk_output} if disk_output else dict(existing_output)
+        workspace = strategy_root_for_thread(thread_id)
+        desc = _parse_argparse_help_description(_run_strategy_help_stdout(workspace))
+        out = merged["output"]
+        if isinstance(out, dict):
+            if desc:
+                out["strategy_cli_description"] = desc
+            else:
+                out.pop("strategy_cli_description", None)
     else:
         merged["output"] = {}
     return merged
@@ -416,7 +455,13 @@ def _run_strategy(
     return _run_logged_subprocess("strategy backtest", parts, str(cwd), timeout=timeout_s)
 
 
-def _strategy_script_help(workspace: Path) -> str:
+_ARGPARSE_SECTION_HEADER = re.compile(
+    r"^(optional arguments|options|positional arguments|arguments)\s*:\s*$",
+    re.IGNORECASE,
+)
+
+
+def _run_strategy_help_stdout(workspace: Path) -> str:
     script = workspace / "src" / "strategy.py"
     if not script.is_file():
         return ""
@@ -432,32 +477,38 @@ def _strategy_script_help(workspace: Path) -> str:
         return ""
     if proc.returncode != 0:
         return ""
-    return _tail((proc.stdout or "").strip())
+    return (proc.stdout or "").replace("\r\n", "\n").strip()
 
 
-def _generate_pseudocode_diff(root: Path) -> None:
-    pseudocode = root / "output" / "pseudocode.txt"
-    pseudocode_old = root / "output" / "pseudocode.old"
-    pseudocode_diff = root / "output" / "pseudocode.diff"
-    if not pseudocode_old.is_file():
-        pseudocode_diff.unlink(missing_ok=True)
-        return
-    try:
-        proc = subprocess.run(
-            ["diff", "-u", str(pseudocode_old), str(pseudocode)],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        diff_text = proc.stdout or ""
-        if diff_text.strip():
-            pseudocode_diff.write_text(diff_text, encoding="utf-8")
-        else:
-            pseudocode_diff.unlink(missing_ok=True)
-    except (OSError, subprocess.TimeoutExpired):
-        pseudocode_diff.unlink(missing_ok=True)
-    finally:
-        pseudocode_old.unlink(missing_ok=True)
+def _parse_argparse_help_description(help_text: str) -> str:
+    text = (help_text or "").replace("\r\n", "\n").strip()
+    if not text:
+        return ""
+    lines = text.splitlines()
+    i = 0
+    n = len(lines)
+    while i < n and not lines[i].strip():
+        i += 1
+    if i >= n:
+        return ""
+    if lines[i].lower().startswith("usage:"):
+        i += 1
+        while i < n and (not lines[i].strip() or lines[i][:1] in (" ", "\t")):
+            i += 1
+    while i < n and not lines[i].strip():
+        i += 1
+    desc_lines: list[str] = []
+    while i < n:
+        stripped = lines[i].strip()
+        if _ARGPARSE_SECTION_HEADER.match(stripped):
+            break
+        desc_lines.append(lines[i])
+        i += 1
+    return "\n".join(desc_lines).strip()
+
+
+def _strategy_script_help(workspace: Path) -> str:
+    return _tail(_run_strategy_help_stdout(workspace))
 
 
 @traceable(name="run_update_strategy")
@@ -472,16 +523,9 @@ def run_update_strategy(
     root = ensure_strategy_workspace(thread_id)
     ticker = (os.getenv("STRATEGY_BACKTEST_TICKER") or "SPY").strip() or "SPY"
 
-    pseudocode = root / "output" / "pseudocode.txt"
-    pseudocode_old = root / "output" / "pseudocode.old"
-    if pseudocode.is_file():
-        shutil.copy2(pseudocode, pseudocode_old)
-
     if on_progress:
         on_progress("Updating strategy, this may take a few minutes…")
-    runner, codegen = _run_coding_agent_exec(task, root)
-
-    _generate_pseudocode_diff(root)
+    runner, codegen = _run_coding_agent_exec(STRATEGY_CODE_AGENT_PREFIX + task, root)
 
     result: dict[str, Any] = {
         "runner": runner,
@@ -746,19 +790,12 @@ def build_agent_reply(
         if params_path.is_file():
             with open(params_path, "r", encoding="utf-8") as f:
                 strategy_parameters = f.read()
-        pseudocode = workspace / "output" / "pseudocode.txt"
-        if pseudocode.is_file():
-            with open(pseudocode, "r", encoding="utf-8") as f:
-                pseudocode = f.read()
         strategy_help = f"""Help message of the current strategy script:
 python src/strategy.py --help
 {strategy_help}
 
 Current strategy parameters (can be overridden with --params JSON argument):
 {strategy_parameters}
-
-Current strategy pseudocode:
-{pseudocode}
 """
     else:
         strategy_help = "Note that script src/strategy.py hasn't been generated yet. Need to run update_strategy first."
