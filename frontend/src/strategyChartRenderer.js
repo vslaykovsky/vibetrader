@@ -111,6 +111,59 @@ function renderPlotlyChart(container, chartSpec) {
   Plotly.newPlot(el, chartSpec.data || [], layout, PLOTLY_CONFIG);
 }
 
+function renderTablePanel(container, table) {
+  if (!Array.isArray(table) || table.length === 0) return;
+  const first = table[0];
+  if (!first || typeof first !== 'object') return;
+  const columns = Object.keys(first);
+  if (columns.length === 0) return;
+
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'padding:14px 4px 4px;overflow-x:auto;';
+
+  const tbl = document.createElement('table');
+  tbl.style.cssText =
+    'width:100%;border-collapse:collapse;font-size:13px;color:#d1d4dc;background:#1e2130;border-radius:6px;';
+
+  const thead = document.createElement('thead');
+  const hr = document.createElement('tr');
+  for (const col of columns) {
+    const th = document.createElement('th');
+    th.textContent = col.replace(/_/g, ' ');
+    th.style.cssText =
+      'text-align:left;padding:10px 12px;border-bottom:1px solid #363a45;color:#888;font-weight:600;text-transform:capitalize;';
+    hr.appendChild(th);
+  }
+  thead.appendChild(hr);
+  tbl.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  for (const row of table) {
+    const tr = document.createElement('tr');
+    tr.style.cssText = 'border-bottom:1px solid #2a2e39;';
+    for (const col of columns) {
+      const td = document.createElement('td');
+      const v = row[col];
+      if (v === null || v === undefined) {
+        td.textContent = '';
+      } else if (typeof v === 'number' && Number.isFinite(v)) {
+        td.textContent = Number.isInteger(v)
+          ? String(v)
+          : v.toLocaleString('en-US', { maximumFractionDigits: 6 });
+      } else {
+        td.textContent = String(v);
+      }
+      td.style.cssText = 'padding:8px 12px;';
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+
+  wrap.appendChild(tbl);
+  container.appendChild(wrap);
+}
+
 function renderMetricsPanel(container, metrics) {
   if (!metrics || typeof metrics !== 'object') return;
 
@@ -154,20 +207,20 @@ function renderMetricsPanel(container, metrics) {
 export function renderCharts(container, dataJson) {
   container.innerHTML = '';
 
-  const charts = dataJson?.charts;
-  if (!Array.isArray(charts) || charts.length === 0) return { lwCharts: [] };
-
   const lwCharts = [];
-
-  for (const spec of charts) {
-    if (spec.type === 'lightweight-charts') {
-      const chart = renderLightweightChart(container, spec);
-      lwCharts.push(chart);
-    } else if (spec.type === 'plotly') {
-      renderPlotlyChart(container, spec);
+  const charts = dataJson?.charts;
+  if (Array.isArray(charts)) {
+    for (const spec of charts) {
+      if (spec.type === 'lightweight-charts') {
+        const chart = renderLightweightChart(container, spec);
+        lwCharts.push(chart);
+      } else if (spec.type === 'plotly') {
+        renderPlotlyChart(container, spec);
+      }
     }
   }
 
+  renderTablePanel(container, dataJson?.table);
   renderMetricsPanel(container, dataJson?.metrics);
 
   return { lwCharts };

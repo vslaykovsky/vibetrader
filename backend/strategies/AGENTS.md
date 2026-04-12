@@ -47,7 +47,7 @@ Top-level **`charts`** array. The frontend renders each item with **lightweight-
 Each chart object:
 
 - **`type`**: `"lightweight-charts"` or `"plotly"`
-- **`title`**: match the user’s prompt language
+- **`title`** - has title
 
 #### lightweight-charts
 
@@ -100,7 +100,8 @@ Distributions, scatter, bars, tables, heatmaps, etc.
 - Shared time axis across lightweight-charts so scroll/zoom stays in sync.
 - Equity curves: include buy-and-hold benchmark on the same chart.
 - Signals: use `markers` on the right series.
-- No `output/charts.js`; titles and labels in the prompt language; readable contrast; every series/bar/line clearly labeled.
+- readable contrast; 
+- every series/bar/line clearly labeled.
 
 ### Other top-level fields
 

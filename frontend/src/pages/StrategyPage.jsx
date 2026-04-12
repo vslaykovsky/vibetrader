@@ -218,12 +218,12 @@ function hasRenderableChartOutput(output) {
       return false;
     }
   }
-  return (
-    chartData != null &&
-    typeof chartData === 'object' &&
-    Array.isArray(chartData.charts) &&
-    chartData.charts.length > 0
-  );
+  if (chartData == null || typeof chartData !== 'object') {
+    return false;
+  }
+  const hasCharts = Array.isArray(chartData.charts) && chartData.charts.length > 0;
+  const hasTable = Array.isArray(chartData.table) && chartData.table.length > 0;
+  return hasCharts || hasTable;
 }
 
 function strategyCliDescriptionFromOutput(output) {
@@ -638,7 +638,9 @@ export function StrategyPage() {
       mount.innerHTML = '';
       return undefined;
     }
-    if (!Array.isArray(chartData.charts) || chartData.charts.length === 0) {
+    const hasCharts = Array.isArray(chartData.charts) && chartData.charts.length > 0;
+    const hasTable = Array.isArray(chartData.table) && chartData.table.length > 0;
+    if (!hasCharts && !hasTable) {
       mount.innerHTML = '';
       return undefined;
     }
@@ -1084,7 +1086,9 @@ export function StrategyPage() {
         ) : null}
         {chartError ? <p className="canvas-chart-error">{chartError}</p> : null}
         {!hasRenderableChartOutput(output) && !chartError ? (
-          <p className="canvas-charts-placeholder muted">No chart data yet. Send a message to refresh the strategy run.</p>
+          <p className="canvas-charts-placeholder muted">
+            No charts or table yet. Send a message to refresh the strategy run.
+          </p>
         ) : null}
         <div
           ref={chartsMountRef}
