@@ -27,13 +27,13 @@ Workflow
 * Before the first update_strategy, request any missing details needed to build the strategy (e.g., ticker, candlestick period, time range, stop loss, take profit, other parameters). 
 * Do not implement --hyperopt flag by default! Only implement it if the user asks for training/hyperparameter optimization of parameters.
 * To modify code call update_strategy with a brief task describing only the changes. Match the user’s language. 
-* If the user only tweaks existing parameters (different ticker, dates, thresholds, optimization parameters etc.), call run_strategy with `python src/strategy.py --backtest` instead of update_strategy; optionally pass parameters_json as a JSON string so the tool merges values into output/params.json before the run. 
-* If the user asks for exploratory data analysis, market research, or charts/metrics **without** defining a tradable strategy (no signals, no backtest of rules), use `update_strategy` to implement or extend `--eda`, then run `python src/strategy.py --eda` to refresh output/data.json. Do not use `--backtest` or `--hyperopt` for that intent unless they switch to strategy building or optimization.
+* If the user only tweaks existing parameters (different ticker, dates, thresholds, optimization parameters etc.), call run_strategy with `python strategy.py --backtest` instead of update_strategy; optionally pass parameters_json as a JSON string so the tool merges values into output/params.json before the run. 
+* If the user asks for exploratory data analysis, market research, or charts/metrics **without** defining a tradable strategy (no signals, no backtest of rules), use `update_strategy` to implement or extend `--eda`, then run `python strategy.py --eda` to refresh output/data.json. Do not use `--backtest` or `--hyperopt` for that intent unless they switch to strategy building or optimization.
 * If the user asks for training/hyperparameter optimization of parameters, then 
    1. make sure that the strategy implements `--hyperopt` flag. If it doesn't, then implement it with update_strategy call. 
-   2. use `python src/strategy.py --hyperopt` to train or optimize parameters.
+   2. use `python strategy.py --hyperopt` to train or optimize parameters.
 * Always respond in the user’s language.
-* After each update_strategy run, refresh output/data.json with the right command: `python src/strategy.py --backtest` for strategy changes, or `python src/strategy.py --eda` when the thread is analysis-only or the change is EDA-focused.
+* After each update_strategy run, refresh output/data.json with the right command: `python strategy.py --backtest` for strategy changes, or `python strategy.py --eda` when the thread is analysis-only or the change is EDA-focused.
 
 Notes
 * update_strategy updates this thread’s strategy script and related outputs (backtest and/or EDA, depending on the task).
@@ -51,8 +51,8 @@ STRATEGY_CLAUDE_TEMPLATE = STRATEGIES_DIR / "CLAUDE.md"
 STRATEGY_CODE_TEMPLATE = STRATEGIES_DIR / "strategy.py"
 STRATEGY_UTILS_TEMPLATE = STRATEGIES_DIR / "utils.py"
 STRATEGY_CODE_AGENT_PREFIX = (
-    "The file src/utils.py is read-only platform-managed shared code: do not edit, replace, "
-    "or delete it. Implement all Python changes in src/strategy.py only"
+    "The file utils.py is read-only platform-managed shared code: do not edit, replace, "
+    "or delete it. Implement all Python changes in strategy.py only"
 )
 UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
 RUN_STRATEGY_TOOL_NAME = "run_strategy"
@@ -129,14 +129,20 @@ def ensure_strategy_workspace(thread_id: str) -> Path:
     dest_claude = workspace / "CLAUDE.md"
     if not dest_claude.is_file() and STRATEGY_CLAUDE_TEMPLATE.is_file():
         shutil.copy2(STRATEGY_CLAUDE_TEMPLATE, dest_claude)
-    src_dir = workspace / "src"
-    src_dir.mkdir(parents=True, exist_ok=True)
-    dest_strategy = src_dir / "strategy.py"
-    if not dest_strategy.is_file() and STRATEGY_CODE_TEMPLATE.is_file():
-        shutil.copy2(STRATEGY_CODE_TEMPLATE, dest_strategy)
-    dest_utils = src_dir / "utils.py"
-    if not dest_utils.is_file() and STRATEGY_UTILS_TEMPLATE.is_file():
-        shutil.copy2(STRATEGY_UTILS_TEMPLATE, dest_utils)
+    dest_strategy = workspace / "strategy.py"
+    legacy_strategy = workspace / "src" / "strategy.py"
+    if not dest_strategy.is_file():
+        if legacy_strategy.is_file():
+            shutil.copy2(legacy_strategy, dest_strategy)
+        elif STRATEGY_CODE_TEMPLATE.is_file():
+            shutil.copy2(STRATEGY_CODE_TEMPLATE, dest_strategy)
+    dest_utils = workspace / "utils.py"
+    legacy_utils = workspace / "src" / "utils.py"
+    if not dest_utils.is_file():
+        if legacy_utils.is_file():
+            shutil.copy2(legacy_utils, dest_utils)
+        elif STRATEGY_UTILS_TEMPLATE.is_file():
+            shutil.copy2(STRATEGY_UTILS_TEMPLATE, dest_utils)
     if dest_utils.is_file():
         _chmod_readonly(dest_utils)
     return workspace
@@ -148,7 +154,9 @@ def strategy_root_for_thread(thread_id: str) -> Path:
 
 def read_strategy_code(thread_id: str) -> str:
     root = ensure_strategy_workspace(thread_id)
-    path = root / "src" / "strategy.py"
+    path = root / "strategy.py"
+    if not path.is_file():
+        path = root / "src" / "strategy.py"
     if not path.is_file():
         return ""
     return path.read_text(encoding="utf-8", errors="replace")
@@ -162,9 +170,7 @@ def restore_strategy_workspace_from_snapshot(
 ) -> None:
     root = ensure_strategy_workspace(thread_id)
 
-    src_dir = root / "src"
-    src_dir.mkdir(parents=True, exist_ok=True)
-    (src_dir / "strategy.py").write_text(code or "", encoding="utf-8")
+    (root / "strategy.py").write_text(code or "", encoding="utf-8")
 
     output_dir = root / "output"
     shutil.rmtree(output_dir, ignore_errors=True)
@@ -196,7 +202,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             "name": UPDATE_STRATEGY_TOOL_NAME,
             "description": (
                 "Change the strategy script or exploratory analysis in this thread's strategies/<thread_id>/ folder using "
-                "the configured coding agent (Codex or Claude Code); afterwards run python src/strategy.py --backtest or --eda "
+                "the configured coding agent (Codex or Claude Code); afterwards run python strategy.py --backtest or --eda "
                 "as appropriate to refresh output/data.json."
             ),
             "parameters": {
@@ -217,10 +223,10 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             "name": RUN_STRATEGY_TOOL_NAME,
             "description": (
                 "Run a strategy command in this thread's workspace (no coding agent, no code edits). "
-                "Use python src/strategy.py --backtest for strategy runs; use python src/strategy.py --eda for exploratory analysis-only workspaces or analysis reruns. "
+                "Use python strategy.py --backtest for strategy runs; use python strategy.py --eda for exploratory analysis-only workspaces or analysis reruns. "
                 "Optional parameters_json (a JSON string) is parsed and merged into output/params.json (recursive merge) before the command runs. "
                 "Override params with --params '<JSON object>' (merged over output/params.json) when needed. "
-                "Use python src/strategy.py --hyperopt only when the user asked to optimize and the workspace strategy implements it. "
+                "Use python strategy.py --hyperopt only when the user asked to optimize and the workspace strategy implements it. "
                 "Refreshes output/data.json on success."
             ),
             "parameters": {
@@ -229,8 +235,8 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                     "command": {
                         "type": "string",
                         "description": (
-                            "Full shell command, e.g. python src/strategy.py --backtest, python src/strategy.py --eda, or "
-                            "python src/strategy.py --backtest --params '{\"ticker\":\"SPY\",\"fast_period\":12}'"
+                            "Full shell command, e.g. python strategy.py --backtest, python strategy.py --eda, or "
+                            "python strategy.py --backtest --params '{\"ticker\":\"SPY\",\"fast_period\":12}'"
                         ),
                     },
                     "parameters_json": {
@@ -462,12 +468,16 @@ _ARGPARSE_SECTION_HEADER = re.compile(
 
 
 def _run_strategy_help_stdout(workspace: Path) -> str:
-    script = workspace / "src" / "strategy.py"
-    if not script.is_file():
+    rel: str | None = None
+    if (workspace / "strategy.py").is_file():
+        rel = "strategy.py"
+    elif (workspace / "src" / "strategy.py").is_file():
+        rel = "src/strategy.py"
+    if not rel:
         return ""
     try:
         proc = subprocess.run(
-            [sys.executable, "src/strategy.py", "--help"],
+            [sys.executable, rel, "--help"],
             cwd=str(workspace),
             capture_output=True,
             text=True,
@@ -791,14 +801,14 @@ def build_agent_reply(
             with open(params_path, "r", encoding="utf-8") as f:
                 strategy_parameters = f.read()
         strategy_help = f"""Help message of the current strategy script:
-python src/strategy.py --help
+python strategy.py --help
 {strategy_help}
 
 Current strategy parameters (can be overridden with --params JSON argument):
 {strategy_parameters}
 """
     else:
-        strategy_help = "Note that script src/strategy.py hasn't been generated yet. Need to run update_strategy first."
+        strategy_help = "Note that script strategy.py hasn't been generated yet. Need to run update_strategy first."
     chat_messages: list[BaseMessage] = [
         SystemMessage(content=SYSTEM_PROMPT.format(strategy_help=strategy_help)),
         *_stored_messages_to_lc(messages),
