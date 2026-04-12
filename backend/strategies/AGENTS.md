@@ -31,6 +31,7 @@ Implementing **`--backtest`**, **`--eda`**, and **`--hyperopt`** is optional; sh
 - Credentials: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`
 - Drop bars where `(high - low) > 0.30 * high` (broken prints).
 - Make sure to use dotted versions of ticker symbols where applicable. E.g. for BRK-B use BRK.B when fetching data from Alpaca. 
+- Do NOT use yfinance. Only use Alpaca API to access market data. 
 
 ## `output/params.json`
 

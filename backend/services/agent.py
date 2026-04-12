@@ -210,7 +210,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                 "properties": {
                     "task": {
                         "type": "string",
-                        "description": "Free-form instructions describing what to implement or change.",
+                        "description": "Brief: only what to implement or change.",
                     }
                 },
                 "required": ["task"],
