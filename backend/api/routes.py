@@ -205,7 +205,8 @@ def _validation_error(message: str) -> tuple:
     )
 
 
-def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str, model: str) -> None:
+@traceable(name="post_strategy")
+def _execute_strategy_agent_job(run_id: str, thread_id: str, model: str) -> None:
     def persist_status_text(text: str) -> None:
         t = (text or "")[:512]
         s = SessionLocal()
@@ -218,52 +219,56 @@ def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str, model: str) ->
         finally:
             s.close()
 
-    with app_obj.app_context():
-        session = SessionLocal()
+    session = SessionLocal()
+    try:
+        strategy = session.get(Strategy, run_id)
+        if strategy is None:
+            return
+        messages = list(strategy.messages or [])
+        canvas = dict(strategy.canvas or {})
         try:
-            strategy = session.get(Strategy, run_id)
-            if strategy is None:
-                return
-            messages = list(strategy.messages or [])
-            canvas = dict(strategy.canvas or {})
-            try:
-                logger.info(
-                    "agent job started",
-                    extra={"thread_id": thread_id, "run_id": run_id, "model": model},
-                )
-                agent_result = build_agent_reply(
-                    model=model,
-                    messages=messages,
-                    existing_canvas=canvas,
-                    thread_id=thread_id,
-                    on_progress=persist_status_text,
-                )
-                assistant_entry: dict = {
-                    "role": "assistant",
-                    "content": agent_result["message"],
-                    "run_id": run_id,
-                }
-                rd = agent_result.get("reply_duration_ms")
-                if isinstance(rd, int) and rd >= 0:
-                    assistant_entry["reply_duration_ms"] = rd
-                messages.append(assistant_entry)
-                strategy.messages = messages
-                strategy.canvas = canvas_with_output(dict(agent_result["canvas"] or {}), thread_id)
-                strategy.code = read_strategy_code(thread_id)
-                strategy.status = "success"
-                strategy.status_text = ""
-            except Exception as exc:
-                logger.exception(
-                    "agent job failed",
-                    extra={"thread_id": thread_id, "run_id": run_id, "model": model},
-                )
-                strategy.status = "failure"
-                strategy.status_text = str(exc)[:512]
-                strategy.code = read_strategy_code(thread_id)
-            session.add(strategy)
-            session.commit()
-        finally:
-            session.close()
+            logger.info(
+                "agent job started",
+                extra={"thread_id": thread_id, "run_id": run_id, "model": model},
+            )
+            agent_result = build_agent_reply(
+                model=model,
+                messages=messages,
+                existing_canvas=canvas,
+                thread_id=thread_id,
+                on_progress=persist_status_text,
+            )
+            assistant_entry: dict = {
+                "role": "assistant",
+                "content": agent_result["message"],
+                "run_id": run_id,
+            }
+            rd = agent_result.get("reply_duration_ms")
+            if isinstance(rd, int) and rd >= 0:
+                assistant_entry["reply_duration_ms"] = rd
+            messages.append(assistant_entry)
+            strategy.messages = messages
+            strategy.canvas = canvas_with_output(dict(agent_result["canvas"] or {}), thread_id)
+            strategy.code = read_strategy_code(thread_id)
+            strategy.status = "success"
+            strategy.status_text = ""
+        except Exception as exc:
+            logger.exception(
+                "agent job failed",
+                extra={"thread_id": thread_id, "run_id": run_id, "model": model},
+            )
+            strategy.status = "failure"
+            strategy.status_text = str(exc)[:512]
+            strategy.code = read_strategy_code(thread_id)
+        session.add(strategy)
+        session.commit()
+    finally:
+        session.close()
+
+
+def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str, model: str) -> None:
+    with app_obj.app_context():
+        _execute_strategy_agent_job(run_id, thread_id, model)
 
 
 @traceable(name="get_or_create_strategy")
@@ -327,7 +332,6 @@ def get_strategy() -> tuple:
 
 @strategy_blueprint.post("/strategy")
 @require_auth
-@traceable(name="post_strategy")
 def post_strategy() -> tuple:
     uid = g.user_id
     payload = request.get_json(silent=True) or {}
