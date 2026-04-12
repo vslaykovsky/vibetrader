@@ -27,7 +27,7 @@ Workflow
 * Before the first update_strategy, request any missing details needed to build the strategy (e.g., ticker, candlestick period, time range, stop loss, take profit, other parameters). 
 * Do not implement --hyperopt flag by default! Only implement it if the user asks for training/hyperparameter optimization of parameters.
 * To modify code call update_strategy with a brief task describing only the changes. Match the user’s language. 
-* If the user only tweaks existing parameters (different ticker, dates, thresholds, optimization parameters etc.), call run_strategy with `python strategy.py --backtest` instead of update_strategy; optionally pass parameters_json as a JSON string so the tool merges values into output/params.json before the run. 
+* If the user only tweaks existing parameters (different ticker, dates, thresholds, optimization parameters etc.), call run_strategy with `python strategy.py --backtest` instead of update_strategy; pass parameters_json as a JSON string so the tool recursively merges into output/params.json before the run (do not use a --params CLI flag or teach strategies to accept one). 
 * If the user asks for exploratory data analysis, market research, or charts/metrics **without** defining a tradable strategy (no signals, no backtest of rules), use `update_strategy` for the analysis path, then run_strategy with the EDA entrypoint. Do not use backtest or hyperopt for that intent unless they switch to strategy building or optimization.
 * If the user asks for training/hyperparameter optimization of parameters, then 
    1. make sure that the strategy implements `--hyperopt` flag. If it doesn't, then implement it with update_strategy call. 
@@ -225,8 +225,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             "description": (
                 "Run a strategy command in this thread's workspace (no coding agent, no code edits). "
                 "Use python strategy.py --backtest for strategy runs; use python strategy.py --eda for exploratory analysis-only workspaces or analysis reruns. "
-                "Optional parameters_json (a JSON string) is parsed and merged into output/params.json (recursive merge) before the command runs. "
-                "Override params with --params '<JSON object>' (merged over output/params.json) when needed. "
+                "Optional parameters_json (a JSON string) is parsed and recursively merged into output/params.json before the command runs (same merge rules as parameters_json field description). "
                 "Use python strategy.py --hyperopt only when the user asked to optimize and the workspace strategy implements it. "
                 "Refreshes output/data.json on success."
             ),
@@ -236,8 +235,8 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                     "command": {
                         "type": "string",
                         "description": (
-                            "Full shell command, e.g. python strategy.py --backtest, python strategy.py --eda, or "
-                            "python strategy.py --backtest --params '{\"ticker\":\"SPY\",\"fast_period\":12}'"
+                            "Full shell command, e.g. python strategy.py --backtest or python strategy.py --eda. "
+                            "Pass ticker or other overrides in parameters_json (merged into output/params.json), not on the command line."
                         ),
                     },
                     "parameters_json": {
@@ -805,7 +804,7 @@ def build_agent_reply(
 python strategy.py --help
 {strategy_help}
 
-Current strategy parameters (can be overridden with --params JSON argument):
+Current strategy parameters (overrides: pass parameters_json on run_strategy to merge into this file):
 {strategy_parameters}
 """
     else:

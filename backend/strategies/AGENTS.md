@@ -13,7 +13,7 @@ Backtest strategies and emit JSON the frontend uses for charts and metrics.
 
 ## `strategy.py` CLI
 
-Ticker, timeframe, and dates are **not** separate flags; they come from `output/params.json`.
+Ticker, timeframe, and dates are **not** separate flags; they come from `output/params.json`. Do **not** add a `--params` CLI argument; the platform merges run-time overrides into `output/params.json` before invoking the script.
 
 Implementing **`--backtest`**, **`--eda`**, and **`--hyperopt`** is optional; ship only what the task needs. **`--hyperopt`** must not be added until **`--backtest`** is implemented.
 
