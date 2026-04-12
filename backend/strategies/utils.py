@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from dataclasses import dataclass
 import pandas as pd
@@ -90,6 +90,15 @@ def _drop_wide_spread_bars(df: pd.DataFrame) -> pd.DataFrame:
     return out.loc[keep]
 
 
+def _end_datetime_capped_yesterday(end_test_date: str) -> datetime:
+    # Subscription doesn't allow recent data.
+    cap_date = (datetime.now(timezone.utc).date() - timedelta(days=1))
+    end = datetime.fromisoformat(end_test_date)
+    if end.date() > cap_date:
+        return datetime.combine(cap_date, end.time(), tzinfo=end.tzinfo)
+    return end
+
+
 def _alpaca_keys() -> tuple[str, str]:
     api_key = os.environ.get("ALPACA_API_KEY")
     secret_key = os.environ.get("ALPACA_SECRET_KEY")
@@ -109,7 +118,7 @@ def fetch_stock_bars(
     tf = timeframe_from_string(timeframe)
     client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
     start = datetime.fromisoformat(start_test_date) - timedelta(days=int(history_padding_days))
-    end = datetime.fromisoformat(end_test_date)
+    end = _end_datetime_capped_yesterday(end_test_date)
     request = StockBarsRequest(
         symbol_or_symbols=ticker,
         start=start,
@@ -138,7 +147,7 @@ def fetch_crypto_bars(
     client = CryptoHistoricalDataClient(api_key, secret_key)
     symbol = normalize_crypto_symbol(ticker)
     start = pd.Timestamp(start_test_date, tz="UTC")
-    end = pd.Timestamp(end_test_date, tz="UTC") + pd.Timedelta(days=1)
+    end = pd.Timestamp(_end_datetime_capped_yesterday(end_test_date), tz="UTC") + pd.Timedelta(days=1)
     request = CryptoBarsRequest(
         symbol_or_symbols=symbol,
         start=start.to_pydatetime(),

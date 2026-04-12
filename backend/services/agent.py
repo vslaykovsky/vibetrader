@@ -28,15 +28,15 @@ Workflow
 * Do not implement --hyperopt flag by default! Only implement it if the user asks for training/hyperparameter optimization of parameters.
 * To modify code call update_strategy with a brief task describing only the changes. Match the user’s language. 
 * If the user only tweaks existing parameters (different ticker, dates, thresholds, optimization parameters etc.), call run_strategy with `python strategy.py --backtest` instead of update_strategy; optionally pass parameters_json as a JSON string so the tool merges values into output/params.json before the run. 
-* If the user asks for exploratory data analysis, market research, or charts/metrics **without** defining a tradable strategy (no signals, no backtest of rules), use `update_strategy` to implement or extend `--eda`, then run `python strategy.py --eda` to refresh output/data.json. Do not use `--backtest` or `--hyperopt` for that intent unless they switch to strategy building or optimization.
+* If the user asks for exploratory data analysis, market research, or charts/metrics **without** defining a tradable strategy (no signals, no backtest of rules), use `update_strategy` for the analysis path, then run_strategy with the EDA entrypoint. Do not use backtest or hyperopt for that intent unless they switch to strategy building or optimization.
 * If the user asks for training/hyperparameter optimization of parameters, then 
    1. make sure that the strategy implements `--hyperopt` flag. If it doesn't, then implement it with update_strategy call. 
    2. use `python strategy.py --hyperopt` to train or optimize parameters.
 * Always respond in the user’s language.
-* After each update_strategy run, refresh output/data.json with the right command: `python strategy.py --backtest` for strategy changes, or `python strategy.py --eda` when the thread is analysis-only or the change is EDA-focused.
+* After each successful update_strategy, call run_strategy so results match the change (backtest, EDA, or hyperopt as appropriate).
 
 Notes
-* update_strategy updates this thread’s strategy script and related outputs (backtest and/or EDA, depending on the task).
+* update_strategy edits the workspace strategy code via the coding agent; layout, CLI modes, and how results are surfaced follow AGENTS.md in that workspace.
 * Strategies can use Alpaca market data.
 * Backtesting is supported; live trading is not.
 * Today's date is {(datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")}.
@@ -50,10 +50,7 @@ STRATEGY_AGENTS_TEMPLATE = STRATEGIES_DIR / "AGENTS.md"
 STRATEGY_CLAUDE_TEMPLATE = STRATEGIES_DIR / "CLAUDE.md"
 STRATEGY_CODE_TEMPLATE = STRATEGIES_DIR / "strategy.py"
 STRATEGY_UTILS_TEMPLATE = STRATEGIES_DIR / "utils.py"
-STRATEGY_CODE_AGENT_PREFIX = (
-    "The file utils.py is read-only platform-managed shared code: do not edit, replace, "
-    "or delete it. Implement all Python changes in strategy.py only"
-)
+STRATEGY_CODE_AGENT_PREFIX = "Follow AGENTS.md in this workspace. User task: "
 UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
 RUN_STRATEGY_TOOL_NAME = "run_strategy"
 UPDATE_STRATEGY_TOOL_MESSAGE_MAX_JSON = 1024
@@ -201,16 +198,18 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": UPDATE_STRATEGY_TOOL_NAME,
             "description": (
-                "Change the strategy script or exploratory analysis in this thread's strategies/<thread_id>/ folder using "
-                "the configured coding agent (Codex or Claude Code); afterwards run python strategy.py --backtest or --eda "
-                "as appropriate to refresh output/data.json."
+                "Implement strategy or analysis changes in this thread's strategy workspace using the configured coding agent. "
+                "Workspace conventions are in AGENTS.md there. After it succeeds, call run_strategy to refresh outputs."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "task": {
                         "type": "string",
-                        "description": "Brief: only what to implement or change.",
+                        "description": (
+                            "High-level goal and required behavior or code changes only;"
+                            "Do not specify any file paths or filenames, the tool already known them"
+                        ),
                     }
                 },
                 "required": ["task"],

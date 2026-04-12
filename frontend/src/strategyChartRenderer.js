@@ -80,6 +80,7 @@ function renderLightweightChart(container, chartSpec) {
       priceLineVisible: false,
       lastValueVisible: true,
       ...s.options,
+      ...(typeof s.label === 'string' && s.label !== '' ? { title: s.label } : {}),
     });
     if (Array.isArray(s.data)) {
       series.setData(s.data);
@@ -111,6 +112,50 @@ function renderPlotlyChart(container, chartSpec) {
   Plotly.newPlot(el, chartSpec.data || [], layout, PLOTLY_CONFIG);
 }
 
+function escapeCsvField(value) {
+  const s = value == null ? '' : String(value);
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function tableRowsToCsv(columns, rows) {
+  const header = columns.map((c) => escapeCsvField(c)).join(',');
+  const lines = [header];
+  for (const row of rows) {
+    const cells = columns.map((col) => {
+      const v = row[col];
+      let raw;
+      if (v === null || v === undefined) {
+        raw = '';
+      } else if (typeof v === 'number' && Number.isFinite(v)) {
+        raw = String(v);
+      } else if (typeof v === 'object') {
+        raw = JSON.stringify(v);
+      } else {
+        raw = String(v);
+      }
+      return escapeCsvField(raw);
+    });
+    lines.push(cells.join(','));
+  }
+  return lines.join('\r\n');
+}
+
+function triggerCsvDownload(filename, csvText) {
+  const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function renderTablePanel(container, table) {
   if (!Array.isArray(table) || table.length === 0) return;
   const first = table[0];
@@ -120,6 +165,27 @@ function renderTablePanel(container, table) {
 
   const wrap = document.createElement('div');
   wrap.style.cssText = 'padding:14px 4px 4px;overflow-x:auto;';
+
+  const toolbar = document.createElement('div');
+  toolbar.style.cssText =
+    'display:flex;justify-content:flex-end;align-items:center;margin-bottom:8px;padding:0 2px;';
+  const dlBtn = document.createElement('button');
+  dlBtn.type = 'button';
+  dlBtn.textContent = 'Download CSV';
+  dlBtn.style.cssText =
+    'cursor:pointer;font-size:12px;font-weight:600;padding:6px 12px;border-radius:6px;border:1px solid #363a45;background:#2a2e39;color:#d1d4dc;';
+  dlBtn.addEventListener('mouseenter', () => {
+    dlBtn.style.background = '#363a45';
+  });
+  dlBtn.addEventListener('mouseleave', () => {
+    dlBtn.style.background = '#2a2e39';
+  });
+  dlBtn.addEventListener('click', () => {
+    const csv = tableRowsToCsv(columns, table);
+    triggerCsvDownload('strategy-table.csv', csv);
+  });
+  toolbar.appendChild(dlBtn);
+  wrap.appendChild(toolbar);
 
   const tbl = document.createElement('table');
   tbl.style.cssText =

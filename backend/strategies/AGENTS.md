@@ -32,6 +32,7 @@ Implementing **`--backtest`**, **`--eda`**, and **`--hyperopt`** is optional; sh
 - Drop bars where `(high - low) > 0.30 * high` (broken prints).
 - Make sure to use dotted versions of ticker symbols where applicable. E.g. for BRK-B use BRK.B when fetching data from Alpaca. 
 - Do NOT use yfinance. Only use Alpaca API to access market data. 
+- Today's data is not available, use only past data for analysis and strategies. 
 
 ## `output/params.json`
 
@@ -63,7 +64,9 @@ At least one of `charts` (non-empty) or `table` (non-empty) **must** be present 
 
 ### `charts`
 
-Ordered array. The frontend renders each item with **lightweight-charts** (time series) or **Plotly.js** (everything else). **No JS chart code** — data only.
+Ordered array. **No JS chart code** — data only.
+
+**Chart library:** Prefer **`lightweight-charts`** whenever the data fits its schema (shared time axis, OHLC bars, line/area/histogram overlays, multiple series on one pane). Use **`plotly`** when you need something lightweight-charts cannot express cleanly (e.g. arbitrary scatter, faceted subplots, heatmaps, histograms without a time index). If both fit, choose lightweight-charts.
 
 Each chart object must have:
 
@@ -72,15 +75,16 @@ Each chart object must have:
 
 #### lightweight-charts
 
-Time-indexed OHLC, equity, overlays, etc.
+One chart is one canvas. Put **every series that shares that time axis** in the same chart’s **`series`** array (e.g. candlesticks plus EMA50 as a `Line`). All series align on time. **`markers`** apply only to the series object that includes them (usually the candlestick series for entries/exits).
 
 ```json
 {
   "type": "lightweight-charts",
-  "title": "Price Chart with SMA Crossover",
+  "title": "Price and EMA(50)",
   "series": [
     {
       "type": "Candlestick",
+      "label": "Price",
       "options": {"upColor": "#26a69a", "downColor": "#ef5350"},
       "data": [{"time": "2024-01-02", "open": 100, "high": 105, "low": 99, "close": 103}],
       "markers": [
@@ -90,7 +94,8 @@ Time-indexed OHLC, equity, overlays, etc.
     },
     {
       "type": "Line",
-      "options": {"color": "#f6c90e", "lineWidth": 2, "title": "SMA 20"},
+      "label": "EMA 50",
+      "options": {"color": "#f6c90e", "lineWidth": 2},
       "data": [{"time": "2024-01-02", "value": 101.5}]
     }
   ]
@@ -99,13 +104,14 @@ Time-indexed OHLC, equity, overlays, etc.
 
 - **`series`**: array (default `[]`). Each item:
   - **`type`**: one of `Candlestick`, `Line`, `Area`, `Histogram`, `Baseline`, `Bar` (unknown type → series skipped)
-  - **`options`**: object passed to `chart.addSeries()` (optional)
+  - **`label`**: string — human-readable series name; always set for every series (shown in the chart UI; mapped to the library’s series title)
+  - **`options`**: object merged into `chart.addSeries()` (optional); do not put the display name here — use **`label`**
   - **`data`**: array passed to `series.setData()` (optional)
-  - **`markers`**: array passed to `createSeriesMarkers()` — sorted by `time` automatically (optional)
+  - **`markers`**: optional; only on series that should show markers — passed to `createSeriesMarkers()`, sorted by `time` automatically
 
 #### Plotly
 
-Distributions, scatter, bars, heatmaps, subplots, etc.
+Use when lightweight-charts is a poor fit. Distributions, scatter, bars, heatmaps, subplots, etc. Give each trace a **`name`** (and/or axis titles in **`layout`**) so the legend and axes stay readable.
 
 ```json
 {
@@ -152,6 +158,7 @@ Omit `metrics` entirely for `--eda` to hide the panel.
 
 ### Chart rules
 
+- Prefer **`lightweight-charts`** when the schema above supports the figure; otherwise use **`plotly`**.
 - Do not use matplotlib to render charts, only plotly or lightweight-charts are allowed.
 - `strategy.py` must **not** write PNG, JPEG, WebP, SVG, or any other image or standalone chart file. All visuals go only in **`output/data.json`** under the top-level **`charts`** array, using **`lightweight-charts`** or **`plotly`** objects exactly as documented above (no `savefig`, no chart exports under `output/` or elsewhere).
 - Shared time axis across lightweight-charts so scroll/zoom stays in sync.
@@ -159,3 +166,4 @@ Omit `metrics` entirely for `--eda` to hide the panel.
 - Signals: use `markers` on the right series.
 - Readable contrast: make sure colors are set so text is readable on the background.
 - Every series/bar/line clearly labeled.
+- When rendering raw prices default to using candlesticks. 
