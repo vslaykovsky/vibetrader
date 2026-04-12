@@ -79,8 +79,14 @@ def _drop_wide_spread_bars(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     hi = out["high"].astype(float)
     lo = out["low"].astype(float)
+    op = out["open"].astype(float)
+    cl = out["close"].astype(float)
     spread = hi - lo
-    keep = (hi > 0) & (spread <= 0.3 * hi)
+    body = (cl - op).abs()
+    keep = (hi > 0) & (lo > 0) & (op > 0)
+    keep &= spread <= 0.3 * hi
+    keep &= spread <= 0.3 * lo
+    keep &= body <= 0.3 * op
     return out.loc[keep]
 
 

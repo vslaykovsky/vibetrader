@@ -1,48 +1,57 @@
-# Trading strategy backend
+# Trading strategy workspace
 
-This project is a trading strategy backend. It is used to backtest trading strategies and produce outputs needed to visualise relevant stats and charts.
-Important: do not run src/strategy.py, it will be run by the user instead. 
+Backtest strategies and emit JSON the frontend uses for charts and metrics.
 
-## Strategy CLI script src/strategy.py
+**Do not run `src/strategy.py` here** — the platform runs it after your changes.
 
-Source files must be stored under `src/`. Entry point is `src/strategy.py`. Put all strategy and backtest logic you author in `src/strategy.py`. The file `src/utils.py` is read-only platform-managed shared helpers (Alpaca fetch, paths, JSON helpers); import from it when useful but never edit, replace, or delete it. Do not add other `.py` files under `src/`.
+## Layout
 
-`src/strategy.py` must support these flags (no separate flags for ticker, timeframe, or dates):
-- `--backtest` — Load `output/params.json`,  runs the backtest, write `output/data.json` with performance stats and all data necessary to render charts, prints performance stats to stdout.
-- `--eda` — Load `output/params.json`, run **exploratory data analysis** the user asked for (distributions, correlations, volatility, seasonality, liquidity, regime splits, etc.). This path does **not** implement or evaluate a trading strategy. Write `output/data.json` with a `charts` array (and `strategy_name` from params). Omit `metrics` unless you have meaningful backtest-style numbers; the metrics panel is for strategy runs. Print concise findings to stdout. Put any analysis-only knobs (what to plot, horizons, cohorts) in `output/params.json` alongside shared fields (ticker, timeframe, dates), same static-params rules as below.
-- `--help` — help message that describes the logic of the strategy in one short paragraph using ArgumentParser(description='...'). Leave empty if --backtest is not implemented yet!
+- **`src/strategy.py`** — entry point; all authored strategy and backtest logic lives here.
+- **`src/utils.py`** — shared helpers (Alpaca, paths, JSON). Import only; never edit, replace, or delete.
+- **No other `.py` files under `src/`.**
 
-Use **`--eda`** when the user wants **data analysis or market research**, not when they want rules for entries/exits, position sizing, or walk-forward performance—in those cases use **`--backtest`**. Use **`--hyperopt`** only when they ask to **train or optimize strategy parameters**; do not use `--eda` for optimization loops. `update_strategy` applies to all of these: implement the right mode for the user’s intent, then refresh outputs with `python src/strategy.py --eda` or `--backtest` as appropriate (not always `--backtest`).
+## `src/strategy.py` CLI
 
-Optional: implement `--hyperopt` only when the user asks to train or optimize parameters. It runs hyperparameter optimization (using ranges and training window defined in `output/params.json` or strategy code as appropriate), prints results to stdout, and writes optimized parameters to `output/params.json` so a subsequent `python src/strategy.py --backtest` picks them up. Use optuna or other appropriate tool. Set hardstop timeout of 120 seconds when running --hyperopt.  
+Ticker, timeframe, and dates are **not** separate flags; they come from `output/params.json`.
 
-## Data sources
+Implementing **`--backtest`**, **`--eda`**, and **`--hyperopt`** is optional; ship only what the task needs. **`--hyperopt`** must not be added until **`--backtest`** is implemented.
 
-Use Alpaca market data api. Use python API: https://alpaca.markets/sdks/python/market_data.html#market-data
-Use environment variables to access Alpaca: ALPACA_API_KEY, ALPACA_SECRET_KEY
-Make sure remove broken bars with high-low > 30% * high
+- **`--backtest`** — Read `output/params.json`, run the backtest, write `output/data.json` (stats + chart data), print performance to stdout.
+- **`--eda`** — Read `output/params.json`, run **exploratory analysis** only (distributions, correlations, volatility, seasonality, liquidity, regimes, etc.) — **not** strategy rules or walk-forward performance. Write `output/data.json` with a `charts` array and `strategy_name` from params. Omit `metrics` unless you have meaningful backtest-style numbers. Print concise findings. Put analysis-only knobs in `output/params.json` with the same static-params rules as below.
+- **`--help`** — `ArgumentParser(description=...)` — one short paragraph on strategy logic; leave empty or minimal until there is behavior to describe.
 
-## Special files
+**Mode choice:** `--eda` for data analysis or market research; `--backtest` for entries/exits, sizing, or walk-forward results. **`--hyperopt`** only when the user asks to **train or optimize parameters**, **`--backtest`** already exists, and you are not doing that search inside **`--eda`**. After `update_strategy`, refresh with `python src/strategy.py --eda` or `--backtest` as appropriate.
 
-### output/params.json
+**`--hyperopt`:** Only when requested and **`--backtest`** already exists. Optimize using ranges and training window from `output/params.json` (or equivalent in code), print results, write tuned params back to `output/params.json` for the next `--backtest`. Prefer Optuna or similar. **Hard cap: 120s** runtime.
 
-All parameters for the strategy must live in `output/params.json`. That includes everything needed to run the strategy and the backtest: for example ticker, candlestick/bar timeframe (e.g. Alpaca `1Day`, `1Hour`), backtest window (`start_test_date`, `end_test_date` or equivalent), and every fixed numeric or boolean strategy input. When the user asks to train or optimize parameters, also store hyperopt fields there (e.g. training window `start_train_date`, `end_train_date` or equivalent, search ranges, and any other hyperopt configuration) and implement `--hyperopt` as above. There must be no duplicate sources of truth: the script reads this file instead of hardcoding those constants elsewhere. Generate a valid `output/params.json` with sensible defaults so a fresh workspace can run. Do not introduce "default values of parameter" in the code to substitue missing values. All values must be stored in output/params.json. Produce output/params.json statically, do not write/update it dynamically from src/strategy.py!
+## Data
 
-Special parameters to always include in output/params.json:
-- strategy_name - name of the strategy that shouldn't include specific tickers. 
+- [Alpaca Market Data (Python)](https://alpaca.markets/sdks/python/market_data.html#market-data)
+- Credentials: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`
+- Drop bars where `(high - low) > 0.30 * high` (broken prints).
 
-### output/data.json chart data
+## `output/params.json`
 
-`output/data.json` must contain a top-level `"charts"` array. The frontend renders each element automatically using **lightweight-charts** (time-series) or **Plotly.js** (everything else). Do NOT generate any JS rendering code — the frontend handles it.
+Single source of truth: ticker, bar timeframe (e.g. Alpaca `1Day`, `1Hour`), backtest window (`start_test_date` / `end_test_date` or equivalent), every fixed numeric/boolean input, and hyperopt config when applicable (train window, search ranges, etc.). No duplicates in code — read this file, do not hardcode those constants.
 
-Each chart object in the `"charts"` array has:
-- `"type"` — rendering library: `"lightweight-charts"` or `"plotly"`
-- `"title"` — chart title string (use the language of the user's prompt)
+Ship a valid file with sensible defaults so a fresh workspace runs. **Do not** use in-code defaults to paper over missing keys. **Do not** write or update this file from `src/strategy.py` — keep it static.
 
+Always include **`strategy_name`**: human-readable, no ticker in the name.
 
-#### lightweight-charts objects
+## `output/data.json`
 
-Use for all time-indexed financial data: price charts with OHLC candles, equity curves, indicator overlays, etc.
+### Charts
+
+Top-level **`charts`** array. The frontend renders each item with **lightweight-charts** (time series) or **Plotly.js** (everything else). **No JS chart code** — data only.
+
+Each chart object:
+
+- **`type`**: `"lightweight-charts"` or `"plotly"`
+- **`title`**: match the user’s prompt language
+
+#### lightweight-charts
+
+Time-indexed OHLC, equity, overlays, etc.
 
 ```json
 {
@@ -52,7 +61,7 @@ Use for all time-indexed financial data: price charts with OHLC candles, equity 
     {
       "type": "Candlestick",
       "options": {"upColor": "#26a69a", "downColor": "#ef5350"},
-      "data": [{"time": "2024-01-02", "open": 100, "high": 105, "low": 99, "close": 103}, ...],
+      "data": [{"time": "2024-01-02", "open": 100, "high": 105, "low": 99, "close": 103}],
       "markers": [
         {"time": "2024-01-15", "position": "belowBar", "color": "#26a69a", "shape": "arrowUp", "text": "BUY"},
         {"time": "2024-02-10", "position": "aboveBar", "color": "#ef5350", "shape": "arrowDown", "text": "SELL"}
@@ -61,44 +70,39 @@ Use for all time-indexed financial data: price charts with OHLC candles, equity 
     {
       "type": "Line",
       "options": {"color": "#f6c90e", "lineWidth": 2, "title": "SMA 20"},
-      "data": [{"time": "2024-01-02", "value": 101.5}, ...]
+      "data": [{"time": "2024-01-02", "value": 101.5}]
     }
   ]
 }
 ```
 
-Supported series types: `Candlestick`, `Line`, `Area`, `Histogram`, `Baseline`, `Bar`.
-- `options` — passed to `addSeries(SeriesType, options)`.
-- `data` — array of data points passed to `series.setData(data)`.
-- `markers` (optional) — array of marker objects passed to `createSeriesMarkers(series, markers)`.
+Series types: `Candlestick`, `Line`, `Area`, `Histogram`, `Baseline`, `Bar`. `options` → `addSeries`; `data` → `setData`; optional `markers` → `createSeriesMarkers`.
 
+#### Plotly
 
-#### plotly objects
-
-Use for all non-time-series analytical data: distributions, scatter plots, bar charts, tables, heatmaps, etc.
+Distributions, scatter, bars, tables, heatmaps, etc.
 
 ```json
 {
   "type": "plotly",
   "title": "PnL Distribution",
   "data": [
-    {"type": "histogram", "x": [1.2, -0.5, 3.1, ...], "marker": {"color": "#26a69a"}}
+    {"type": "histogram", "x": [1.2, -0.5, 3.1], "marker": {"color": "#26a69a"}}
   ],
   "layout": {"xaxis": {"title": "Return %"}, "yaxis": {"title": "Count"}}
 }
 ```
 
-`data` and `layout` follow the Plotly.js schema: https://plotly.com/javascript/reference/
-The frontend passes them directly to `Plotly.newPlot(element, data, layout, config)`.
+`data` / `layout`: [Plotly.js reference](https://plotly.com/javascript/reference/) — passed to `Plotly.newPlot`.
 
-#### Rules
-- All lightweight-charts charts share the same time axis range so the frontend can synchronize scroll/zoom.
-- When showing an equity curve, include a benchmark (buy & hold) series on the same chart.
-- When showing buy/sell signals, add `markers` to the appropriate series.
-- Do NOT produce `output/charts.js`. All chart rendering is handled by the frontend.
-- Generate chart titles in the language of the user's prompt.
-- When picking text and background color make sure text is readable. 
-- Make sure that for every component of the chart (bars/lines/etc) there is a clear text label indicating what it is. 
+### Chart rules
 
+- Shared time axis across lightweight-charts so scroll/zoom stays in sync.
+- Equity curves: include buy-and-hold benchmark on the same chart.
+- Signals: use `markers` on the right series.
+- No `output/charts.js`; titles and labels in the prompt language; readable contrast; every series/bar/line clearly labeled.
 
-Additionally, `output/data.json` must include a top-level `"strategy_name"` field (copied from params). For **`--backtest`** output, include a `"metrics"` object with backtest performance stats (total_return, sharpe_ratio, max_drawdown, win_rate, num_trades, final_equity, initial_capital); the frontend renders it as a summary panel. For **`--eda`** output you may omit `"metrics"` so that panel stays hidden.
+### Other top-level fields
+
+- **`strategy_name`**: copy from params.
+- **`metrics`** (`--backtest` only): e.g. `total_return`, `sharpe_ratio`, `max_drawdown`, `win_rate`, `num_trades`, `final_equity`, `initial_capital` — summary panel. Omit for `--eda` when you want that panel hidden.
