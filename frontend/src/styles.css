@@ -1168,14 +1168,64 @@ textarea {
 
 .layout {
   display: grid;
-  grid-template-columns: minmax(320px, 0.9fr) minmax(440px, 1.4fr);
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
-  gap: 20px;
+  gap: 0;
   height: 100%;
   min-height: 0;
   padding: 20px;
   box-sizing: border-box;
   overflow: hidden;
+}
+
+.layout > .layout-dual,
+.layout > .sidebar-backdrop,
+.layout > .sidebar-drawer {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.layout > .layout-dual {
+  z-index: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.layout > .sidebar-backdrop {
+  z-index: 40;
+}
+
+.layout > .sidebar-drawer {
+  z-index: 50;
+}
+
+.layout-dual {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 10px;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.layout-splitter {
+  flex: 0 0 8px;
+  width: 8px;
+  min-width: 8px;
+  box-sizing: border-box;
+  align-self: stretch;
+  border-radius: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  background: var(--line);
+  opacity: 0.22;
+  transition: opacity 0.12s ease;
+}
+
+.layout-splitter:hover {
+  opacity: 0.42;
 }
 
 .chat-panel,
@@ -1874,6 +1924,7 @@ li {
 .chat-input textarea {
   width: 100%;
   resize: none;
+  overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: 18px;
   padding: 16px;
@@ -2416,7 +2467,12 @@ li {
 @media (max-width: 980px) {
   .layout {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .layout-dual {
+    flex-direction: column;
+    gap: 0;
   }
 
   .sidebar-drawer {
@@ -2433,7 +2489,14 @@ li {
     gap: 0;
   }
 
+  .layout.layout-narrow .layout-dual {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
   .layout.layout-narrow .chat-panel {
+    flex: 1 1 0;
+    min-height: 0;
     border: 0;
     border-radius: 0;
     box-shadow: none;

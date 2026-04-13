@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -32,6 +32,13 @@ function ChatProcessingSpinner({ label }) {
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
   (import.meta.env.PROD ? '/api' : 'http://localhost:8080');
+
+const LAYOUT_SPLIT = {
+  gapPx: 10,
+  splitterPx: 8,
+  minChatPx: 320,
+  minCanvasPx: 440,
+};
 
 function formatThreadLabel(threadId) {
   const t = String(threadId || '').trim();
@@ -336,6 +343,8 @@ export function StrategyPage() {
   const [deletingThread, setDeletingThread] = useState(false);
   const chatEndRef = useRef(null);
   const chatFormRef = useRef(null);
+  const chatPanelRef = useRef(null);
+  const messageTextareaRef = useRef(null);
   const homePromptAutoSubmitRef = useRef(false);
   const locationRef = useRef(location);
   locationRef.current = location;
@@ -356,6 +365,8 @@ export function StrategyPage() {
   const [reverting, setReverting] = useState(false);
   const [isNarrow, setIsNarrow] = useState(false);
   const [mobileCanvasOpen, setMobileCanvasOpen] = useState(false);
+  const [chatPanelWidthPx, setChatPanelWidthPx] = useState(null);
+  const layoutDualRef = useRef(null);
   const hashHydratedRef = useRef(false);
   const appliedHashKeyRef = useRef('');
   const hydratingForRef = useRef('');
@@ -700,6 +711,111 @@ export function StrategyPage() {
   }, []);
 
   useEffect(() => {
+    if (isNarrow) {
+      setChatPanelWidthPx(null);
+    }
+  }, [isNarrow]);
+
+  useEffect(() => {
+    if (isNarrow || chatPanelWidthPx == null || typeof ResizeObserver === 'undefined') {
+      return undefined;
+    }
+    const dual = layoutDualRef.current;
+    if (!dual) {
+      return undefined;
+    }
+    const clamp = () => {
+      const el = layoutDualRef.current;
+      if (!el) return;
+      setChatPanelWidthPx((w) => {
+        if (typeof w !== 'number') return w;
+        const dualW = el.getBoundingClientRect().width;
+        const { gapPx, splitterPx, minChatPx, minCanvasPx } = LAYOUT_SPLIT;
+        const maxChat = dualW - 2 * gapPx - splitterPx - minCanvasPx;
+        const upper = Math.max(minChatPx, maxChat);
+        return Math.min(upper, Math.max(minChatPx, w));
+      });
+    };
+    clamp();
+    const ro = new ResizeObserver(() => {
+      clamp();
+    });
+    ro.observe(dual);
+    return () => ro.disconnect();
+  }, [chatPanelWidthPx, isNarrow]);
+
+  const fitMessageTextarea = useCallback(() => {
+    const ta = messageTextareaRef.current;
+    const panel = chatPanelRef.current;
+    if (!ta || !panel) return;
+    const maxH = panel.clientHeight * 0.5;
+    if (!Number.isFinite(maxH) || maxH <= 0) return;
+    ta.style.maxHeight = `${maxH}px`;
+    ta.style.height = 'auto';
+    ta.style.height = `${Math.min(ta.scrollHeight, maxH)}px`;
+  }, []);
+
+  useLayoutEffect(() => {
+    fitMessageTextarea();
+  }, [draft, loading, fitMessageTextarea]);
+
+  useLayoutEffect(() => {
+    if (typeof ResizeObserver === 'undefined') {
+      return undefined;
+    }
+    const panel = chatPanelRef.current;
+    if (!panel) {
+      return undefined;
+    }
+    const ro = new ResizeObserver(() => {
+      fitMessageTextarea();
+    });
+    ro.observe(panel);
+    return () => ro.disconnect();
+  }, [fitMessageTextarea]);
+
+  const handleLayoutSplitterPointerDown = useCallback(
+    (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      if (isNarrow) return;
+      e.preventDefault();
+      const dual = layoutDualRef.current;
+      const chatEl = dual?.querySelector('.chat-panel');
+      if (!dual || !chatEl) return;
+      const { gapPx, splitterPx, minChatPx, minCanvasPx } = LAYOUT_SPLIT;
+      const startX = e.clientX;
+      const startW = chatEl.getBoundingClientRect().width;
+
+      const maxForDual = (dualW) =>
+        Math.max(minChatPx, dualW - 2 * gapPx - splitterPx - minCanvasPx);
+
+      const move = (ev) => {
+        const d = layoutDualRef.current;
+        if (!d) return;
+        const dualW = d.getBoundingClientRect().width;
+        const upper = maxForDual(dualW);
+        const dx = ev.clientX - startX;
+        setChatPanelWidthPx(Math.min(upper, Math.max(minChatPx, startW + dx)));
+      };
+
+      const up = () => {
+        document.removeEventListener('pointermove', move);
+        document.removeEventListener('pointerup', up);
+        document.removeEventListener('pointercancel', up);
+        document.body.style.removeProperty('cursor');
+        document.body.style.removeProperty('user-select');
+      };
+
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      document.addEventListener('pointermove', move);
+      document.addEventListener('pointerup', up);
+      document.addEventListener('pointercancel', up);
+    },
+    [isNarrow],
+  );
+
+  useEffect(() => {
     if (!sidebarOpen || !signedInUserId) {
       return undefined;
     }
@@ -964,87 +1080,29 @@ export function StrategyPage() {
   const deployDisabled = loading || showProcessing || !strategyAvailable;
   const deployTitle = deployDisabled ? 'Strategy not available yet' : 'Deploy live';
 
+  const chatPanelStyle = isNarrow
+    ? undefined
+    : chatPanelWidthPx != null
+      ? {
+          flex: '0 0 auto',
+          width: chatPanelWidthPx,
+          minWidth: LAYOUT_SPLIT.minChatPx,
+        }
+      : {
+          flex: '0.9 1 0',
+          minWidth: LAYOUT_SPLIT.minChatPx,
+        };
+
+  const canvasPanelStyle = isNarrow
+    ? undefined
+    : chatPanelWidthPx != null
+      ? { flex: '1 1 0', minWidth: LAYOUT_SPLIT.minCanvasPx, minHeight: 0 }
+      : { flex: '1.4 1 0', minWidth: LAYOUT_SPLIT.minCanvasPx, minHeight: 0 };
+
   return (
     <main className={`layout${isNarrow ? ' layout-narrow' : ''}${mobileCanvasOpen ? ' is-mobile-canvas-open' : ''}`}>
-      {sidebarOpen ? (
-        <div
-          className="sidebar-backdrop"
-          role="presentation"
-          onClick={() => setSidebarOpen(false)}
-        />
-      ) : null}
-      <aside className={`sidebar-drawer${sidebarOpen ? ' is-open' : ''}`} aria-label="Strategies">
-        <div className="sidebar-header">
-          <div className="sidebar-title">Strategies</div>
-          <button
-            type="button"
-            className="sidebar-close"
-            onClick={() => setSidebarOpen(false)}
-            aria-label="Close sidebar"
-          >
-            ×
-          </button>
-        </div>
-        <nav className="sidebar-list" aria-label="Thread list">
-          {threadsError ? <div className="sidebar-empty muted">{threadsError}</div> : null}
-          {!threadsError && sortedThreads.length === 0 ? (
-            <div className="sidebar-empty muted">No threads yet.</div>
-          ) : null}
-          {!threadsError && sortedThreads.length > 0 ? (
-            groupKeys.map((key) => {
-              const label = key === todayKey ? 'Today' : key;
-              return (
-                <div key={key} className="sidebar-group">
-                  <div className="sidebar-group-title">{label}</div>
-                  <div className="sidebar-group-items">
-                    {groupedThreads[key].map((t) => {
-                      const tid = t?.thread_id;
-                      const active = typeof tid === 'string' && tid === threadId;
-                      return (
-                        <button
-                          key={tid}
-                          type="button"
-                          className={`sidebar-item${active ? ' is-active' : ''}`}
-                          onClick={() => {
-                            if (typeof tid === 'string' && tid.trim()) {
-                              setSidebarOpen(false);
-                              navigate({ pathname: `/strategy/${tid}`, hash: '' });
-                            }
-                          }}
-                          title={typeof tid === 'string' ? tid : undefined}
-                        >
-                          <div className="sidebar-item-badge" aria-label="Message count">
-                            <span className="sidebar-item-badge-icon" aria-hidden>
-                              <svg viewBox="0 0 24 24" fill="none">
-                                <path
-                                  d="M7.5 18.25v2.6c0 .38.43.6.74.38l3.07-2.16h5.9c2.5 0 4.54-2.04 4.54-4.54V8.55c0-2.5-2.04-4.54-4.54-4.54H7.74C5.24 4.01 3.2 6.05 3.2 8.55v5.98c0 2.18 1.55 4 3.6 4.4Z"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <span className="sidebar-item-badge-count">
-                              {Number.isFinite(Number(t?.message_count)) ? Number(t?.message_count) : 0}
-                            </span>
-                          </div>
-                          <div className="sidebar-item-title">{threadDisplayName(t)}</div>
-                          <div className="sidebar-item-subtitle">
-                            {t?.status === 'running'
-                              ? (t?.status_text?.trim() || 'Running…')
-                              : ''}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })
-          ) : null}
-        </nav>
-      </aside>
-      <section className="chat-panel">
+      <div className="layout-dual" ref={layoutDualRef}>
+        <section ref={chatPanelRef} className="chat-panel" style={chatPanelStyle}>
         <header className="chat-header">
           <div className="chat-header-top">
             <div>
@@ -1145,6 +1203,7 @@ export function StrategyPage() {
           </label>
           <div className="chat-compose">
             <textarea
+              ref={messageTextareaRef}
               id="message"
               placeholder="Describe your strategy in your own words..."
               value={draft}
@@ -1181,7 +1240,17 @@ export function StrategyPage() {
         </form>
       </section>
 
-      <section className="canvas-panel canvas-panel-charts">
+      {!isNarrow ? (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize chat and strategy panels"
+          className="layout-splitter"
+          onPointerDown={handleLayoutSplitterPointerDown}
+        />
+      ) : null}
+
+      <section className="canvas-panel canvas-panel-charts" style={canvasPanelStyle}>
         <header className="canvas-hero">
           <div className="canvas-hero-actions">
             {viewingRunId ? (
@@ -1274,6 +1343,85 @@ export function StrategyPage() {
           aria-label="Strategy backtest charts"
         />
       </section>
+      </div>
+      {sidebarOpen ? (
+        <div
+          className="sidebar-backdrop"
+          role="presentation"
+          onClick={() => setSidebarOpen(false)}
+        />
+      ) : null}
+      <aside className={`sidebar-drawer${sidebarOpen ? ' is-open' : ''}`} aria-label="Strategies">
+        <div className="sidebar-header">
+          <div className="sidebar-title">Strategies</div>
+          <button
+            type="button"
+            className="sidebar-close"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Close sidebar"
+          >
+            ×
+          </button>
+        </div>
+        <nav className="sidebar-list" aria-label="Thread list">
+          {threadsError ? <div className="sidebar-empty muted">{threadsError}</div> : null}
+          {!threadsError && sortedThreads.length === 0 ? (
+            <div className="sidebar-empty muted">No threads yet.</div>
+          ) : null}
+          {!threadsError && sortedThreads.length > 0 ? (
+            groupKeys.map((key) => {
+              const label = key === todayKey ? 'Today' : key;
+              return (
+                <div key={key} className="sidebar-group">
+                  <div className="sidebar-group-title">{label}</div>
+                  <div className="sidebar-group-items">
+                    {groupedThreads[key].map((t) => {
+                      const tid = t?.thread_id;
+                      const active = typeof tid === 'string' && tid === threadId;
+                      return (
+                        <button
+                          key={tid}
+                          type="button"
+                          className={`sidebar-item${active ? ' is-active' : ''}`}
+                          onClick={() => {
+                            if (typeof tid === 'string' && tid.trim()) {
+                              setSidebarOpen(false);
+                              navigate({ pathname: `/strategy/${tid}`, hash: '' });
+                            }
+                          }}
+                          title={typeof tid === 'string' ? tid : undefined}
+                        >
+                          <div className="sidebar-item-badge" aria-label="Message count">
+                            <span className="sidebar-item-badge-icon" aria-hidden>
+                              <svg viewBox="0 0 24 24" fill="none">
+                                <path
+                                  d="M7.5 18.25v2.6c0 .38.43.6.74.38l3.07-2.16h5.9c2.5 0 4.54-2.04 4.54-4.54V8.55c0-2.5-2.04-4.54-4.54-4.54H7.74C5.24 4.01 3.2 6.05 3.2 8.55v5.98c0 2.18 1.55 4 3.6 4.4Z"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <span className="sidebar-item-badge-count">
+                              {Number.isFinite(Number(t?.message_count)) ? Number(t?.message_count) : 0}
+                            </span>
+                          </div>
+                          <div className="sidebar-item-title">{threadDisplayName(t)}</div>
+                          <div className="sidebar-item-subtitle">
+                            {t?.status === 'running'
+                              ? (t?.status_text?.trim() || 'Running…')
+                              : ''}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })
+          ) : null}
+        </nav>
+      </aside>
     </main>
   );
 }
