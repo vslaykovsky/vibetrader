@@ -57,6 +57,8 @@ def normalize_timeframe(value: str) -> str:
         return "1h"
     if normalized in {"1min", "1minute", "minute", "1m"}:
         return "1m"
+    if normalized in {"1week", "week", "weekly", "1w", "w"}:
+        return "1w"
     raise ValueError(f"Unsupported timeframe: {value}")
 
 
@@ -66,6 +68,8 @@ def timeframe_from_string(value: str) -> TimeFrame:
         return TimeFrame.Day
     if normalized == "1h":
         return TimeFrame.Hour
+    if normalized == "1w":
+        return TimeFrame.Week
     return TimeFrame.Minute
 
 
@@ -75,6 +79,8 @@ def period_from_string(value: str) -> int:
         return 24
     if normalized == "1h":
         return 60
+    if normalized == "1w":
+        return 7
     return 1
 
 
