@@ -15,8 +15,7 @@ from moexalgo import session as moex_session
 from moexalgo import Ticker
 
 
-ROOT = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = ROOT / "output"
+OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 PARAMS_PATH = OUTPUT_DIR / "params.json"
 DATA_PATH = OUTPUT_DIR / "data.json"
 AVAILABLE_PROVIDERS = {"auto", "alpaca", "moex"}
