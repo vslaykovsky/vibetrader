@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { randomUUID } from '../randomUUID.js';
@@ -317,6 +317,7 @@ function attachSyncedTimeScales(charts) {
 export function StrategyPage() {
   const { threadId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user, signOut, getAccessToken } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const signedInUserId = user?.id ?? null;
@@ -333,6 +334,9 @@ export function StrategyPage() {
   const [deletingThread, setDeletingThread] = useState(false);
   const chatEndRef = useRef(null);
   const chatFormRef = useRef(null);
+  const homePromptAutoSubmitRef = useRef(false);
+  const locationRef = useRef(location);
+  locationRef.current = location;
   const emptyThreadPrompts = useMemo(
     () => [
       'What can you do?',
@@ -505,12 +509,27 @@ export function StrategyPage() {
           throw new Error(`Failed to load thread ${threadId}`);
         }
         const payload = await response.json();
-        setMessages(payload.messages || []);
+        if (controller.signal.aborted) {
+          return;
+        }
+        const msgs = payload.messages || [];
+        setMessages(msgs);
         setCanvas(payload.canvas || {});
         setServerJob({
           status: payload.status ?? null,
           statusText: payload.status_text || '',
         });
+        const loc = locationRef.current;
+        const rawDraft = loc?.state?.draft;
+        const draftText = typeof rawDraft === 'string' ? rawDraft.trim() : '';
+        if (msgs.length === 0 && draftText && !homePromptAutoSubmitRef.current) {
+          homePromptAutoSubmitRef.current = true;
+          navigate('.', { replace: true, state: {} });
+          setDraft(draftText);
+          setTimeout(() => {
+            chatFormRef.current?.requestSubmit();
+          }, 0);
+        }
       } catch (loadError) {
         if (loadError.name !== 'AbortError') {
           setError(loadError.message);
@@ -524,6 +543,10 @@ export function StrategyPage() {
     loadThread();
     return () => controller.abort();
   }, [threadId, signedInUserId]);
+
+  useEffect(() => {
+    homePromptAutoSubmitRef.current = false;
+  }, [threadId]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {

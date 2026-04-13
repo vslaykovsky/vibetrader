@@ -19,10 +19,10 @@ export function HomePage() {
   const [pricingOpen, setPricingOpen] = useState(false);
   const examplePrompts = useMemo(
     () => [
-      'Turn my manual strategy into rules I can backtest',
-      'Build a profitable strategy for BTC or SPY from scratch',
-      'Improve my entries/exits and risk management',
-      'Help me avoid overfitting and validate on past data',
+      'Analyze the top 100 S&P 500 stocks and list the ones that have crossed above their 50-day moving average',
+      'Create a simple mean reversion strategy and backtest it on SPY',
+      'Come up with a profitable pair trading strategy. Suggest a pair and backtest it',
+      'What are ways to incorporate volatility into a strategy?',
     ],
     [],
   );
