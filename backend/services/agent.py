@@ -161,6 +161,16 @@ def read_strategy_code(thread_id: str) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def read_strategy_utils(thread_id: str) -> str:
+    root = ensure_strategy_workspace(thread_id)
+    path = root / "utils.py"
+    if not path.is_file():
+        path = root / "src" / "utils.py"
+    if not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
 def restore_strategy_workspace_from_snapshot(
     thread_id: str,
     *,
@@ -257,7 +267,8 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": ANALYSE_CODE_TOOL_NAME,
             "description": (
-                "Answer a question about the current strategy's code/params in this thread. "
+                "Answer a question about the current strategy's code (strategy.py, utils.py), "
+                "and params in this thread. "
                 "Use for quick code comprehension without modifying files."
             ),
             "parameters": {
@@ -324,18 +335,21 @@ def run_analyse_code(
         return {"ok": False, "error": "OPENROUTER_API_KEY is not configured"}
 
     code = read_strategy_code(thread_id)
+    utils_text = read_strategy_utils(thread_id)
     params_text = _read_strategy_params_text(thread_id)
 
     analysis_system = (
         "You are a code analyst for a trading strategy project. "
-        "Answer the user's question using ONLY the provided strategy code and params. "
+        "Answer the user's question using ONLY the provided strategy code, utils.py, and params. "
         "Be concise: 1-4 sentences. If the answer cannot be determined, say what is missing."
     )
     context = (
         "Strategy params (JSON, may be empty):\n"
-        f"{_tail(params_text, 40_000)}\n\n"
-        "Strategy code (Python, may be empty):\n"
-        f"{_tail(code, 80_000)}"
+        f"{params_text if params_text else ''}\n\n"
+        "utils.py (Python, may be empty):\n"
+        f"{utils_text if utils_text else ''}\n\n"
+        "strategy.py (Python, may be empty):\n"
+        f"{code if code else ''}"
     )
 
     llm = ChatOpenRouter(model='anthropic/claude-opus-4.6', request_timeout=120_000)
