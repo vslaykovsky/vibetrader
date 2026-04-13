@@ -5,9 +5,6 @@
     </filter>
   </defs>
 
-  <!-- Background -->
-  <rect x="166" y="76" width="308" height="286" fill="#f7f9fc"/>
-
   <!-- Narrow Chat balloon with larger tail -->
   <g filter="url(#shadow)">
     <path
