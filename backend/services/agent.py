@@ -1,10 +1,11 @@
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, timedelta
 import dotenv
 dotenv.load_dotenv()
 from langsmith import traceable
 import json
 import logging
+import orjson
 import os
 import re
 import shutil
@@ -14,7 +15,6 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
-from datetime import datetime, timedelta
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from services.chat_openrouter import ChatOpenRouter
@@ -398,6 +398,12 @@ def _read_strategy_output_dir(thread_id: str) -> dict[str, Any]:
     return out
 
 
+def sanitize_json_for_postgres(value: Any) -> Any:
+    return orjson.loads(
+        orjson.dumps(value, option=orjson.OPT_SERIALIZE_NUMPY)
+    )
+
+
 def canvas_with_output(existing_canvas: dict[str, Any], thread_id: str) -> dict[str, Any]:
     merged = dict(existing_canvas)
     if thread_id_allowed(thread_id):
@@ -416,7 +422,7 @@ def canvas_with_output(existing_canvas: dict[str, Any], thread_id: str) -> dict[
                 out.pop("strategy_cli_description", None)
     else:
         merged["output"] = {}
-    return merged
+    return sanitize_json_for_postgres(merged)
 
 
 @traceable(name="run_codex_exec")
@@ -814,7 +820,7 @@ Current strategy parameters (overrides: pass parameters_json on run_strategy to 
         *_stored_messages_to_lc(messages),
     ]
 
-    max_iterations = 20
+    max_iterations = 10
     llm = ChatOpenRouter(
         model=model,
         openai_api_key=api_key,
