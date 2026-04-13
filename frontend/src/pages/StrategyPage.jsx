@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { randomUUID } from '../randomUUID.js';
-import { renderCharts } from '../strategyChartRenderer.js';
+import { attachSyncedCrosshair, renderCharts } from '../strategyChartRenderer.js';
 import { useAuth } from '../AuthContext';
 import { useTheme } from '../ThemeContext';
 import { ProfileMenu } from '../ProfileMenu';
@@ -811,15 +811,18 @@ export function StrategyPage() {
     mount.appendChild(root);
 
     let detachSync;
+    let detachCrosshair;
     try {
-      const { lwCharts } = renderCharts(root, chartData);
+      const { lwCharts, lwCrosshairBindings } = renderCharts(root, chartData);
       detachSync = attachSyncedTimeScales(lwCharts);
+      detachCrosshair = attachSyncedCrosshair(lwCrosshairBindings);
     } catch (err) {
       setChartError(err instanceof Error ? err.message : String(err));
     }
 
     return () => {
       detachSync?.();
+      detachCrosshair?.();
       mount.innerHTML = '';
     };
   }, [displayOutput]);

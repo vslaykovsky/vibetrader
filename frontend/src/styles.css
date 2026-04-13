@@ -2197,6 +2197,54 @@ li {
   font-size: 0.9rem;
 }
 
+.strategy-chart-details {
+  margin-bottom: 8px;
+  border-radius: 8px;
+  border: 1px solid #2a2e39;
+  overflow: hidden;
+  background: #131722;
+}
+
+.strategy-chart-summary {
+  margin: 0;
+  cursor: pointer;
+  list-style: none;
+  color: #6b707c;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 10px 12px 8px;
+  letter-spacing: 0.3px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  user-select: none;
+}
+
+.strategy-chart-summary::-webkit-details-marker {
+  display: none;
+}
+
+.strategy-chart-summary::before {
+  content: '';
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid #6b707c;
+  border-bottom: 2px solid #6b707c;
+  transform: rotate(-45deg);
+  margin-top: -2px;
+  transition: transform 0.15s ease;
+}
+
+.strategy-chart-details[open] > .strategy-chart-summary::before {
+  transform: rotate(45deg);
+  margin-top: 2px;
+}
+
+.strategy-chart-body {
+  padding: 0 4px 10px;
+}
+
 .auth-btn {
   border: 0;
   cursor: pointer;
