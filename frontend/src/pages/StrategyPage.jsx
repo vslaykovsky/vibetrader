@@ -73,6 +73,10 @@ function isoDateTodayKey() {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function agentAnswerElementId(runId) {
+  return `answer-${runId}`;
+}
+
 function formatReplyDurationMs(ms) {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) {
     return '';
@@ -100,6 +104,7 @@ function MessageBubble({
 }) {
   const isAssistant = message.role === 'assistant';
   const hasRunId = isAssistant && message.run_id;
+  const answerDomId = hasRunId ? agentAnswerElementId(message.run_id) : undefined;
   const isActive = hasRunId && message.run_id === activeRunId;
   const replyMs =
     isAssistant &&
@@ -119,6 +124,7 @@ function MessageBubble({
     : undefined;
   return (
     <div
+      id={answerDomId}
       className={`message message-${message.role}${hasRunId ? ' message-clickable' : ''}${isActive ? ' message-active-run' : ''}`}
       title={hasRunId ? (showViewStrategy ? 'Tap to view strategy' : 'Click to view strategy output') : undefined}
       onClick={handleClick}
@@ -182,13 +188,9 @@ function MessageBubble({
           </div>
         ) : null}
       </div>
-      {isAssistant ? (
-        <div className="message-markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || ''}</ReactMarkdown>
-        </div>
-      ) : (
-        <p>{message.content}</p>
-      )}
+      <div className="message-markdown">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || ''}</ReactMarkdown>
+      </div>
       {showViewStrategy && hasRunId ? (
         <div className="message-view-strategy-row">
           <button
@@ -346,6 +348,7 @@ export function StrategyPage() {
     [],
   );
   const optimisticUserContentRef = useRef(null);
+  const viewingRunIdRef = useRef(null);
   const chartsMountRef = useRef(null);
   const [chartError, setChartError] = useState('');
   const [viewingRunId, setViewingRunId] = useState(null);
@@ -353,6 +356,10 @@ export function StrategyPage() {
   const [reverting, setReverting] = useState(false);
   const [isNarrow, setIsNarrow] = useState(false);
   const [mobileCanvasOpen, setMobileCanvasOpen] = useState(false);
+  const hashHydratedRef = useRef(false);
+  const appliedHashKeyRef = useRef('');
+  const hydratingForRef = useRef('');
+  const skipNextChatEndScrollRef = useRef(false);
 
   const authFetch = useCallback(async (url, options = {}) => {
     const token = await getAccessToken();
@@ -361,29 +368,152 @@ export function StrategyPage() {
     return fetch(url, { ...options, headers });
   }, [getAccessToken]);
 
-  async function handleViewRun(runId) {
-    if (runId === viewingRunId) {
-      setViewingRunId(null);
-      setHistoricalCanvas(null);
-      return;
-    }
-    try {
-      const response = await authFetch(
-        `${API_BASE_URL}/strategy?id=${encodeURIComponent(runId)}`,
-      );
-      if (!response.ok) throw new Error('Failed to load strategy run');
-      const payload = await response.json();
-      setHistoricalCanvas(payload.canvas || {});
-      setViewingRunId(runId);
-    } catch (err) {
-      setError(err.message);
-    }
-  }
+  viewingRunIdRef.current = viewingRunId;
+
+  const handleViewRun = useCallback(
+    async (runId) => {
+      if (runId === viewingRunIdRef.current) {
+        setViewingRunId(null);
+        setHistoricalCanvas(null);
+        appliedHashKeyRef.current = '';
+        navigate(
+          { pathname: location.pathname, search: location.search, hash: '' },
+          { replace: true },
+        );
+        return;
+      }
+      try {
+        const response = await authFetch(
+          `${API_BASE_URL}/strategy?id=${encodeURIComponent(runId)}`,
+        );
+        if (!response.ok) throw new Error('Failed to load strategy run');
+        const payload = await response.json();
+        setHistoricalCanvas(payload.canvas || {});
+        setViewingRunId(runId);
+      } catch (err) {
+        setError(err.message);
+      }
+    },
+    [authFetch, navigate, location.pathname, location.search],
+  );
+
+  const scrollToAnswerForRun = useCallback((runId) => {
+    skipNextChatEndScrollRef.current = true;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        document.getElementById(agentAnswerElementId(runId))?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'center',
+        });
+      });
+    });
+  }, []);
 
   async function handleViewStrategy(runId) {
     await handleViewRun(runId);
     setMobileCanvasOpen(true);
   }
+
+  useEffect(() => {
+    setViewingRunId(null);
+    setHistoricalCanvas(null);
+    setMobileCanvasOpen(false);
+    setMessages([]);
+    setLoading(true);
+    hashHydratedRef.current = false;
+    appliedHashKeyRef.current = '';
+    hydratingForRef.current = '';
+  }, [threadId]);
+
+  useEffect(() => {
+    if (loading) {
+      return undefined;
+    }
+    const raw = (location.hash || '').replace(/^#/, '').trim();
+    if (!raw) {
+      appliedHashKeyRef.current = '';
+      hashHydratedRef.current = true;
+      return undefined;
+    }
+    const inThread = messages.some((m) => m.role === 'assistant' && m.run_id === raw);
+    if (!inThread) {
+      hashHydratedRef.current = true;
+      if (location.hash) {
+        navigate(
+          { pathname: location.pathname, search: location.search, hash: '' },
+          { replace: true },
+        );
+      }
+      return undefined;
+    }
+    const key = `${threadId}:${raw}`;
+    if (appliedHashKeyRef.current === key) {
+      hashHydratedRef.current = true;
+      return undefined;
+    }
+    if (viewingRunId === raw) {
+      appliedHashKeyRef.current = key;
+      scrollToAnswerForRun(raw);
+      if (typeof window !== 'undefined' && window.matchMedia('(max-width: 980px)').matches) {
+        setMobileCanvasOpen(true);
+      }
+      hashHydratedRef.current = true;
+      return undefined;
+    }
+    if (hydratingForRef.current === key) {
+      return undefined;
+    }
+    hydratingForRef.current = key;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await handleViewRun(raw);
+        if (cancelled) {
+          return;
+        }
+        appliedHashKeyRef.current = key;
+        scrollToAnswerForRun(raw);
+        if (typeof window !== 'undefined' && window.matchMedia('(max-width: 980px)').matches) {
+          setMobileCanvasOpen(true);
+        }
+      } finally {
+        hydratingForRef.current = '';
+        if (!cancelled) {
+          hashHydratedRef.current = true;
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      hydratingForRef.current = '';
+    };
+  }, [
+    loading,
+    messages,
+    location.hash,
+    location.pathname,
+    location.search,
+    threadId,
+    viewingRunId,
+    handleViewRun,
+    navigate,
+    scrollToAnswerForRun,
+  ]);
+
+  useEffect(() => {
+    if (!hashHydratedRef.current) {
+      return undefined;
+    }
+    const desired = viewingRunId ? `#${viewingRunId}` : '';
+    if ((location.hash || '') === desired) {
+      return undefined;
+    }
+    navigate(
+      { pathname: location.pathname, search: location.search, hash: desired },
+      { replace: true },
+    );
+    return undefined;
+  }, [viewingRunId, location.pathname, location.search, location.hash, navigate]);
 
   async function handleRevertRun(runId) {
     if (!threadId || !runId || reverting) {
@@ -471,7 +601,7 @@ export function StrategyPage() {
         return bt - at;
       });
       const next = sorted.find((t) => t?.thread_id && t.thread_id !== threadId)?.thread_id;
-      navigate(`/strategy/${next || randomUUID()}`);
+      navigate({ pathname: `/strategy/${next || randomUUID()}`, hash: '' });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -634,7 +764,12 @@ export function StrategyPage() {
   }, [threadId, serverJob.status, getAccessToken]);
 
   useEffect(() => {
+    if (skipNextChatEndScrollRef.current) {
+      skipNextChatEndScrollRef.current = false;
+      return undefined;
+    }
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    return undefined;
   }, [messages, submitting, serverJob.status]);
 
   const displayCanvas = viewingRunId ? historicalCanvas : canvas;
@@ -700,6 +835,10 @@ export function StrategyPage() {
     setError('');
     setViewingRunId(null);
     setHistoricalCanvas(null);
+    navigate(
+      { pathname: location.pathname, search: location.search, hash: '' },
+      { replace: true },
+    );
     optimisticUserContentRef.current = message;
     setMessages((prev) => [...prev, { role: 'user', content: message }]);
     setDraft('');
@@ -866,7 +1005,7 @@ export function StrategyPage() {
                           onClick={() => {
                             if (typeof tid === 'string' && tid.trim()) {
                               setSidebarOpen(false);
-                              navigate(`/strategy/${tid}`);
+                              navigate({ pathname: `/strategy/${tid}`, hash: '' });
                             }
                           }}
                           title={typeof tid === 'string' ? tid : undefined}
@@ -935,7 +1074,7 @@ export function StrategyPage() {
               <button
                 type="button"
                 className="button-new-thread"
-                onClick={() => navigate(`/strategy/${randomUUID()}`)}
+                onClick={() => navigate({ pathname: `/strategy/${randomUUID()}`, hash: '' })}
                 aria-label="New strategy"
                 title="New strategy"
               >
@@ -1046,7 +1185,14 @@ export function StrategyPage() {
               <button
                 type="button"
                 className="button-back-to-current"
-                onClick={() => { setViewingRunId(null); setHistoricalCanvas(null); }}
+                onClick={() => {
+                  setViewingRunId(null);
+                  setHistoricalCanvas(null);
+                  navigate(
+                    { pathname: location.pathname, search: location.search, hash: '' },
+                    { replace: true },
+                  );
+                }}
               >
                 Back to current
               </button>

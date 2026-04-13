@@ -19,6 +19,7 @@ from db.session import (
     ensure_strategy_columns,
     ensure_strategy_created_by_column,
     ensure_strategy_created_by_email_column,
+    ensure_strategy_langsmith_trace_column,
 )
 import logging
 from logging.handlers import RotatingFileHandler
@@ -46,6 +47,7 @@ def create_app() -> Flask:
     ensure_strategy_columns(engine)
     ensure_strategy_created_by_column(engine)
     ensure_strategy_created_by_email_column(engine)
+    ensure_strategy_langsmith_trace_column(engine)
 
     app.register_blueprint(strategy_blueprint)
 

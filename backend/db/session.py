@@ -138,3 +138,16 @@ def ensure_strategy_created_by_email_column(eng: Engine) -> None:
         return
     with eng.begin() as conn:
         conn.execute(text("ALTER TABLE strategy ADD COLUMN created_by_email VARCHAR(512)"))
+
+
+def ensure_strategy_langsmith_trace_column(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    insp = inspect(eng)
+    if not insp.has_table("strategy"):
+        return
+    cols = {c["name"] for c in insp.get_columns("strategy")}
+    if "langsmith_trace" in cols:
+        return
+    with eng.begin() as conn:
+        conn.execute(text("ALTER TABLE strategy ADD COLUMN langsmith_trace TEXT NOT NULL DEFAULT ''"))

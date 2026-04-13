@@ -23,6 +23,7 @@ from services.agent import (
     thread_id_allowed,
 )
 from langsmith import traceable
+from langsmith.run_helpers import get_current_run_tree
 
 strategy_blueprint = Blueprint("strategy", __name__)
 logger = logging.getLogger(__name__)
@@ -55,6 +56,7 @@ def serialize_strategy(strategy: Strategy) -> dict:
         "canvas": canvas,
         "status": strategy.status,
         "status_text": strategy.status_text or "",
+        "langsmith_trace": strategy.langsmith_trace or "",
         "created_at": strategy.created_at.isoformat() if strategy.created_at else None,
     }
 
@@ -203,6 +205,26 @@ def _validation_error(message: str) -> tuple:
     )
 
 
+def _apply_langsmith_trace(strategy: Strategy) -> None:
+    rt = get_current_run_tree()
+    if rt is None:
+        return
+    try:
+        strategy.langsmith_trace = rt.get_url()
+    except Exception:
+        tid = getattr(rt, "trace_id", None) or getattr(rt, "id", None)
+        strategy.langsmith_trace = str(tid) if tid is not None else ""
+
+
+def _stamp_langsmith_thread_metadata(thread_id: str) -> None:
+    tid = (thread_id or "").strip()
+    if not tid:
+        return
+    rt = get_current_run_tree()
+    if rt is not None:
+        rt.metadata["thread_id"] = tid
+
+
 @traceable(name="post_strategy")
 def _execute_strategy_agent_job(run_id: str, thread_id: str, model: str) -> None:
     def persist_status_text(text: str) -> None:
@@ -258,6 +280,7 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str, model: str) -> None
             strategy.status = "failure"
             strategy.status_text = str(exc)[:512]
             strategy.code = read_strategy_code(thread_id)
+        _apply_langsmith_trace(strategy)
         session.add(strategy)
         session.commit()
     finally:
@@ -266,7 +289,12 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str, model: str) -> None
 
 def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str, model: str) -> None:
     with app_obj.app_context():
-        _execute_strategy_agent_job(run_id, thread_id, model)
+        _execute_strategy_agent_job(
+            run_id,
+            thread_id,
+            model,
+            langsmith_extra={"metadata": {"thread_id": thread_id}},
+        )
 
 
 @strategy_blueprint.get("/strategy")
@@ -281,6 +309,7 @@ def get_strategy() -> tuple:
             strategy = session.get(Strategy, run_id)
             if strategy is None:
                 return _validation_error("strategy not found")
+            _stamp_langsmith_thread_metadata(strategy.thread_id)
             return jsonify(serialize_strategy(strategy)), 200
         finally:
             session.close()
@@ -290,6 +319,7 @@ def get_strategy() -> tuple:
         return _validation_error("thread_id or id query parameter is required")
     if not thread_id_allowed(thread_id):
         return _validation_error("invalid thread_id")
+    _stamp_langsmith_thread_metadata(thread_id)
 
     session = SessionLocal()
     try:
