@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from services.chat_openrouter import ChatOpenRouter
+from langchain_openrouter import ChatOpenRouter
 
 
 SYSTEM_PROMPT = f"""You help users design trading strategies in chat.
@@ -26,7 +26,7 @@ Workflow
 
 * Before the first update_strategy, request any missing details needed to build the strategy (e.g., ticker, candlestick period, time range, stop loss, take profit, other parameters). 
 * Do not implement --hyperopt flag by default! Only implement it if the user asks for training/hyperparameter optimization of parameters.
-* To modify code call update_strategy with a brief task describing only the changes. Match the user’s language. 
+* To modify code call update_strategy with a brief task describing only the changes. Use english for the task description.
 * If the user only tweaks existing parameters (different ticker, dates, thresholds, optimization parameters etc.), call run_strategy with `python strategy.py --backtest` instead of update_strategy; pass parameters_json as a JSON string so the tool recursively merges into output/params.json before the run (do not use a --params CLI flag or teach strategies to accept one). 
 * If the user asks for exploratory data analysis, market research, or charts/metrics **without** defining a tradable strategy (no signals, no backtest of rules), use `update_strategy` for the analysis path, then run_strategy with the EDA entrypoint. Do not use backtest or hyperopt for that intent unless they switch to strategy building or optimization.
 * If the user asks for training/hyperparameter optimization of parameters, then 
@@ -209,7 +209,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                     "task": {
                         "type": "string",
                         "description": (
-                            "High-level goal and required behavior or code changes only;"
+                            "High-level goal and required behavior or code changes only; use english for the task description."
                             "Do not specify any file paths or filenames, the tool already known them"
                         ),
                     }
@@ -314,14 +314,13 @@ def run_analyse_code(
     thread_id: str,
     question: str,
     model: str,
-    api_key: str,
 ) -> dict[str, Any]:
     q = (question or "").strip()
     if not q:
         return {"ok": False, "error": "question is empty"}
     if not thread_id_allowed(thread_id):
         return {"ok": False, "error": "invalid thread_id"}
-    if not (api_key or "").strip():
+    if not os.getenv("OPENROUTER_API_KEY", "").strip():
         return {"ok": False, "error": "OPENROUTER_API_KEY is not configured"}
 
     code = read_strategy_code(thread_id)
@@ -339,15 +338,7 @@ def run_analyse_code(
         f"{_tail(code, 80_000)}"
     )
 
-    llm = ChatOpenRouter(
-        model=model,
-        openai_api_key=api_key,
-        request_timeout=120,
-        default_headers={
-            "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "http://localhost:5173"),
-            "X-Title": os.getenv("OPENROUTER_APP_NAME", "VibeTrader Strategy Builder"),
-        },
-    )
+    llm = ChatOpenRouter(model='anthropic/claude-opus-4.6', request_timeout=120_000)
     msg = llm.invoke(
         [
             SystemMessage(content=analysis_system),
@@ -432,9 +423,9 @@ def _run_codex_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
         "exec",
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
-        # "--model", "gpt-5.4-mini",
         "-c", "service_tier=fast",
         "-c", "model_verbosity=low",
+        "-c", "model_reasoning_effort=high", # minimal, low, medium, high, xhigh
         "-c", "features.fast_mode=true",
         task,
     ]
@@ -684,7 +675,6 @@ def _tool_handlers_for_thread(
     thread_id: str,
     *,
     model: str,
-    api_key: str,
     on_progress: ProgressCallback = None,
 ) -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
     def _update(args: dict[str, Any]) -> dict[str, Any]:
@@ -703,7 +693,6 @@ def _tool_handlers_for_thread(
             thread_id=thread_id,
             question=str(args.get("question", "")),
             model=model,
-            api_key=api_key,
         )
 
     return {
@@ -786,9 +775,7 @@ def build_agent_reply(
     def _reply_duration_ms() -> int:
         return int(round((time.perf_counter() - t0) * 1000))
 
-    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-
-    if not api_key:
+    if not os.getenv("OPENROUTER_API_KEY", "").strip():
         return {
             "message": (
                 "OPENROUTER_API_KEY is not configured. Your message was saved. "
@@ -821,20 +808,12 @@ Current strategy parameters (overrides: pass parameters_json on run_strategy to 
     ]
 
     max_iterations = 10
-    llm = ChatOpenRouter(
-        model=model,
-        openai_api_key=api_key,
-        request_timeout=120,
-        default_headers={
-            "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "http://localhost:5173"),
-            "X-Title": os.getenv("OPENROUTER_APP_NAME", "VibeTrader Strategy Builder"),
-        },
-    )
+    llm = ChatOpenRouter(model='openai/gpt-5.4', request_timeout=120_000, reasoning={"effort": "high"})
+    # llm = ChatOpenRouter(model='anthropic/claude-opus-4.6', request_timeout=120_000)
     llm_tools = llm.bind_tools(AGENT_TOOLS)
     tool_handlers = _tool_handlers_for_thread(
         thread_id,
         model=model,
-        api_key=api_key,
         on_progress=on_progress,
     )
 

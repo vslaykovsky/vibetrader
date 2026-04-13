@@ -148,7 +148,8 @@ Optional array of row objects. Column headers are derived from `Object.keys(rows
 ```
 
 - Numbers are auto-formatted; null/undefined render as empty.
-- Use this for rankings, holdings, scan results, or any tabular data you want displayed.
+- Use this for rankings, holdings, trades, scan results, or any tabular data you want displayed.
+- when producing trades, generate a comments column with a short explanation of why this trade happened
 
 ### `metrics`
 

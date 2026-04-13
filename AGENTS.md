@@ -25,7 +25,7 @@ Check `strategy` table, every record is a single run in the chat thread. It cont
 - DB model / engine URL / session factory → `backend/db/models.py`, `backend/db/session.py`
 - API shape / new routes → `backend/api/routes.py`
 - Agent, tools, Codex, runs → `backend/services/agent.py`
-- LLM client → `backend/services/chat_openrouter.py`
+- LLM client → `langchain_openrouter.ChatOpenRouter` (see `backend/services/agent.py`)
 - UI thread + canvas → `frontend/src/pages/StrategyPage.jsx`, `frontend/src/strategyChartRenderer.js`
 - Chart/output JSON spec → `backend/strategies/AGENTS.md`
 
