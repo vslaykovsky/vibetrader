@@ -894,9 +894,6 @@ export function StrategyPage() {
                 </button>
                 <Link to="/" className="app-home-link" aria-label="Go to homepage">
                   <span className="app-logo">TraderChat</span>
-                  <span className="app-beta-badge" aria-label="Beta">
-                    Beta
-                  </span>
                 </Link>
               </div>
             </div>

@@ -1,22 +1,13 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { randomUUID } from '../randomUUID.js';
 import { useAuth } from '../AuthContext';
-import { useTheme } from '../ThemeContext';
 import { ProfileMenu } from '../ProfileMenu';
+import { LogoMark } from '../LogoMark';
 
 function createThreadId() {
   return randomUUID();
 }
-
-const HERO_CHART_IMG =
-  'https://lh3.googleusercontent.com/aida-public/AB6AXuBurKkY1bKcBFWjtm2ceXH8JkWhy_VRSP_cBsqfk-MRG2eQ-8i4Y6kAOkeAkw_4PJTXqZFMyR-gnNnX2z1QcKwx3yWYejRWXl8nS_ArqZlixRJkE6oi2nb_9BGSCfKdejaNax2mzaWqYohE-i6n7u-jmNWIvZafoOf1XK-DOcXC30o3CDCU2SYy3q_nWlNjzqIZGJzef8I2oN-BBp-oJnZxmd8KnXxzZJ1lGZhf6CfxO1Gq9nYHqsaqVqP18uxExidJRtz6m3DLmZfm';
-
-const SPLIT_IMG_A =
-  'https://lh3.googleusercontent.com/aida-public/AB6AXuCverN5--WcyyAhT-iYArlaKb66uqdrOcJl1xVig5f42vcydRuV3OTGeGDMl5YKkETbMLh7I2WAOAwYzWn-KHaRqs2CqXp4nsmCjtaKn7Whu4lyWzAlqdbYMpLRDTS6fk3kYckrxAyl3WkBYevsFwYXjF6ZzO6LU1nrRB0g6or3y8LQYA5naFge0tHaA5RsQjAfxlbIpOcm_StF-2MSeZJ6zdn1oFjdREtxfXkY62Q4AmzdcPTa2O1_be9Dqjirm8qGOg4jrR2UnUIa';
-
-const SPLIT_IMG_B =
-  'https://lh3.googleusercontent.com/aida-public/AB6AXuDKPz36lzM20MaS9v9v9z50gdgCcOJmIYpyURZ-_ZWEBdV6fM43iQRXZbgpq3tLIOwsYkphc4m3XWz_wc9ahiaI9QfqJ9FzFxE499nnZQoaxYhQf9kcwpisjs5T19l-E0dsqf445A_9yWzSFG8XFSW1_2gBHrPIuNjJvY4r-U8dVoMyLETRtNKVvCxTpRC-PJllWJAjvoHwO0jhFUYhzkS9niUq5NozwVCbXZktBKrQHVu-HUN-BuTVIPQohciRVN0KLFzGFLfGNl-9';
 
 function scrollToId(id) {
   document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
@@ -25,7 +16,7 @@ function scrollToId(id) {
 export function HomePage() {
   const navigate = useNavigate();
   const { user, loading, signInWithGoogle, signOut } = useAuth();
-  const { theme, toggleTheme } = useTheme();
+  const [pricingOpen, setPricingOpen] = useState(false);
   const examplePrompts = useMemo(
     () => [
       'Turn my manual strategy into rules I can backtest',
@@ -36,6 +27,20 @@ export function HomePage() {
     [],
   );
 
+  useEffect(() => {
+    if (!pricingOpen) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') setPricingOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [pricingOpen]);
+
   const goStrategy = () => navigate(`/strategy/${createThreadId()}`);
   const primaryCta = () => (user ? goStrategy() : signInWithGoogle());
 
@@ -44,55 +49,28 @@ export function HomePage() {
       <nav className="home-nav" aria-label="Primary">
         <div className="home-nav-inner">
           <div className="home-nav-brand">
-            <span className="home-nav-logo">TraderChat.AI</span>
-            <span className="app-beta-badge" aria-label="Beta">
-              Beta
-            </span>
+            <LogoMark className="logo-mark logo-mark--nav" />
+            <span className="home-nav-logo">TraderChat</span>
           </div>
           <div className="home-nav-links">
-            <button type="button" className="home-nav-link home-nav-link-active" onClick={() => scrollToId('home-features')}>
-              Features
-            </button>
-            <button type="button" className="home-nav-link" onClick={() => scrollToId('home-cta')}>
+            <button type="button" className="home-nav-link" onClick={() => setPricingOpen(true)}>
               Pricing
             </button>
-            <button type="button" className="home-nav-link" onClick={() => scrollToId('home-asymmetric')}>
-              How it Works
-            </button>
-            <button type="button" className="home-nav-link" onClick={() => scrollToId('home-footer')}>
-              About
+            <button type="button" className="home-nav-link" onClick={() => scrollToId('home-features')}>
+              How it works
             </button>
           </div>
           <div className="home-nav-auth">
-            <button
-              type="button"
-              className="theme-toggle"
-              onClick={toggleTheme}
-              aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-              title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
-            >
-              <span className="home-ms" aria-hidden>
-                {theme === 'light' ? 'dark_mode' : 'light_mode'}
-              </span>
-            </button>
             {!loading &&
               (user ? (
                 <div className="home-nav-user">
                   <ProfileMenu user={user} signOut={signOut} surface="home" />
                   <span className="auth-name">{user.user_metadata?.full_name || user.email}</span>
-                  <button type="button" className="home-btn home-btn-primary" onClick={goStrategy}>
-                    Open app
-                  </button>
                 </div>
               ) : (
-                <>
-                  <button type="button" className="home-btn home-btn-ghost" onClick={signInWithGoogle}>
-                    Sign in
-                  </button>
-                  <button type="button" className="home-btn home-btn-primary" onClick={signInWithGoogle}>
-                    Get Started
-                  </button>
-                </>
+                <button type="button" className="home-btn home-btn-secondary" onClick={signInWithGoogle}>
+                  Sign in
+                </button>
               ))}
           </div>
         </div>
@@ -102,7 +80,6 @@ export function HomePage() {
         <section className="home-hero-section">
           <div className="home-hero-grid">
             <div className="home-hero-copy">
-              <div className="home-hero-pill">Multi-Asset Intelligence</div>
               <h1 className="home-hero-title">
                 Your AI Co-Pilot for <em className="home-hero-em">Precision Trading</em>
               </h1>
@@ -118,62 +95,17 @@ export function HomePage() {
                   How it Works
                 </button>
               </div>
-              <div className="home-hero-exchanges">
-                <span className="home-hero-exchanges-label">Trade On</span>
-                <div className="home-hero-exchanges-list">
-                  <span>NYSE</span>
-                  <span>NASDAQ</span>
-                  <span>BINANCE</span>
-                  <span>COINBASE</span>
-                </div>
-              </div>
             </div>
             <div className="home-hero-visual">
               <div className="home-hero-glow" aria-hidden />
-              <div className="home-mock-chat">
-                <div className="home-mock-chat-top">
-                  <div className="home-mock-chat-dots" aria-hidden>
-                    <span className="home-mock-dot home-mock-dot-error" />
-                    <span className="home-mock-dot home-mock-dot-primary" />
-                  </div>
-                  <span className="home-mock-chat-tickers">NVDA · 1D | BTC/USDT · 1H</span>
-                  <div className="home-mock-scan">
-                    <span className="home-ms" aria-hidden>
-                      query_stats
-                    </span>
-                    <span className="home-mock-scan-label">Active Scanning</span>
-                  </div>
-                </div>
-                <div className="home-mock-chat-body">
-                  <div className="home-mock-row home-mock-row-user">
-                    <div className="home-bubble home-bubble-user">
-                      &quot;Analyze NVDA for post-earnings gap support and compare relative strength against BTC.&quot;
-                    </div>
-                  </div>
-                  <div className="home-mock-row home-mock-row-ai">
-                    <div className="home-bubble home-bubble-ai">
-                      <div className="home-bubble-ai-head">
-                        <span className="home-ms" aria-hidden>
-                          auto_awesome
-                        </span>
-                        <span>AI Multi-Asset Insight</span>
-                      </div>
-                      <p className="home-bubble-ai-text">
-                        NVDA is showing strong support at $820. Relative strength vs SPY is elevated. BTC is consolidating.
-                        Example paired idea: bullish NVDA exposure with a BTC-aware risk frame.
-                      </p>
-                      <div className="home-bubble-ai-chart">
-                        <img src={HERO_CHART_IMG} alt="" className="home-bubble-ai-chart-img" />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <div className="home-mock-chat-input">
-                  <div className="home-mock-input-fake">Compare stocks, crypto, or forex…</div>
-                  <div className="home-mock-send" aria-hidden>
-                    <span className="home-ms">send</span>
-                  </div>
-                </div>
+              <div className="home-hero-screenshot-wrap">
+                <img
+                  src="/tc.png"
+                  alt="Strategy workspace with chat and SPY mean reversion backtest charts"
+                  className="home-hero-screenshot"
+                  width={1904}
+                  height={1264}
+                />
               </div>
             </div>
           </div>
@@ -181,18 +113,6 @@ export function HomePage() {
 
         <section className="home-trust" aria-label="Trust signals">
           <div className="home-trust-inner">
-            <div className="home-trust-item">
-              <span className="home-ms home-ms-fill" aria-hidden>
-                verified_user
-              </span>
-              <span>Secure &amp; Encrypted</span>
-            </div>
-            <div className="home-trust-item">
-              <span className="home-ms home-ms-fill" aria-hidden>
-                monitoring
-              </span>
-              <span>Real-time Multi-Asset Feeds</span>
-            </div>
             <div className="home-trust-item">
               <span className="home-ms home-ms-fill" aria-hidden>
                 account_balance
@@ -204,6 +124,18 @@ export function HomePage() {
                 bolt
               </span>
               <span>Backtesting Engine</span>
+            </div>
+            <div className="home-trust-item">
+              <span className="home-ms home-ms-fill" aria-hidden>
+                monitoring
+              </span>
+              <span>Real-time Multi-Asset Feeds</span>
+            </div>
+            <div className="home-trust-item">
+              <span className="home-ms home-ms-fill" aria-hidden>
+                verified_user
+              </span>
+              <span>Secure &amp; Encrypted</span>
             </div>
           </div>
         </section>
@@ -252,11 +184,6 @@ export function HomePage() {
               <p className="home-feature-card-text">
                 Turn chat into testable rules, run historical backtests, and iterate with charts and metrics in one thread.
               </p>
-              <div className="home-feature-code">
-                <span>// Cross-asset strategy sketch</span>
-                <span>IF (STOCK.NVDA &gt; EMA200) AND (CRYPTO.BTC &lt; RSI30)</span>
-                <span>THEN DEFINE_RULESET(&quot;paired_long_nvda&quot;);</span>
-              </div>
             </article>
             <article className="home-feature-card">
               <div className="home-feature-icon-wrap">
@@ -279,45 +206,6 @@ export function HomePage() {
                 </div>
               </div>
             </article>
-          </div>
-        </section>
-
-        <section className="home-asymmetric" id="home-asymmetric">
-          <div className="home-asymmetric-copy">
-            <span className="home-asymmetric-kicker">Engineered for Alpha</span>
-            <h2 className="home-asymmetric-title">Built for the next generation of multi-asset seekers.</h2>
-            <p className="home-asymmetric-lead">
-              Whether you are trading equities or crypto, keep research, code, and results in one calm, high-contrast
-              surface.
-            </p>
-            <div className="home-asymmetric-list">
-              <div className="home-asymmetric-item">
-                <span className="home-ms" aria-hidden>
-                  chat_bubble
-                </span>
-                <div>
-                  <h4 className="home-asymmetric-item-title">Natural language interface</h4>
-                  <p className="home-asymmetric-item-text">Describe edge cases and constraints in plain English.</p>
-                </div>
-              </div>
-              <div className="home-asymmetric-item">
-                <span className="home-ms" aria-hidden>
-                  hub
-                </span>
-                <div>
-                  <h4 className="home-asymmetric-item-title">One thread, many assets</h4>
-                  <p className="home-asymmetric-item-text">Stocks, crypto, and workflow context stay connected.</p>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div className="home-asymmetric-visuals">
-            <div className="home-asymmetric-img-wrap">
-              <img src={SPLIT_IMG_A} alt="" className="home-asymmetric-img" />
-            </div>
-            <div className="home-asymmetric-img-wrap home-asymmetric-img-offset">
-              <img src={SPLIT_IMG_B} alt="" className="home-asymmetric-img" />
-            </div>
           </div>
         </section>
 
@@ -365,53 +253,46 @@ export function HomePage() {
         </section>
       </main>
 
-      <footer className="home-footer" id="home-footer">
-        <div className="home-footer-grid">
-          <div className="home-footer-brand-block">
-            <span className="home-footer-logo">TraderChat.AI</span>
-            <p className="home-footer-tag">
-              Vibetrader · Strategy research and backtesting in a single chat thread.
-            </p>
-          </div>
-          <div>
-            <h5 className="home-footer-col-title">Platform</h5>
-            <ul className="home-footer-links">
-              <li>
-                <button type="button" className="home-footer-link" onClick={primaryCta}>
-                  Strategy chat
-                </button>
-              </li>
-              <li>
-                <button type="button" className="home-footer-link" onClick={() => scrollToId('home-features')}>
-                  Backtesting
-                </button>
-              </li>
-            </ul>
-          </div>
-          <div>
-            <h5 className="home-footer-col-title">Product</h5>
-            <ul className="home-footer-links">
-              <li>
-                <button type="button" className="home-footer-link" onClick={() => scrollToId('home-prompts')}>
-                  Example prompts
-                </button>
-              </li>
-              <li>
-                <button type="button" className="home-footer-link" onClick={() => scrollToId('home-asymmetric')}>
-                  How it works
-                </button>
-              </li>
-            </ul>
-          </div>
-          <div>
-            <h5 className="home-footer-col-title">Stay updated</h5>
-            <p className="home-footer-small">We&apos;ll announce live trading and new markets here first.</p>
-          </div>
-        </div>
-        <div className="home-footer-bottom">
-          <p className="home-footer-copy">© {new Date().getFullYear()} TraderChat.AI · Trading involves significant risk.</p>
-        </div>
+      <footer className="home-footer home-footer--simple" id="home-footer">
+        <p className="home-footer-copy">© 2026 TraderChat · Trading involves significant risk</p>
       </footer>
+
+      {pricingOpen ? (
+        <div
+          className="home-pricing-overlay"
+          role="presentation"
+          onClick={() => setPricingOpen(false)}
+        >
+          <div
+            className="home-pricing-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="home-pricing-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="home-pricing-close"
+              onClick={() => setPricingOpen(false)}
+              aria-label="Close pricing"
+            >
+              <span className="home-ms" aria-hidden>
+                close
+              </span>
+            </button>
+            <h2 id="home-pricing-title" className="home-pricing-title">
+              Pricing
+            </h2>
+            <p className="home-pricing-body">
+              TraderChat is <strong>free while we are in beta</strong>. We are gathering feedback and hardening the product
+              before we introduce paid plans.
+            </p>
+            <button type="button" className="home-btn home-btn-secondary-solid" onClick={() => setPricingOpen(false)}>
+              Got it
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
