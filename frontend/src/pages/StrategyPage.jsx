@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -366,7 +367,9 @@ export function StrategyPage() {
   const [isNarrow, setIsNarrow] = useState(false);
   const [mobileCanvasOpen, setMobileCanvasOpen] = useState(false);
   const [chatPanelWidthPx, setChatPanelWidthPx] = useState(null);
+  const [composerExpanded, setComposerExpanded] = useState(false);
   const layoutDualRef = useRef(null);
+  const composerExpandedTextareaRef = useRef(null);
   const hashHydratedRef = useRef(false);
   const appliedHashKeyRef = useRef('');
   const hydratingForRef = useRef('');
@@ -668,7 +671,7 @@ export function StrategyPage() {
           navigate('.', { replace: true, state: {} });
           setDraft(draftText);
           setTimeout(() => {
-            chatFormRef.current?.requestSubmit();
+            void handleSubmit({ preventDefault() {} }, draftText);
           }, 0);
         }
       } catch (loadError) {
@@ -715,6 +718,37 @@ export function StrategyPage() {
       setChatPanelWidthPx(null);
     }
   }, [isNarrow]);
+
+  useEffect(() => {
+    if (!composerExpanded || typeof document === 'undefined') {
+      return undefined;
+    }
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [composerExpanded]);
+
+  useEffect(() => {
+    if (!composerExpanded) {
+      return undefined;
+    }
+    const onKey = (event) => {
+      if (event.key === 'Escape') {
+        setComposerExpanded(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [composerExpanded]);
+
+  useLayoutEffect(() => {
+    if (!composerExpanded) {
+      return;
+    }
+    composerExpandedTextareaRef.current?.focus();
+  }, [composerExpanded]);
 
   useEffect(() => {
     if (isNarrow || chatPanelWidthPx == null || typeof ResizeObserver === 'undefined') {
@@ -943,9 +977,17 @@ export function StrategyPage() {
     };
   }, [displayOutput]);
 
-  async function handleSubmit(event) {
-    event.preventDefault();
-    const message = draft.trim();
+  async function handleSubmit(event, messageFromField) {
+    if (event && typeof event.preventDefault === 'function') {
+      event.preventDefault();
+    }
+    const raw =
+      messageFromField !== undefined && messageFromField !== null
+        ? String(messageFromField)
+        : messageTextareaRef.current?.value ??
+          composerExpandedTextareaRef.current?.value ??
+          draft;
+    const message = raw.trim();
     if (!message || submitting || serverJob.status === 'running') {
       return;
     }
@@ -1100,6 +1142,7 @@ export function StrategyPage() {
       : { flex: '1.4 1 0', minWidth: LAYOUT_SPLIT.minCanvasPx, minHeight: 0 };
 
   return (
+    <>
     <main className={`layout${isNarrow ? ' layout-narrow' : ''}${mobileCanvasOpen ? ' is-mobile-canvas-open' : ''}`}>
       <div className="layout-dual" ref={layoutDualRef}>
         <section ref={chatPanelRef} className="chat-panel" style={chatPanelStyle}>
@@ -1188,7 +1231,7 @@ export function StrategyPage() {
                       disabled={showProcessing}
                       onClick={() => {
                         setDraft(p);
-                        setTimeout(() => chatFormRef.current?.requestSubmit(), 0);
+                        setTimeout(() => void handleSubmit({ preventDefault() {} }, p), 0);
                       }}
                     >
                       {p}
@@ -1202,17 +1245,41 @@ export function StrategyPage() {
             Message
           </label>
           <div className="chat-compose">
+            <button
+              type="button"
+              className="chat-compose-expand"
+              onClick={() => setComposerExpanded(true)}
+              disabled={showProcessing}
+              aria-label="Expand message editor"
+              aria-expanded={composerExpanded}
+              title="Expand editor"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+              </svg>
+            </button>
             <textarea
               ref={messageTextareaRef}
               id="message"
               placeholder="Describe your strategy in your own words..."
+              title="Ctrl+Enter or ⌘+Enter to send"
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey) {
-                  event.preventDefault();
-                  chatFormRef.current?.requestSubmit();
-                }
+                if (event.nativeEvent.isComposing) return;
+                if (event.key !== 'Enter' && event.key !== 'NumpadEnter') return;
+                if (!event.metaKey && !event.ctrlKey) return;
+                event.preventDefault();
+                void handleSubmit(event, event.currentTarget.value);
               }}
               rows={4}
             />
@@ -1423,5 +1490,76 @@ export function StrategyPage() {
         </nav>
       </aside>
     </main>
+    {composerExpanded
+      ? createPortal(
+          <div
+            className="chat-compose-fullscreen"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Message editor"
+          >
+            <button
+              type="button"
+              className="chat-compose-fullscreen-scrim"
+              aria-label="Close expanded editor"
+              onClick={() => setComposerExpanded(false)}
+            />
+            <div className="chat-compose-fullscreen-panel">
+              <div className="chat-compose-fullscreen-toolbar">
+                <button
+                  type="button"
+                  className="chat-compose-fullscreen-close"
+                  onClick={() => setComposerExpanded(false)}
+                  aria-label="Close"
+                >
+                  ×
+                </button>
+              </div>
+              <textarea
+                ref={composerExpandedTextareaRef}
+                className="chat-compose-fullscreen-textarea"
+                placeholder="Describe your strategy in your own words..."
+                title="Ctrl+Enter or ⌘+Enter to send"
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.nativeEvent.isComposing) return;
+                  if (event.key !== 'Enter' && event.key !== 'NumpadEnter') return;
+                  if (!event.metaKey && !event.ctrlKey) return;
+                  event.preventDefault();
+                  const v = event.currentTarget.value;
+                  if (!v.trim() || showProcessing) return;
+                  void handleSubmit(event, v);
+                  setComposerExpanded(false);
+                }}
+              />
+              <div className="chat-compose-fullscreen-footer">
+                <button
+                  type="button"
+                  className="chat-compose-fullscreen-done"
+                  onClick={() => setComposerExpanded(false)}
+                >
+                  Done
+                </button>
+                <button
+                  type="button"
+                  className="chat-compose-fullscreen-send"
+                  disabled={showProcessing}
+                  onClick={() => {
+                    const v = composerExpandedTextareaRef.current?.value ?? draft;
+                    if (!v.trim() || showProcessing) return;
+                    void handleSubmit({ preventDefault() {} }, v);
+                    setComposerExpanded(false);
+                  }}
+                >
+                  Send
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null}
+    </>
   );
 }

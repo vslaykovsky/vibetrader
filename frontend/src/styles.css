@@ -1939,6 +1939,49 @@ li {
 
 .chat-compose textarea {
   padding-right: 64px;
+  padding-bottom: 72px;
+  padding-top: 40px;
+}
+
+.chat-compose-expand {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  width: 30px;
+  height: 30px;
+  margin: 0;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.chat-compose-expand:hover {
+  color: var(--accent-strong);
+  background: var(--back-to-current-hover);
+}
+
+.chat-compose-expand:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.chat-compose-expand:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.chat-compose-expand svg {
+  width: 18px;
+  height: 18px;
+  display: block;
 }
 
 .chat-actions {
@@ -1980,9 +2023,10 @@ li {
   color: var(--send-accent);
   cursor: pointer;
   position: absolute;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
+  right: 4px;
+  bottom: 4px;
+  top: auto;
+  transform: none;
   transition: transform 120ms ease, color 120ms ease, opacity 120ms ease;
 }
 
@@ -1994,7 +2038,7 @@ li {
 }
 
 .chat-send-button:hover {
-  transform: translateY(-50%) scale(1.06);
+  transform: scale(1.06);
 }
 
 .chat-send-button:hover svg {
@@ -2002,7 +2046,7 @@ li {
 }
 
 .chat-send-button:active {
-  transform: translateY(-50%) scale(0.98);
+  transform: scale(0.98);
 }
 
 .chat-actions button:disabled {
@@ -2012,6 +2056,158 @@ li {
 
 .chat-send-button:disabled {
   cursor: default;
+}
+
+.chat-compose-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 220;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+    max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  box-sizing: border-box;
+}
+
+.chat-compose-fullscreen-scrim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: var(--sidebar-backdrop-bg);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  cursor: pointer;
+}
+
+.chat-compose-fullscreen-panel {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.chat-compose-fullscreen-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 6px 6px 0 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.chat-compose-fullscreen-close {
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.45rem;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-compose-fullscreen-close:hover {
+  color: var(--text);
+}
+
+.chat-compose-fullscreen-close:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.chat-compose-fullscreen-textarea {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  resize: none;
+  padding: 16px 20px;
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1.5;
+  background: var(--panel-strong);
+  color: var(--text);
+  outline: none;
+}
+
+.chat-compose-fullscreen-footer {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--chat-input-strip-bg);
+}
+
+.chat-compose-fullscreen-done {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 18px;
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 600;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.chat-compose-fullscreen-done:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.chat-compose-fullscreen-done:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.chat-compose-fullscreen-send {
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 22px;
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 600;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+html[data-theme='dark'] .chat-compose-fullscreen-send {
+  color: #0f172a;
+}
+
+.chat-compose-fullscreen-send:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.chat-compose-fullscreen-send:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.chat-compose-fullscreen-send:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .canvas-hero {
