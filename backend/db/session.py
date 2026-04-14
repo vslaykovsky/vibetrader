@@ -151,3 +151,49 @@ def ensure_strategy_langsmith_trace_column(eng: Engine) -> None:
         return
     with eng.begin() as conn:
         conn.execute(text("ALTER TABLE strategy ADD COLUMN langsmith_trace TEXT NOT NULL DEFAULT ''"))
+
+
+def ensure_strategy_strategy_name_column(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    insp = inspect(eng)
+    if not insp.has_table("strategy"):
+        return
+    cols = {c["name"] for c in insp.get_columns("strategy")}
+    if "strategy_name" in cols:
+        return
+    with eng.begin() as conn:
+        conn.execute(text("ALTER TABLE strategy ADD COLUMN strategy_name VARCHAR(512) NOT NULL DEFAULT ''"))
+
+
+def ensure_strategy_messages_count_column(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    insp = inspect(eng)
+    if not insp.has_table("strategy"):
+        return
+    cols = {c["name"] for c in insp.get_columns("strategy")}
+    if "messages_count" in cols:
+        return
+    with eng.begin() as conn:
+        conn.execute(text("ALTER TABLE strategy ADD COLUMN messages_count INTEGER NOT NULL DEFAULT 0"))
+        if "messages" not in cols:
+            return
+        if eng.dialect.name == "postgresql":
+            conn.execute(
+                text(
+                    "UPDATE strategy SET messages_count = CASE "
+                    "WHEN messages IS NULL THEN 0 "
+                    "WHEN jsonb_typeof(messages::jsonb) = 'array' THEN jsonb_array_length(messages::jsonb) "
+                    "ELSE 0 END"
+                )
+            )
+        else:
+            conn.execute(
+                text(
+                    "UPDATE strategy SET messages_count = CASE "
+                    "WHEN messages IS NULL THEN 0 "
+                    "WHEN json_type(messages) = 'array' THEN json_array_length(messages) "
+                    "ELSE 0 END"
+                )
+            )

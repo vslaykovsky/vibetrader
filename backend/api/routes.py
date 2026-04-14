@@ -7,12 +7,15 @@ import time
 from flask import Blueprint, Response, current_app, g, jsonify, request
 import logging
 from pathlib import Path
-from sqlalchemy import desc, func
-from sqlalchemy.orm import Session
-
+from sqlalchemy import desc, text
 from auth import require_auth
 from db.models import Strategy
 from db.session import SessionLocal
+from db.strategy_queries import (
+    ensure_latest_thread_strategy,
+    get_strategy_by_id,
+    latest_thread_strategy,
+)
 from services.agent import (
     STRATEGIES_DIR,
     build_agent_reply,
@@ -57,17 +60,9 @@ def serialize_strategy(strategy: Strategy) -> dict:
         "status": strategy.status,
         "status_text": strategy.status_text or "",
         "langsmith_trace": strategy.langsmith_trace or "",
+        "strategy_name": strategy.strategy_name or "",
         "created_at": strategy.created_at.isoformat() if strategy.created_at else None,
     }
-
-
-def _latest_thread_strategy(session: Session, thread_id: str) -> Strategy | None:
-    return (
-        session.query(Strategy)
-        .filter_by(thread_id=thread_id)
-        .order_by(desc(Strategy.created_at))
-        .first()
-    )
 
 
 @strategy_blueprint.get("/threads")
@@ -76,40 +71,35 @@ def list_threads() -> tuple:
     uid = g.user_id
     session = SessionLocal()
     try:
-        latest_per_thread = (
-            session.query(
-                Strategy.thread_id.label("thread_id"),
-                func.max(Strategy.created_at).label("latest_created_at"),
-            )
-            .filter(Strategy.created_by == uid)
-            .group_by(Strategy.thread_id)
-            .subquery()
-        )
-        rows = (
-            session.query(Strategy)
-            .join(
-                latest_per_thread,
-                (Strategy.thread_id == latest_per_thread.c.thread_id)
-                & (Strategy.created_at == latest_per_thread.c.latest_created_at),
-            )
-            .filter(Strategy.created_by == uid)
-            .order_by(desc(Strategy.created_at))
-            .all()
-        )
+        sql = """
+SELECT id, thread_id, created_at, messages_count, status, status_text, strategy_name
+FROM (
+    SELECT DISTINCT ON (thread_id)
+        id, thread_id, created_at, messages_count, status, status_text, strategy_name
+    FROM strategy
+    WHERE created_by = :uid
+    ORDER BY thread_id, created_at DESC, id DESC
+) latest
+ORDER BY created_at DESC, id DESC
+"""
+        stmt = text(sql)
+        logger.info("list_threads SQL: %s", sql.strip())
+        rows = session.execute(stmt, {"uid": uid}).mappings().all()
         return (
             jsonify(
                 {
                     "threads": [
                         {
-                            "thread_id": row.thread_id,
-                            "latest_run_id": row.id,
-                            "latest_created_at": row.created_at.isoformat()
-                            if row.created_at
+                            "thread_id": row["thread_id"],
+                            "latest_run_id": row["id"],
+                            "latest_created_at": row["created_at"].isoformat()
+                            if row["created_at"]
                             else None,
-                            "message_count": len(row.messages or []),
-                            "strategy_name": _strategy_name_from_canvas(row.canvas),
-                            "status": row.status,
-                            "status_text": row.status_text or "",
+                            "message_count": int(row["messages_count"] or 0),
+                            "strategy_name": (row["strategy_name"] or "").strip()
+                            or "unknown strategy",
+                            "status": row["status"],
+                            "status_text": row["status_text"] or "",
                         }
                         for row in rows
                     ]
@@ -270,6 +260,12 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str, model: str) -> None
             strategy.messages = messages
             strategy.canvas = canvas_with_output(dict(agent_result["canvas"] or {}), thread_id)
             strategy.code = read_strategy_code(thread_id)
+            sn = (
+                str(agent_result.get("strategy_name") or "").strip()
+                or _strategy_name_from_canvas(strategy.canvas)
+            )
+            if sn:
+                strategy.strategy_name = sn[:512]
             strategy.status = "success"
             strategy.status_text = ""
         except Exception as exc:
@@ -306,7 +302,7 @@ def get_strategy() -> tuple:
     if run_id:
         session = SessionLocal()
         try:
-            strategy = session.get(Strategy, run_id)
+            strategy = get_strategy_by_id(session, run_id)
             if strategy is None:
                 return _validation_error("strategy not found")
             _stamp_langsmith_thread_metadata(strategy.thread_id)
@@ -325,17 +321,12 @@ def get_strategy() -> tuple:
     try:
         workspace = Path(STRATEGIES_DIR) / thread_id
         needs_restore = not workspace.is_dir()
-        strategy = _latest_thread_strategy(session, thread_id)
-        if strategy is None:
-            strategy = Strategy(
-                thread_id=thread_id,
-                created_by=uid,
-                created_by_email=getattr(g, "user_email", None),
-                messages=[],
-                canvas={},
-            )
-            session.add(strategy)
-            session.flush()
+        strategy = ensure_latest_thread_strategy(
+            session,
+            thread_id,
+            uid,
+            getattr(g, "user_email", None),
+        )
         session.commit()
         if needs_restore:
             restore_strategy_workspace_from_snapshot(
@@ -377,7 +368,7 @@ def post_strategy() -> tuple:
             out["error"] = "A strategy update is already in progress."
             return jsonify(out), 409
 
-        latest = _latest_thread_strategy(session, thread_id)
+        latest = latest_thread_strategy(session, thread_id)
         prev_messages = list(latest.messages or []) if latest else []
         prev_canvas = dict(latest.canvas or {}) if latest else {}
         prev_code = getattr(latest, "code", "") if latest else ""
@@ -424,7 +415,7 @@ def strategy_stream():
         while True:
             session = SessionLocal()
             try:
-                strategy = _latest_thread_strategy(session, thread_id)
+                strategy = latest_thread_strategy(session, thread_id)
                 if strategy is None:
                     break
                 snapshot = json.dumps(serialize_strategy(strategy), sort_keys=True)

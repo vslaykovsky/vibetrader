@@ -5,6 +5,7 @@ dotenv.load_dotenv()
 
 import argparse
 import os
+import sys
 
 import time
 import uuid
@@ -20,6 +21,8 @@ from db.session import (
     ensure_strategy_created_by_column,
     ensure_strategy_created_by_email_column,
     ensure_strategy_langsmith_trace_column,
+    ensure_strategy_strategy_name_column,
+    ensure_strategy_messages_count_column,
 )
 import logging
 from logging.handlers import RotatingFileHandler
@@ -48,11 +51,15 @@ def create_app() -> Flask:
     ensure_strategy_created_by_column(engine)
     ensure_strategy_created_by_email_column(engine)
     ensure_strategy_langsmith_trace_column(engine)
+    ensure_strategy_strategy_name_column(engine)
+    ensure_strategy_messages_count_column(engine)
 
     app.register_blueprint(strategy_blueprint)
 
     log_level = os.getenv("LOG_LEVEL", "INFO")
     gcp = (os.getenv("GCP_LOGGING", "1").strip() not in ("0", "false", "False"))
+    if "--debug" in sys.argv:
+        gcp = False
     configure_logging(log_level, gcp=gcp)
     logger = logging.getLogger("backend.request")
 

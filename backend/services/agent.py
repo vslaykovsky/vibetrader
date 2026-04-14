@@ -532,6 +532,27 @@ def _strategy_script_help(workspace: Path) -> str:
     return _tail(_run_strategy_help_stdout(workspace))
 
 
+def read_strategy_name_from_workspace(root: Path) -> str:
+    for fname in ("params.json", "data.json"):
+        path = root / "output" / fname
+        if not path.is_file():
+            continue
+        try:
+            raw = path.read_text(encoding="utf-8").strip()
+            if not raw:
+                continue
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            n = data.get("strategy_name")
+            if isinstance(n, str):
+                s = n.strip()
+                if s:
+                    return s[:512]
+    return ""
+
+
 @traceable(name="run_update_strategy")
 def run_update_strategy(
     thread_id: str, task: str, on_progress: ProgressCallback = None
@@ -557,6 +578,8 @@ def run_update_strategy(
     }
     if codegen.returncode != 0:
         result["error"] = "claude code failed" if runner == "claude" else "codex exec failed"
+    else:
+        result["strategy_name"] = read_strategy_name_from_workspace(root)
     return result
 
 
@@ -797,6 +820,7 @@ def build_agent_reply(
             ),
             "canvas": canvas_with_output(existing_canvas, thread_id),
             "reply_duration_ms": _reply_duration_ms(),
+            "strategy_name": "",
         }
 
     workspace = strategy_root_for_thread(thread_id)
@@ -822,6 +846,7 @@ Current strategy parameters (overrides: pass parameters_json on run_strategy to 
     ]
 
     max_iterations = 10
+    last_strategy_name = ""
     llm = ChatOpenRouter(model='openai/gpt-5.4', request_timeout=120_000, reasoning={"effort": "high"})
     # llm = ChatOpenRouter(model='anthropic/claude-opus-4.6', request_timeout=120_000)
     llm_tools = llm.bind_tools(AGENT_TOOLS)
@@ -848,6 +873,7 @@ Current strategy parameters (overrides: pass parameters_json on run_strategy to 
                 "message": content,
                 "canvas": canvas_with_output(existing_canvas, thread_id),
                 "reply_duration_ms": _reply_duration_ms(),
+                "strategy_name": last_strategy_name,
             }
         for tc in tool_calls:
             name, parsed_args, tid = _tool_call_parts(tc)
@@ -868,6 +894,14 @@ Current strategy parameters (overrides: pass parameters_json on run_strategy to 
                         },
                     )
                     tool_payload = {"ok": False, "error": f"tool execution failed: {type(e).__name__}: {e}"}
+            if (
+                name == UPDATE_STRATEGY_TOOL_NAME
+                and isinstance(tool_payload, dict)
+                and tool_payload.get("ok")
+            ):
+                sn = tool_payload.get("strategy_name")
+                if isinstance(sn, str) and sn.strip():
+                    last_strategy_name = sn.strip()[:512]
             limited = tool_payload
             if name == UPDATE_STRATEGY_TOOL_NAME:
                 limited = _trim_tool_payload_streams(
