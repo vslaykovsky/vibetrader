@@ -359,10 +359,16 @@ export function StrategyPage() {
   );
   const optimisticUserContentRef = useRef(null);
   const viewingRunIdRef = useRef(null);
+  const liveStrategyRunIdRef = useRef('');
+  const algorithmFetchAbortRef = useRef(null);
   const chartsMountRef = useRef(null);
   const [chartError, setChartError] = useState('');
   const [viewingRunId, setViewingRunId] = useState(null);
   const [historicalCanvas, setHistoricalCanvas] = useState(null);
+  const [liveStrategyRunId, setLiveStrategyRunId] = useState('');
+  const [liveStrategyAlgorithm, setLiveStrategyAlgorithm] = useState('');
+  const [historicalStrategyAlgorithm, setHistoricalStrategyAlgorithm] = useState('');
+  const [algorithmLoading, setAlgorithmLoading] = useState(false);
   const [reverting, setReverting] = useState(false);
   const [isNarrow, setIsNarrow] = useState(false);
   const [mobileCanvasOpen, setMobileCanvasOpen] = useState(false);
@@ -383,12 +389,30 @@ export function StrategyPage() {
   }, [getAccessToken]);
 
   viewingRunIdRef.current = viewingRunId;
+  liveStrategyRunIdRef.current = liveStrategyRunId;
+
+  const displayStrategyRunId = useMemo(
+    () => String(viewingRunId || liveStrategyRunId || '').trim(),
+    [viewingRunId, liveStrategyRunId],
+  );
+
+  const displayAlgorithmText = useMemo(
+    () => (viewingRunId ? historicalStrategyAlgorithm : liveStrategyAlgorithm) || '',
+    [viewingRunId, historicalStrategyAlgorithm, liveStrategyAlgorithm],
+  );
+
+  useEffect(() => {
+    algorithmFetchAbortRef.current?.abort();
+    algorithmFetchAbortRef.current = null;
+    setAlgorithmLoading(false);
+  }, [displayStrategyRunId]);
 
   const handleViewRun = useCallback(
     async (runId) => {
       if (runId === viewingRunIdRef.current) {
         setViewingRunId(null);
         setHistoricalCanvas(null);
+        setHistoricalStrategyAlgorithm('');
         appliedHashKeyRef.current = '';
         navigate(
           { pathname: location.pathname, search: location.search, hash: '' },
@@ -403,12 +427,56 @@ export function StrategyPage() {
         if (!response.ok) throw new Error('Failed to load strategy run');
         const payload = await response.json();
         setHistoricalCanvas(payload.canvas || {});
+        setHistoricalStrategyAlgorithm(
+          typeof payload.algorithm === 'string' ? payload.algorithm : '',
+        );
         setViewingRunId(runId);
       } catch (err) {
         setError(err.message);
       }
     },
     [authFetch, navigate, location.pathname, location.search],
+  );
+
+  const fetchStrategyAlgorithm = useCallback(
+    async (runId) => {
+      const rid = String(runId || '').trim();
+      if (!rid) return;
+      algorithmFetchAbortRef.current?.abort();
+      const ac = new AbortController();
+      algorithmFetchAbortRef.current = ac;
+      setAlgorithmLoading(true);
+      setError('');
+      try {
+        const response = await authFetch(`${API_BASE_URL}/strategy/algorithm`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: rid }),
+          signal: ac.signal,
+        });
+        const data = await response.json().catch(() => ({}));
+        if (ac.signal.aborted) return;
+        if (!response.ok) {
+          setError(typeof data.error === 'string' ? data.error : 'Failed to load strategy algorithm');
+          return;
+        }
+        const text = typeof data.algorithm === 'string' ? data.algorithm : '';
+        if (viewingRunIdRef.current && viewingRunIdRef.current === rid) {
+          setHistoricalStrategyAlgorithm(text);
+        } else if (!viewingRunIdRef.current && liveStrategyRunIdRef.current === rid) {
+          setLiveStrategyAlgorithm(text);
+        }
+      } catch (err) {
+        if (err?.name === 'AbortError') return;
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (algorithmFetchAbortRef.current === ac) {
+          setAlgorithmLoading(false);
+          algorithmFetchAbortRef.current = null;
+        }
+      }
+    },
+    [authFetch],
   );
 
   const scrollToAnswerForRun = useCallback((runId) => {
@@ -431,6 +499,12 @@ export function StrategyPage() {
   useEffect(() => {
     setViewingRunId(null);
     setHistoricalCanvas(null);
+    setLiveStrategyRunId('');
+    setLiveStrategyAlgorithm('');
+    setHistoricalStrategyAlgorithm('');
+    setAlgorithmLoading(false);
+    algorithmFetchAbortRef.current?.abort();
+    algorithmFetchAbortRef.current = null;
     setMobileCanvasOpen(false);
     setMessages([]);
     setLoading(true);
@@ -564,6 +638,8 @@ export function StrategyPage() {
       const next = await refreshed.json();
       setMessages(next.messages || []);
       setCanvas(next.canvas || {});
+      setLiveStrategyRunId(typeof next.id === 'string' ? next.id : '');
+      setLiveStrategyAlgorithm(typeof next.algorithm === 'string' ? next.algorithm : '');
       setServerJob({
         status: next.status ?? null,
         statusText: next.status_text || '',
@@ -659,6 +735,8 @@ export function StrategyPage() {
         const msgs = payload.messages || [];
         setMessages(msgs);
         setCanvas(payload.canvas || {});
+        setLiveStrategyRunId(typeof payload.id === 'string' ? payload.id : '');
+        setLiveStrategyAlgorithm(typeof payload.algorithm === 'string' ? payload.algorithm : '');
         setServerJob({
           status: payload.status ?? null,
           statusText: payload.status_text || '',
@@ -888,6 +966,12 @@ export function StrategyPage() {
           const payload = JSON.parse(event.data);
           setMessages(payload.messages || []);
           setCanvas(payload.canvas || {});
+          if (typeof payload.id === 'string') {
+            setLiveStrategyRunId(payload.id);
+          }
+          if (typeof payload.algorithm === 'string') {
+            setLiveStrategyAlgorithm(payload.algorithm);
+          }
           setServerJob({
             status: payload.status ?? null,
             statusText: payload.status_text || '',
@@ -1047,6 +1131,12 @@ export function StrategyPage() {
       optimisticUserContentRef.current = null;
       setMessages(payload.messages || []);
       setCanvas(payload.canvas || {});
+      if (typeof payload.id === 'string') {
+        setLiveStrategyRunId(payload.id);
+      }
+      if (typeof payload.algorithm === 'string') {
+        setLiveStrategyAlgorithm(payload.algorithm);
+      }
       setServerJob({
         status: payload.status ?? null,
         statusText: payload.status_text || '',
@@ -1202,7 +1292,12 @@ export function StrategyPage() {
         </header>
 
         <div className="chat-stream">
-          {loading ? <p className="status">Loading thread…</p> : null}
+          {loading ? (
+            <div className="chat-spinner-row" role="status" aria-live="polite" aria-label="Loading thread">
+              <span className="chat-spinner" aria-hidden />
+              <span className="chat-processing-label">Loading thread…</span>
+            </div>
+          ) : null}
           {messages.map((message, index) => (
             <MessageBubble
               key={`${message.role}-${index}`}
@@ -1396,6 +1491,33 @@ export function StrategyPage() {
           <details className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details">
             <summary className="canvas-pseudocode-summary">Strategy parameters</summary>
             <pre className="canvas-pseudocode">{paramsJsonText}</pre>
+          </details>
+        ) : null}
+        {!loading && displayStrategyRunId ? (
+          <details
+            key={displayStrategyRunId}
+            className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details"
+            onToggle={(e) => {
+              if (!e.currentTarget.open) return;
+              const rid = displayStrategyRunId;
+              if (!String(displayAlgorithmText || '').trim()) {
+                void fetchStrategyAlgorithm(rid);
+              }
+            }}
+          >
+            <summary className="canvas-pseudocode-summary">Strategy Algorithm</summary>
+            {algorithmLoading ? (
+              <div className="chat-spinner-row canvas-algorithm-spinner" role="status" aria-live="polite">
+                <span className="chat-spinner" aria-hidden />
+                <span className="chat-processing-label">Generating overview…</span>
+              </div>
+            ) : (
+              <div className="canvas-algorithm-markdown message-markdown">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {displayAlgorithmText?.trim() || ''}
+                </ReactMarkdown>
+              </div>
+            )}
           </details>
         ) : null}
         {chartError ? <p className="canvas-chart-error">{chartError}</p> : null}

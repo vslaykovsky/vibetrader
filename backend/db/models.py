@@ -34,6 +34,7 @@ class Strategy(Base):
     status_text: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     langsmith_trace: Mapped[str] = mapped_column(Text, nullable=False, default="")
     strategy_name: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    algorithm: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
 
     __table_args__ = (

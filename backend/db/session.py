@@ -166,6 +166,19 @@ def ensure_strategy_strategy_name_column(eng: Engine) -> None:
         conn.execute(text("ALTER TABLE strategy ADD COLUMN strategy_name VARCHAR(512) NOT NULL DEFAULT ''"))
 
 
+def ensure_strategy_algorithm_column(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    insp = inspect(eng)
+    if not insp.has_table("strategy"):
+        return
+    cols = {c["name"] for c in insp.get_columns("strategy")}
+    if "algorithm" in cols:
+        return
+    with eng.begin() as conn:
+        conn.execute(text("ALTER TABLE strategy ADD COLUMN algorithm TEXT NOT NULL DEFAULT ''"))
+
+
 def ensure_strategy_messages_count_column(eng: Engine) -> None:
     from sqlalchemy import inspect
 

@@ -20,6 +20,7 @@ from services.agent import (
     STRATEGIES_DIR,
     build_agent_reply,
     canvas_with_output,
+    generate_strategy_algorithm_pseudocode,
     read_strategy_code,
     redact_secret_json_values_for_user,
     restore_strategy_workspace_from_snapshot,
@@ -61,6 +62,7 @@ def serialize_strategy(strategy: Strategy) -> dict:
         "status_text": strategy.status_text or "",
         "langsmith_trace": strategy.langsmith_trace or "",
         "strategy_name": strategy.strategy_name or "",
+        "algorithm": strategy.algorithm or "",
         "created_at": strategy.created_at.isoformat() if strategy.created_at else None,
     }
 
@@ -68,7 +70,6 @@ def serialize_strategy(strategy: Strategy) -> dict:
 @strategy_blueprint.get("/threads")
 @require_auth
 def list_threads() -> tuple:
-    uid = g.user_id
     session = SessionLocal()
     try:
         sql = """
@@ -77,14 +78,13 @@ FROM (
     SELECT DISTINCT ON (thread_id)
         id, thread_id, created_at, messages_count, status, status_text, strategy_name
     FROM strategy
-    WHERE created_by = :uid
     ORDER BY thread_id, created_at DESC, id DESC
 ) latest
 ORDER BY created_at DESC, id DESC
 """
         stmt = text(sql)
         logger.info("list_threads SQL: %s", sql.strip())
-        rows = session.execute(stmt, {"uid": uid}).mappings().all()
+        rows = session.execute(stmt).mappings().all()
         return (
             jsonify(
                 {
@@ -398,6 +398,49 @@ def post_strategy() -> tuple:
         ).start()
 
         return jsonify(serialize_strategy(new_strategy)), 200
+    finally:
+        session.close()
+
+
+@strategy_blueprint.post("/strategy/algorithm")
+@require_auth
+@traceable
+def post_strategy_algorithm() -> tuple:
+    payload = request.get_json(silent=True) or {}
+    run_id = str(payload.get("id", "")).strip()
+    if not run_id:
+        return _validation_error("id is required")
+
+    session = SessionLocal()
+    try:
+        strategy = get_strategy_by_id(session, run_id)
+        if strategy is None:
+            return _validation_error("strategy not found")
+        existing = (getattr(strategy, "algorithm", None) or "").strip()
+        if existing:
+            return jsonify({"id": strategy.id, "algorithm": existing}), 200
+
+        gen = generate_strategy_algorithm_pseudocode(
+            code=str(strategy.code or ""),
+        )
+        if not gen.get("ok"):
+            return (
+                jsonify(
+                    {
+                        "error": gen.get("error") or "algorithm generation failed",
+                        "id": strategy.id,
+                        "algorithm": "",
+                    }
+                ),
+                502,
+            )
+        text = str(gen.get("algorithm") or "").strip()
+        if len(text) > 120_000:
+            text = text[:120_000]
+        strategy.algorithm = text
+        session.add(strategy)
+        session.commit()
+        return jsonify({"id": strategy.id, "algorithm": strategy.algorithm}), 200
     finally:
         session.close()
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
-from langsmith import traceable
 
 from db.models import Strategy
 
@@ -11,7 +10,6 @@ def get_strategy_by_id(session: Session, strategy_id: str) -> Strategy | None:
     return session.get(Strategy, strategy_id)
 
 
-@traceable(name="latest_thread_strategy")
 def latest_thread_strategy(session: Session, thread_id: str) -> Strategy | None:
     return (
         session.query(Strategy)
@@ -20,7 +18,6 @@ def latest_thread_strategy(session: Session, thread_id: str) -> Strategy | None:
         .first()
     )
 
-@traceable(name="ensure_latest_thread_strategy")
 def ensure_latest_thread_strategy(
     session: Session,
     thread_id: str,

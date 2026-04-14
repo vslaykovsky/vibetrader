@@ -2372,6 +2372,14 @@ html[data-theme='dark'] .chat-compose-fullscreen-send {
   color: var(--text);
 }
 
+.canvas-algorithm-spinner {
+  margin: 14px 0 0;
+}
+
+.canvas-text-block-pseudocode .canvas-algorithm-markdown.message-markdown {
+  margin-top: 14px;
+}
+
 .canvas-pseudocode-diff-details {
   margin-top: 10px;
 }

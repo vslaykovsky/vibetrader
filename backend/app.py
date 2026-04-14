@@ -22,6 +22,7 @@ from db.session import (
     ensure_strategy_created_by_email_column,
     ensure_strategy_langsmith_trace_column,
     ensure_strategy_strategy_name_column,
+    ensure_strategy_algorithm_column,
     ensure_strategy_messages_count_column,
 )
 import logging
@@ -52,6 +53,7 @@ def create_app() -> Flask:
     ensure_strategy_created_by_email_column(engine)
     ensure_strategy_langsmith_trace_column(engine)
     ensure_strategy_strategy_name_column(engine)
+    ensure_strategy_algorithm_column(engine)
     ensure_strategy_messages_count_column(engine)
 
     app.register_blueprint(strategy_blueprint)

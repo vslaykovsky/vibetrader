@@ -364,6 +364,39 @@ def run_analyse_code(
     return {"ok": True, "answer": answer}
 
 
+@traceable(name="generate_strategy_algorithm_pseudocode")
+def generate_strategy_algorithm_pseudocode(*, code: str) -> dict[str, Any]:
+    src = (code or "").strip()
+    if not src:
+        return {
+            "ok": True,
+            "algorithm": "No strategy source code was saved for this run.",
+        }
+    if not os.getenv("OPENROUTER_API_KEY", "").strip():
+        return {"ok": False, "error": "OPENROUTER_API_KEY is not configured"}
+
+    system = (
+        "Write very compact, language-agnostic pseudocode for the core business logic of this trading strategy only. "
+        "Omit boilerplate entirely: CLI/argparse, imports, logging, file I/O, HTTP/API calls, "
+        "dataframe plumbing, plotting, JSON/chart serialization, and generic helpers unless they directly encode a trading rule. "
+        "No long code quotes. Prefer tight numbered steps or compact bullets. If something essential is ambiguous in the source, "
+        "state the single most likely interpretation in one line. "
+        "Can use Markdown for formatting"
+    )
+    llm = ChatOpenRouter(model='anthropic/claude-opus-4.6', request_timeout=120_000)
+    msg = llm.invoke(
+        [
+            SystemMessage(content=system),
+            HumanMessage(
+                content="Extract core-algorithm pseudocode from this strategy.py (business logic only, no I/O boilerplate).\n\n"
+                + src
+            ),
+        ]
+    )
+    text = _aimessage_plain_text(msg).strip()
+    return {"ok": True, "algorithm": text or "(empty response)"}
+
+
 def _strategy_output_file_key(filename: str) -> str:
     lower = filename.lower()
     if lower == "data.json":
