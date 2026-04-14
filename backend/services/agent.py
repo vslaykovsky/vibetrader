@@ -365,7 +365,7 @@ def run_analyse_code(
 
 
 @traceable(name="generate_strategy_algorithm_pseudocode")
-def generate_strategy_algorithm_pseudocode(*, code: str) -> dict[str, Any]:
+def generate_strategy_algorithm_pseudocode(*, code: str, language: str = "") -> dict[str, Any]:
     src = (code or "").strip()
     if not src:
         return {
@@ -375,13 +375,21 @@ def generate_strategy_algorithm_pseudocode(*, code: str) -> dict[str, Any]:
     if not os.getenv("OPENROUTER_API_KEY", "").strip():
         return {"ok": False, "error": "OPENROUTER_API_KEY is not configured"}
 
+    lang = (language or "").strip().lower()
+    lang_line = (
+        f"The user's conversation language (ISO 639-1) is {lang}. Write all natural-language explanations, "
+        f"step titles, and comments in that language."
+        if lang
+        else "The user's conversation language is unknown; write all natural-language explanations, step titles, and comments in English."
+    )
     system = (
         "Write very compact, language-agnostic pseudocode for the core business logic of this trading strategy only. "
         "Omit boilerplate entirely: CLI/argparse, imports, logging, file I/O, HTTP/API calls, "
         "dataframe plumbing, plotting, JSON/chart serialization, and generic helpers unless they directly encode a trading rule. "
         "No long code quotes. Prefer tight numbered steps or compact bullets. If something essential is ambiguous in the source, "
         "state the single most likely interpretation in one line. "
-        "Can use Markdown for formatting"
+        "Can use Markdown for formatting. "
+        + lang_line
     )
     llm = ChatOpenRouter(model='anthropic/claude-opus-4.6', request_timeout=120_000)
     msg = llm.invoke(

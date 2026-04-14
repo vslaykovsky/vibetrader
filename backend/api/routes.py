@@ -26,6 +26,7 @@ from services.agent import (
     restore_strategy_workspace_from_snapshot,
     thread_id_allowed,
 )
+from services.conversation_language import detect_conversation_language_iso
 from langsmith import traceable
 from langsmith.run_helpers import get_current_run_tree
 
@@ -63,6 +64,7 @@ def serialize_strategy(strategy: Strategy) -> dict:
         "langsmith_trace": strategy.langsmith_trace or "",
         "strategy_name": strategy.strategy_name or "",
         "algorithm": strategy.algorithm or "",
+        "language": strategy.language or "",
         "created_at": strategy.created_at.isoformat() if strategy.created_at else None,
     }
 
@@ -373,6 +375,7 @@ def post_strategy() -> tuple:
         prev_canvas = dict(latest.canvas or {}) if latest else {}
         prev_code = getattr(latest, "code", "") if latest else ""
         messages = prev_messages + [{"role": "user", "content": content}]
+        lang = detect_conversation_language_iso(messages)
 
         new_strategy = Strategy(
             thread_id=thread_id,
@@ -383,6 +386,7 @@ def post_strategy() -> tuple:
             code=prev_code or read_strategy_code(thread_id),
             status="running",
             status_text="Starting…",
+            language=lang,
         )
         session.add(new_strategy)
         session.commit()
@@ -422,6 +426,7 @@ def post_strategy_algorithm() -> tuple:
 
         gen = generate_strategy_algorithm_pseudocode(
             code=str(strategy.code or ""),
+            language=str(getattr(strategy, "language", None) or ""),
         )
         if not gen.get("ok"):
             return (
