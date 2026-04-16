@@ -386,6 +386,7 @@ def generate_strategy_algorithm_pseudocode(*, code: str, language: str = "") -> 
         "Write very compact, language-agnostic pseudocode for the core business logic of this trading strategy only. "
         "Omit boilerplate entirely: CLI/argparse, imports, logging, file I/O, HTTP/API calls, "
         "dataframe plumbing, plotting, JSON/chart serialization, and generic helpers unless they directly encode a trading rule. "
+        "Do NOT include or rewrite the pseudocode of internal logic for standard indicators (like RSI, MACD, etc) — if strategy uses a standard indicator, mention its use without describing or outlining its internal computation. "
         "No long code quotes. Prefer tight numbered steps or compact bullets. If something essential is ambiguous in the source, "
         "state the single most likely interpretation in one line. "
         "Can use Markdown for formatting. "
