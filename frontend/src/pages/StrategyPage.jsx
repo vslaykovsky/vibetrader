@@ -490,6 +490,63 @@ export function StrategyPage() {
     return fetch(url, { ...options, headers });
   }, [getAccessToken]);
 
+  const syncLiveStrategyFromServer = useCallback(async () => {
+    const tid = String(threadId || '').trim();
+    if (!tid || !signedInUserId) {
+      return;
+    }
+    if (viewingRunIdRef.current) {
+      return;
+    }
+    try {
+      const response = await authFetch(
+        `${API_BASE_URL}/strategy?thread_id=${encodeURIComponent(tid)}`,
+      );
+      if (!response.ok) {
+        return;
+      }
+      const payload = await response.json().catch(() => ({}));
+      if (viewingRunIdRef.current) {
+        return;
+      }
+      setMessages(payload.messages || []);
+      setCanvas(payload.canvas || {});
+      if (typeof payload.id === 'string') {
+        setLiveStrategyRunId(payload.id);
+      }
+      if (typeof payload.algorithm === 'string') {
+        setLiveStrategyAlgorithm(payload.algorithm);
+      }
+      setServerJob({
+        status: payload.status ?? null,
+        statusText: payload.status_text || '',
+      });
+    } catch {
+    }
+  }, [threadId, signedInUserId, authFetch]);
+
+  const prevJobStatusRef = useRef(null);
+
+  useEffect(() => {
+    const prev = prevJobStatusRef.current;
+    const cur = serverJob.status;
+    const finished = prev === 'running' && cur !== 'running';
+    prevJobStatusRef.current = cur;
+    if (!finished) {
+      return undefined;
+    }
+    let cancelled = false;
+    void (async () => {
+      await syncLiveStrategyFromServer();
+      if (cancelled) {
+        return;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [serverJob.status, syncLiveStrategyFromServer]);
+
   viewingRunIdRef.current = viewingRunId;
   liveStrategyRunIdRef.current = liveStrategyRunId;
 
@@ -613,6 +670,7 @@ export function StrategyPage() {
     hashHydratedRef.current = false;
     appliedHashKeyRef.current = '';
     hydratingForRef.current = '';
+    prevJobStatusRef.current = null;
   }, [threadId]);
 
   useEffect(() => {
@@ -1090,6 +1148,7 @@ export function StrategyPage() {
       evtSource.onerror = () => {
         evtSource.close();
         setSubmitting(false);
+        void syncLiveStrategyFromServer();
       };
     })();
 
@@ -1097,7 +1156,7 @@ export function StrategyPage() {
       cancelled = true;
       evtSource?.close();
     };
-  }, [threadId, serverJob.status, getAccessToken]);
+  }, [threadId, serverJob.status, getAccessToken, syncLiveStrategyFromServer]);
 
   useEffect(() => {
     if (skipNextChatEndScrollRef.current) {
