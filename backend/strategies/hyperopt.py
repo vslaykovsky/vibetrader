@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import random
 import subprocess
 import sys
@@ -15,6 +17,8 @@ from utils import HyperoptCategoricalSpec, HyperoptFloatSpec, HyperoptIntSpec, P
 PARAMS_PATH = Path("params.json")
 PARAMS_HYPEROPT_PATH = Path("params-hyperopt.json")
 METRICS_PATH = Path("metrics.json")
+
+logger = logging.getLogger(__name__)
 
 
 def _load_json(path: Path) -> dict:
@@ -73,6 +77,10 @@ def _merge_flat(base: dict, overlay: dict) -> dict:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=os.environ.get("HYPEROPT_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     try:
         cfg = _load_params_hyperopt(PARAMS_HYPEROPT_PATH)
     except ValidationError as exc:
@@ -100,12 +108,23 @@ def main() -> None:
     best_value = float("-inf") if maximize else float("inf")
     best_params: dict | None = None
     completed = 0
+    logger.info(
+        "hyperopt start: objective=%s direction=%s trials=%s wall=%.3fs trial_timeout=%.3fs seed=%s",
+        metric_key,
+        "maximize" if maximize else "minimize",
+        n_trials,
+        wall,
+        trial_timeout,
+        seed,
+    )
     for i in range(n_trials):
         if time.perf_counter() - t0 >= wall:
+            logger.info("stopping early due to wall timeout after %s trials", i)
             break
         sampled = _sample_from_space(rng, cfg.search_space)
         trial_params = _merge_flat(base, sampled)
         _save_json(PARAMS_PATH, trial_params)
+        logger.debug("trial %s/%s sampled=%s", i + 1, n_trials, sampled)
         proc = subprocess.run(
             [exe, "strategy.py"],
             cwd=".",
@@ -114,28 +133,72 @@ def main() -> None:
             timeout=trial_timeout,
         )
         if proc.returncode != 0:
+            logger.debug(
+                "trial %s/%s failed (returncode=%s) stderr_tail=%r",
+                i + 1,
+                n_trials,
+                proc.returncode,
+                (proc.stderr or "")[-500:],
+            )
             continue
         metrics = _load_json(METRICS_PATH)
         if not metrics:
+            logger.debug("trial %s/%s missing or empty metrics.json", i + 1, n_trials)
             continue
         value = _nested_get(metrics, metric_key)
         if value is None:
+            logger.debug("trial %s/%s objective metric missing: %s", i + 1, n_trials, metric_key)
             continue
         try:
             fv = float(value)
         except (TypeError, ValueError):
+            logger.debug(
+                "trial %s/%s objective metric not a number: %s=%r",
+                i + 1,
+                n_trials,
+                metric_key,
+                value,
+            )
             continue
         completed += 1
         better = fv > best_value if maximize else fv < best_value
         if better:
             best_value = fv
             best_params = trial_params
+            logger.info(
+                "new best at trial %s/%s: %s=%s sampled=%s",
+                i + 1,
+                n_trials,
+                metric_key,
+                fv,
+                sampled,
+            )
     if best_params is None:
         _save_json(PARAMS_PATH, base)
         print("no successful trials; restored params.json to pre-study values", file=sys.stderr)
         sys.exit(1)
     _save_json(PARAMS_PATH, best_params)
+    proc = subprocess.run(
+        [exe, "strategy.py"],
+        cwd=".",
+        capture_output=True,
+        text=True,
+        timeout=trial_timeout,
+    )
+    if proc.returncode != 0:
+        print(
+            f"final strategy.py run failed (returncode={proc.returncode}) stderr_tail={proc.stderr!r}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     print(f"best {metric_key}={best_value} over {completed} successful trials")
+    logger.info(
+        "hyperopt done: best_%s=%s successful_trials=%s elapsed=%.3fs",
+        metric_key,
+        best_value,
+        completed,
+        time.perf_counter() - t0,
+    )
 
 
 if __name__ == "__main__":

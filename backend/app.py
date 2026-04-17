@@ -12,6 +12,7 @@ import uuid
 
 from flask import Flask, g, request
 from flask_cors import CORS
+from urllib.parse import parse_qsl, urlencode
 
 from api.routes import strategy_blueprint
 from db.models import Base
@@ -30,6 +31,17 @@ import logging
 from logging.handlers import RotatingFileHandler
 import json
 from flask.signals import got_request_exception
+
+
+def _redact_query_string(qs: str) -> str:
+    if not qs:
+        return ""
+    try:
+        pairs = parse_qsl(qs, keep_blank_values=True, strict_parsing=False)
+    except Exception:
+        return ""
+    filtered = [(k, v) for (k, v) in pairs if k != "access_token"]
+    return urlencode(filtered, doseq=True)
 
 
 def create_app() -> Flask:
@@ -85,7 +97,8 @@ def create_app() -> Flask:
         rid = getattr(g, "request_id", "")
         response.headers[app.config["REQUEST_ID_HEADER"]] = rid
         try:
-            qs = (request.query_string or b"").decode("utf-8", errors="replace")
+            qs_raw = (request.query_string or b"").decode("utf-8", errors="replace")
+            qs = _redact_query_string(qs_raw)
             full_path = f"{request.path}?{qs}" if qs else request.path
             logger.info(
                 f"{request.method} {full_path} -> {response.status_code} ({dur_ms}ms)",

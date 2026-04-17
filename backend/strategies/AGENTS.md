@@ -64,8 +64,12 @@ When the workspace is a strategy backtest (not EDA-only) strategy.py should prod
 - Prefer `lightweight-charts` when the schema above supports the figure; otherwise use `plotly`.
 - Do not use matplotlib to render charts, only plotly or lightweight-charts are allowed.
 - `strategy.py` must not write PNG, JPEG, WebP, SVG, or any other image or standalone chart file. All visuals go only in `backtest.json` under the top-level `charts` array, using `lightweight-charts` or `plotly` objects exactly as documented above (no `savefig`, no chart exports).
+- `time` values on lightweight-charts series points and markers must be one of:
+  - `"YYYY-MM-DD"` for daily bars (business-day format);
+  - ISO 8601 datetime (e.g. `"2020-01-02T09:30:00Z"`) or unix epoch seconds (int) for intraday bars or intraday markers.
+  Pick one format per chart and use it for every series point and every marker in that chart (don't mix daily strings with intraday datetimes in the same chart). For intraday data, use UTC.
 - Use shared time axis across lightweight-charts charts so scroll/zoom stays in sync.
-- Equity curves: include buy-and-hold benchmark on the same chart.
+- Equity curves: when strategy.py is a strategy with trades, then include equity curve as a separate chart, include buy-and-hold benchmark to compare to. 
 - Signals: use `markers` on the right series.
 - Readable contrast: make sure colors are set so text is readable on the background.
 - Every series/bar/line clearly labeled.

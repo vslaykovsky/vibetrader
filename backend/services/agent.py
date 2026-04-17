@@ -525,64 +525,8 @@ def _run_strategy(
     return _run_logged_subprocess("strategy backtest", parts, str(cwd), timeout=timeout_s)
 
 
-_ARGPARSE_SECTION_HEADER = re.compile(
-    r"^(optional arguments|options|positional arguments|arguments)\s*:\s*$",
-    re.IGNORECASE,
-)
-
-
-def _run_strategy_help_stdout(workspace: Path) -> str:
-    rel: str | None = None
-    if (workspace / "strategy.py").is_file():
-        rel = "strategy.py"
-    elif (workspace / "src" / "strategy.py").is_file():
-        rel = "src/strategy.py"
-    if not rel:
-        return ""
-    try:
-        proc = subprocess.run(
-            [sys.executable, rel, "--help"],
-            cwd=str(workspace),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-    if proc.returncode != 0:
-        return ""
-    return (proc.stdout or "").replace("\r\n", "\n").strip()
-
-
-def _parse_argparse_help_description(help_text: str) -> str:
-    text = (help_text or "").replace("\r\n", "\n").strip()
-    if not text:
-        return ""
-    lines = text.splitlines()
-    i = 0
-    n = len(lines)
-    while i < n and not lines[i].strip():
-        i += 1
-    if i >= n:
-        return ""
-    if lines[i].lower().startswith("usage:"):
-        i += 1
-        while i < n and (not lines[i].strip() or lines[i][:1] in (" ", "\t")):
-            i += 1
-    while i < n and not lines[i].strip():
-        i += 1
-    desc_lines: list[str] = []
-    while i < n:
-        stripped = lines[i].strip()
-        if _ARGPARSE_SECTION_HEADER.match(stripped):
-            break
-        desc_lines.append(lines[i])
-        i += 1
-    return "\n".join(desc_lines).strip()
-
-
-def _strategy_script_help(workspace: Path) -> str:
-    return _tail(_run_strategy_help_stdout(workspace))
+def _strategy_code_present(code: str | None) -> bool:
+    return bool((code or "").strip())
 
 
 def read_strategy_name_from_workspace(root: Path) -> str:
@@ -692,6 +636,35 @@ def _deep_merge_json_values(base: Any, overlay: Any) -> Any:
     return overlay
 
 
+def _merge_parameters_json_into_params_file(root: Path, parameters_json: Any) -> None:
+    if parameters_json is None:
+        return
+
+    parsed: Any
+    if isinstance(parameters_json, str):
+        raw = parameters_json.strip()
+        if not raw:
+            return
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            raise ValueError("parameters_json is not valid JSON")
+    else:
+        parsed = parameters_json
+
+    root.mkdir(parents=True, exist_ok=True)
+    params_path = root / "params.json"
+    if isinstance(parsed, dict):
+        existing = _read_params_json_object(params_path)
+        to_write = _deep_merge_json_values(existing, parsed)
+    else:
+        to_write = parsed
+    params_path.write_text(
+        json.dumps(to_write, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
 _REDACT_JSON_KEYS_FOR_USER = frozenset(
     {
         "openrouter_api_key",
@@ -734,12 +707,12 @@ def redact_secret_json_values_for_user(obj: Any) -> Any:
     return obj
 
 
-@traceable(name="run_rerun_backtest")
-def run_rerun_backtest(
+@traceable(name="run_backtest")
+def run_backtest(
     thread_id: str,
     command: str,
     on_progress: ProgressCallback = None,
-    parameters_json: str | None = None,
+    parameters_json: Any = None,
 ) -> dict[str, Any]:
     if not thread_id_allowed(thread_id):
         return {"ok": False, "error": "invalid thread_id"}
@@ -748,23 +721,10 @@ def run_rerun_backtest(
         return {"ok": False, "error": "command is empty"}
     root = ensure_strategy_workspace(thread_id)
     if parameters_json is not None:
-        raw = parameters_json.strip()
-        if raw:
-            try:
-                parsed = json.loads(raw)
-            except json.JSONDecodeError:
-                return {"ok": False, "error": "parameters_json is not valid JSON"}
-            root.mkdir(parents=True, exist_ok=True)
-            params_path = root / "params.json"
-            if isinstance(parsed, dict):
-                existing = _read_params_json_object(params_path)
-                to_write = _deep_merge_json_values(existing, parsed)
-            else:
-                to_write = parsed
-            params_path.write_text(
-                json.dumps(to_write, indent=2, sort_keys=True),
-                encoding="utf-8",
-            )
+        try:
+            _merge_parameters_json_into_params_file(root, parameters_json)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
     if on_progress:
         on_progress("Running backtest…")
     bt = _run_strategy(command, root)
@@ -792,8 +752,8 @@ def _tool_handlers_for_thread(
     def _rerun(args: dict[str, Any]) -> dict[str, Any]:
         command = str(args.get("command", ""))
         raw_params = args.get("parameters_json")
-        parameters_json = raw_params if isinstance(raw_params, str) else None
-        return run_rerun_backtest(
+        parameters_json = raw_params
+        return run_backtest(
             thread_id, command, on_progress=on_progress, parameters_json=parameters_json
         )
 
@@ -877,6 +837,7 @@ def build_agent_reply(
     messages: list[dict[str, Any]],
     existing_canvas: dict[str, Any],
     thread_id: str,
+    strategy_code: str | None = None,
     on_progress: ProgressCallback = None,
 ) -> dict[str, Any]:
     t0 = time.perf_counter()
@@ -896,22 +857,47 @@ def build_agent_reply(
         }
 
     workspace = strategy_root_for_thread(thread_id)
-    strategy_help = _strategy_script_help(workspace)
-    if strategy_help:
-        strategy_parameters = ""
-        params_path = workspace / "params.json"
-        if params_path.is_file():
-            with open(params_path, "r", encoding="utf-8") as f:
-                strategy_parameters = f.read()
-        strategy_help = f"""Help message of the current strategy script:
-python strategy.py --help
-{strategy_help}
-
-Current strategy parameters (overrides: pass parameters_json on run_strategy to merge into this file):
+    params_path = workspace / "params.json"
+    strategy_parameters = ""
+    if params_path.is_file():
+        try:
+            strategy_parameters = params_path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            strategy_parameters = ""
+    hyperopt_path = workspace / "params-hyperopt.json"
+    hyperopt_parameters = ""
+    if hyperopt_path.is_file():
+        try:
+            hyperopt_parameters = hyperopt_path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            hyperopt_parameters = ""
+    metrics_path = workspace / "metrics.json"
+    metrics_text = ""
+    if metrics_path.is_file():
+        try:
+            metrics_text = metrics_path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            metrics_text = ""
+    hyperopt_section = (
+        f"\nThe current strategy supports hyperparameter optimization. The params-hyperopt.json file contains the optimization configuration:\n{hyperopt_parameters}\n"
+        if hyperopt_parameters
+        else ""
+    )
+    metrics_section = (
+        f"\nLatest metrics from metrics.json:\n{metrics_text}\n"
+        if metrics_text
+        else ""
+    )
+    if _strategy_code_present(strategy_code):
+        strategy_help = f"""Strategy inputs are read from params.json (overrides: pass parameters_json on run_strategy to merge into this file):
 {strategy_parameters}
-"""
+{hyperopt_section}{metrics_section}"""
     else:
-        strategy_help = "Note that script strategy.py hasn't been generated yet. Need to run update_strategy first."
+        strategy_help = f"""Note: strategy code hasn't been generated yet. Need to run update_strategy first.
+
+Current params.json (may be empty or missing):
+{strategy_parameters}
+{hyperopt_section}{metrics_section}"""
     chat_messages: list[BaseMessage] = [
         SystemMessage(content=SYSTEM_PROMPT.format(strategy_help=strategy_help)),
         *_stored_messages_to_lc(messages),

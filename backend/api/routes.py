@@ -248,6 +248,7 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str, model: str) -> None
                 messages=messages,
                 existing_canvas=canvas,
                 thread_id=thread_id,
+                strategy_code=str(getattr(strategy, "code", "") or ""),
                 on_progress=persist_status_text,
             )
             assistant_entry: dict = {

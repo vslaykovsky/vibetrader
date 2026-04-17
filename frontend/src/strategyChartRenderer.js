@@ -54,6 +54,67 @@ const PLOTLY_CONFIG = {
   displayModeBar: false,
 };
 
+const INTRADAY_TIME_RE = /[T ]\d{2}:\d{2}/;
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function toBusinessDay(value) {
+  if (typeof value !== 'string') return value;
+  const t = value.trim();
+  if (!t) return value;
+  const m = t.match(/^(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1] : value;
+}
+
+function toUnixSeconds(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value > 1e12 ? Math.floor(value / 1000) : Math.floor(value);
+  }
+  if (typeof value !== 'string') return value;
+  const t = value.trim();
+  if (!t) return value;
+  let iso = t;
+  if (DATE_ONLY_RE.test(iso)) {
+    iso = `${iso}T00:00:00Z`;
+  } else {
+    iso = iso.replace(' ', 'T');
+    if (!/[zZ]|[+-]\d{2}:?\d{2}$/.test(iso)) {
+      iso = `${iso}Z`;
+    }
+  }
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return value;
+  return Math.floor(ms / 1000);
+}
+
+function chartHasIntradayTime(chartSpec) {
+  for (const s of chartSpec?.series || []) {
+    for (const p of s?.data || []) {
+      const t = p?.time;
+      if (typeof t === 'number') return true;
+      if (typeof t === 'string' && INTRADAY_TIME_RE.test(t)) return true;
+    }
+    for (const m of s?.markers || []) {
+      const t = m?.time;
+      if (typeof t === 'number') return true;
+      if (typeof t === 'string' && INTRADAY_TIME_RE.test(t)) return true;
+    }
+  }
+  return false;
+}
+
+function normalizeLwcItems(items, normalizeTime) {
+  if (!Array.isArray(items) || items.length === 0) return items;
+  let changed = false;
+  const out = items.map((it) => {
+    if (!it || typeof it !== 'object') return it;
+    const nt = normalizeTime(it.time);
+    if (nt === it.time) return it;
+    changed = true;
+    return { ...it, time: nt };
+  });
+  return changed ? out : items;
+}
+
 function makeSection(container, titleText) {
   const details = document.createElement('details');
   details.className = 'strategy-chart-details';
@@ -88,6 +149,8 @@ function renderLightweightChart(container, chartSpec) {
     });
   });
 
+  const normalizeTime = chartHasIntradayTime(chartSpec) ? toUnixSeconds : toBusinessDay;
+
   let primarySeries = null;
   for (const s of chartSpec.series || []) {
     const SeriesClass = SERIES_TYPE_MAP[s.type];
@@ -102,10 +165,11 @@ function renderLightweightChart(container, chartSpec) {
       primarySeries = series;
     }
     if (Array.isArray(s.data)) {
-      series.setData(s.data);
+      series.setData(normalizeLwcItems(s.data, normalizeTime));
     }
     if (Array.isArray(s.markers) && s.markers.length > 0) {
-      const sorted = [...s.markers].sort((a, b) =>
+      const normalizedMarkers = normalizeLwcItems(s.markers, normalizeTime);
+      const sorted = [...normalizedMarkers].sort((a, b) =>
         a.time < b.time ? -1 : a.time > b.time ? 1 : 0,
       );
       createSeriesMarkers(series, sorted);
