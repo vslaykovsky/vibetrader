@@ -2362,6 +2362,57 @@ html[data-theme='dark'] .chat-compose-fullscreen-send {
   margin-top: 2px;
 }
 
+.canvas-pseudocode-details.canvas-text-block-pseudocode {
+  position: relative;
+}
+
+.canvas-pseudocode-details .canvas-pseudocode-summary {
+  padding-right: 44px;
+}
+
+.canvas-panel-copy-btn {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 2;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  padding: 0;
+  background: var(--panel, rgba(255, 255, 255, 0.04));
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+
+.canvas-panel-copy-btn:hover:not(:disabled) {
+  color: var(--accent-strong);
+  border-color: rgba(14, 116, 144, 0.35);
+}
+
+.canvas-panel-copy-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.canvas-panel-copy-btn.is-copied {
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.35);
+}
+
+.canvas-panel-copy-btn svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
 .canvas-text-block-pseudocode .canvas-pseudocode {
   margin: 14px 0 0;
   white-space: pre-wrap;

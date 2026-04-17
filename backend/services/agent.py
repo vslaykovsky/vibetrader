@@ -527,10 +527,6 @@ def _run_strategy(
     return _run_logged_subprocess("strategy backtest", parts, str(cwd), timeout=timeout_s)
 
 
-def _strategy_code_present(code: str | None) -> bool:
-    return bool((code or "").strip())
-
-
 def read_strategy_name_from_workspace(root: Path) -> str:
     candidates = (
         root / "params.json",
@@ -836,7 +832,6 @@ def build_agent_reply(
     messages: list[dict[str, Any]],
     existing_canvas: dict[str, Any],
     thread_id: str,
-    strategy_code: str | None = None,
     on_progress: ProgressCallback = None,
 ) -> dict[str, Any]:
     t0 = time.perf_counter()
@@ -887,12 +882,12 @@ def build_agent_reply(
         if metrics_text
         else ""
     )
-    if _strategy_code_present(strategy_code):
+    if params_path.is_file():
         strategy_help = f"""Strategy inputs are read from params.json (overrides: pass parameters_json on run_strategy to merge into this file):
 {strategy_parameters}
 {hyperopt_section}{metrics_section}"""
     else:
-        strategy_help = f"""Note: strategy code hasn't been generated yet. Need to run update_strategy first.
+        strategy_help = f"""Note: params.json hasn't been created yet. Need to run update_strategy first.
 
 Current params.json (may be empty or missing):
 {strategy_parameters}

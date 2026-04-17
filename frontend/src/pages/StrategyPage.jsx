@@ -30,6 +30,69 @@ function ChatProcessingSpinner({ label }) {
   );
 }
 
+function CanvasPanelCopyButton({ text, ariaLabel, disabled }) {
+  const [copied, setCopied] = useState(false);
+  const payload = typeof text === 'string' ? text : '';
+  const isDisabled = Boolean(disabled) || !payload;
+
+  async function handleCopy(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (isDisabled) return;
+    try {
+      await navigator.clipboard.writeText(payload);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className={`canvas-panel-copy-btn${copied ? ' is-copied' : ''}`}
+      aria-label={ariaLabel}
+      title={copied ? 'Copied' : 'Copy to clipboard'}
+      disabled={isDisabled}
+      onClick={handleCopy}
+    >
+      {copied ? (
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+          <path
+            d="M5 13l4 4L19 7"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+          <rect
+            x="8.25"
+            y="8.25"
+            width="11.5"
+            height="11.5"
+            rx="2"
+            stroke="currentColor"
+            strokeWidth="1.75"
+          />
+          <rect
+            x="4.25"
+            y="4.25"
+            width="11.5"
+            height="11.5"
+            rx="2"
+            stroke="currentColor"
+            strokeWidth="1.75"
+          />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
   (import.meta.env.PROD ? '/api' : 'http://localhost:8080');
@@ -1539,16 +1602,24 @@ export function StrategyPage() {
         {showParamsPanel ? (
           <details className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details">
             <summary className="canvas-pseudocode-summary">Strategy parameters</summary>
+            <CanvasPanelCopyButton
+              text={paramsJsonText}
+              ariaLabel="Copy strategy parameters JSON"
+            />
             <pre className="canvas-pseudocode">{paramsJsonText}</pre>
           </details>
         ) : null}
         {showHyperoptParamsPanel ? (
           <details className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details">
             <summary className="canvas-pseudocode-summary">Hyperopt parameters</summary>
+            <CanvasPanelCopyButton
+              text={paramsHyperoptJsonText}
+              ariaLabel="Copy hyperopt parameters JSON"
+            />
             <pre className="canvas-pseudocode">{paramsHyperoptJsonText}</pre>
           </details>
         ) : null}
-        {!loading && displayStrategyRunId ? (
+        {!loading && displayStrategyRunId && hasAnyCanvasData ? (
           <details
             key={displayStrategyRunId}
             className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details"
@@ -1561,6 +1632,11 @@ export function StrategyPage() {
             }}
           >
             <summary className="canvas-pseudocode-summary">Strategy Algorithm</summary>
+            <CanvasPanelCopyButton
+              text={String(displayAlgorithmText || '').trim()}
+              ariaLabel="Copy strategy algorithm overview"
+              disabled={algorithmLoading}
+            />
             {algorithmLoading ? (
               <div className="chat-spinner-row canvas-algorithm-spinner" role="status" aria-live="polite">
                 <span className="chat-spinner" aria-hidden />
