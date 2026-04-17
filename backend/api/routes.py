@@ -39,7 +39,9 @@ def _strategy_name_from_canvas(canvas: dict | None) -> str:
     output = canvas.get("output")
     if not isinstance(output, dict):
         return ""
-    data = output.get("data.json")
+    data = output.get("backtest.json")
+    if data is None:
+        data = output.get("data.json")
     if isinstance(data, str):
         try:
             data = json.loads(data)

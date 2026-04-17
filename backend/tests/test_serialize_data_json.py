@@ -115,7 +115,7 @@ def test_serialize_data_json():
 
 
 def test_save_data_json(tmp_path):
-    path = tmp_path / "data.json"
+    path = tmp_path / "backtest.json"
     utils.save_data_json(utils.DataJson(strategy_name="T", charts=[], table=[]), path=path)
     loaded = json.loads(path.read_text(encoding="utf-8"))
     assert loaded == {"strategy_name": "T", "charts": [], "table": []}

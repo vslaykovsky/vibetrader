@@ -13,13 +13,13 @@ Backtest strategies and emit JSON the frontend uses for charts and metrics.
 
 ## Running `strategy.py`
 
-Invoked as **`python strategy.py`** only. Ticker, timeframe, and dates are **not** separate flags; they come from **`output/params.json`**. Do **not** add a **`--params`** CLI argument; the platform merges run-time overrides into **`output/params.json`** before the run.
+Invoked as **`python strategy.py`** only. Ticker, timeframe, and dates are **not** separate flags; they come from **`params.json`**. Do **not** add a **`--params`** CLI argument; the platform merges run-time overrides into **`params.json`** before the run.
 
 Use **`ArgumentParser(description=...)`** with **`--help`** only so the chat UI can show a short summary of what the script does.
 
-**EDA-style workspace:** exploratory analysis only (no tradable rules backtest). Read **`output/params.json`**, write **`output/data.json`** with **`strategy_name`**, **`charts`**, optional **`table`**. Omit the **`metrics`** key from **`data.json`**. Do **not** write **`output/metrics.json`** or **`output/params-hyperopt.json`**.
+**EDA-style workspace:** exploratory analysis only (no tradable rules backtest). Read **`params.json`**, write **`backtest.json`** with **`strategy_name`**, **`charts`**, optional **`table`**. Omit the **`metrics`** key from **`backtest.json`**. Do **not** write **`metrics.json`** or **`params-hyperopt.json`**.
 
-**Strategy workspace:** read **`output/params.json`**, write **`output/data.json`** (include the same **`metrics`** object under **`data.json`** for the frontend), write **`output/metrics.json`** with that metrics object for tooling, and write **`output/params-hyperopt.json`** describing the hyperparameter study (**`search_space`**, **`n_trials`**, **`timeout_seconds`**, **`direction`**, **`objective_metric`**, etc.) so **`python hyperopt.py`** can optimize. Do **not** write or update **`output/params.json`** from **`strategy.py`**.
+**Strategy workspace:** read **`params.json`**, write **`backtest.json`** (include the same **`metrics`** object under **`backtest.json`** for the frontend), write **`metrics.json`** with that metrics object for tooling, and write **`params-hyperopt.json`** describing the hyperparameter study (**`search_space`**, **`n_trials`**, **`timeout_seconds`**, **`direction`**, **`objective_metric`**, etc.) so **`python hyperopt.py`** can optimize. Do **not** write or update **`params.json`** from **`strategy.py`**.
 
 ## Data
 
@@ -37,7 +37,7 @@ Use **`ArgumentParser(description=...)`** with **`--help`** only so the chat UI 
 - Do NOT use yfinance. Use only helpers from `utils.py` to access market data (Alpaca/MOEX).
 - Today's data is not available, use only past data for analysis and strategies. 
 
-## `output/params.json`
+## `params.json`
 
 Single source of truth: ticker, bar timeframe (e.g. Alpaca `1Day`, `1Hour`), backtest window (`start_test_date` / `end_test_date` or equivalent), and every fixed numeric/boolean input the run needs. No duplicates in code — read this file, do not hardcode those constants.
 
@@ -45,12 +45,12 @@ Ship a valid file with sensible defaults so a fresh workspace runs. **Do not** u
 
 Always include **`strategy_name`**: human-readable, no ticker in the name.
 
-## `output/metrics.json` and `output/params-hyperopt.json` (strategy only)
+## `metrics.json` and `params-hyperopt.json` (strategy only)
 
 When the workspace is a **strategy backtest** (not EDA-only), **`strategy.py`** must write:
 
-- **`output/metrics.json`** — JSON object with the scalar fields documented under **`metrics`** below (same shape as the **`metrics`** object embedded in **`data.json`**).
-- **`output/params-hyperopt.json`** — JSON for **`hyperopt.py`**: at minimum **`search_space`** (map of parameter name → range spec). Each name must match a **top-level** key in **`output/params.json`** that trials may override. Supported specs per key:
+- **`metrics.json`** — JSON object with the scalar fields documented under **`metrics`** below (same shape as the **`metrics`** object embedded in **`backtest.json`**).
+- **`params-hyperopt.json`** — JSON for **`hyperopt.py`**: at minimum **`search_space`** (map of parameter name → range spec). Each name must match a **top-level** key in **`params.json`** that trials may override. Supported specs per key:
   - **`{ "type": "int", "low": 5, "high": 30 }`**
   - **`{ "type": "float", "low": 0.1, "high": 2.0 }`**
   - **`{ "type": "categorical", "choices": ["a", "b"] }`**
@@ -58,9 +58,9 @@ When the workspace is a **strategy backtest** (not EDA-only), **`strategy.py`** 
 
 ## `hyperopt.py`
 
-Fixed file in the template tree; the workspace copy is read-only. **`python hyperopt.py`** reads **`output/params-hyperopt.json`**, samples parameters into **`output/params.json`**, runs **`python strategy.py`** per trial, reads **`output/metrics.json`**, then writes the best **`output/params.json`**. Do not implement this search loop inside **`strategy.py`**.
+Fixed file in the template tree; the workspace copy is read-only. **`python hyperopt.py`** reads **`params-hyperopt.json`**, samples parameters into **`params.json`**, runs **`python strategy.py`** per trial, reads **`metrics.json`**, then writes the best **`params.json`**. Do not implement this search loop inside **`strategy.py`**.
 
-## `output/data.json`
+## `backtest.json`
 
 **Only these top-level keys are rendered by the frontend.** Any other key (e.g. `summary_table`, `top10`, `chart`) is **silently ignored** — never emit them.
 
@@ -76,7 +76,8 @@ Fixed file in the template tree; the workspace copy is read-only. **`python hype
 - **`strategy_name`** (`string`) — always include; copy from params.
 - **`charts`** (`array`) — always include; at least one chart for anything to render.
 - **`table`** (`array`) — optional; tabular data (rankings, holdings, stats rows).
-- **`metrics`** (`object`) — strategy backtests only; omit for EDA-only scripts (omit **`output/metrics.json`** as well).
+- **`metrics`** (`object`) — strategy backtests only; omit for EDA-only scripts (omit **`metrics.json`** as well).
+ - **`metrics`** (`object`) — strategy backtests only; omit for EDA-only scripts (omit **`metrics.json`** as well).
 
 At least one of `charts` (non-empty) or `table` (non-empty) **must** be present or the frontend shows nothing.
 
@@ -164,7 +165,7 @@ Optional array of row objects. Column headers are derived from `Object.keys(rows
 
 ### `metrics`
 
-Strategy backtests only: include the same object in **`data.json`** here and mirror it to **`output/metrics.json`**. Recognized keys:
+Strategy backtests only: include the same object in **`backtest.json`** here and mirror it to **`metrics.json`**. Recognized keys:
 
 - **`total_return`** — number, shown as `…%`, green/red by sign (e.g. `12.5`)
 - **`sharpe_ratio`** — number, `.toFixed(3)` (e.g. `1.234`)
@@ -173,13 +174,13 @@ Strategy backtests only: include the same object in **`data.json`** here and mir
 - **`num_trades`** — number (e.g. `47`)
 - **`final_equity`** — number, shown as `$…` with locale formatting (e.g. `112500`)
 
-Omit **`metrics`** entirely (and omit **`output/metrics.json`**) for EDA-only runs to hide the panel.
+Omit **`metrics`** entirely (and omit **`metrics.json`**) for EDA-only runs to hide the panel.
 
 ### Chart rules
 
 - Prefer **`lightweight-charts`** when the schema above supports the figure; otherwise use **`plotly`**.
 - Do not use matplotlib to render charts, only plotly or lightweight-charts are allowed.
-- `strategy.py` must **not** write PNG, JPEG, WebP, SVG, or any other image or standalone chart file. All visuals go only in **`output/data.json`** under the top-level **`charts`** array, using **`lightweight-charts`** or **`plotly`** objects exactly as documented above (no `savefig`, no chart exports under `output/` or elsewhere).
+- `strategy.py` must **not** write PNG, JPEG, WebP, SVG, or any other image or standalone chart file. All visuals go only in **`backtest.json`** under the top-level **`charts`** array, using **`lightweight-charts`** or **`plotly`** objects exactly as documented above (no `savefig`, no chart exports under `output/` or elsewhere).
 - Shared time axis across lightweight-charts so scroll/zoom stays in sync.
 - Equity curves: include buy-and-hold benchmark on the same chart.
 - Signals: use `markers` on the right series.

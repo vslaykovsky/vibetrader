@@ -35,9 +35,9 @@ Workflow
 * Before the first update_strategy, request any missing details needed to build the strategy (e.g., ticker, candlestick period, time range, stop loss, take profit, other parameters). 
 * Do not add hyperparameter search loops inside strategy.py by default; optimization is driven by the fixed workspace script hyperopt.py when the user asks for it.
 * To modify code call update_strategy with a brief task describing only the changes. Use english for the task description.
-* If the user only tweaks existing parameters (different ticker, dates, thresholds, etc.), call run_strategy with `python strategy.py` instead of update_strategy; pass parameters_json as a JSON string so the tool recursively merges into output/params.json before the run (do not use a --params CLI flag or teach strategies to accept one). 
-* If the user asks for exploratory data analysis, market research, or charts **without** defining a tradable strategy (no signals, no rules backtest), use `update_strategy` for the analysis path, then run_strategy with `python strategy.py`. That path must not write output/metrics.json or output/params-hyperopt.json.
-* If the user asks for training/hyperparameter optimization, ensure via update_strategy that the strategy workspace writes output/params-hyperopt.json on runs (and output/metrics.json as a strategy), then run_strategy with `python hyperopt.py` (not strategy.py).
+* If the user only tweaks existing parameters (different ticker, dates, thresholds, etc.), call run_strategy with `python strategy.py` instead of update_strategy; pass parameters_json as a JSON string so the tool recursively merges into params.json before the run (do not use a --params CLI flag or teach strategies to accept one). 
+* If the user asks for exploratory data analysis, market research, or charts **without** defining a tradable strategy (no signals, no rules backtest), use `update_strategy` for the analysis path, then run_strategy with `python strategy.py`. That path must not write metrics.json or params-hyperopt.json.
+* If the user asks for training/hyperparameter optimization, ensure via update_strategy that the strategy workspace writes params-hyperopt.json on runs (and metrics.json as a strategy), then run_strategy with `python hyperopt.py` (not strategy.py).
 * Always respond in the user’s language.
 * After each successful update_strategy, call run_strategy so results match the change (`python strategy.py` or `python hyperopt.py` as appropriate). Only briefly summarize strategy performance based on the output of the run_strategy call, don't make up numbers. The user already sees all the charts and metrics.
 
@@ -198,9 +198,20 @@ def restore_strategy_workspace_from_snapshot(
 
     (root / "strategy.py").write_text(code or "", encoding="utf-8")
 
-    output_dir = root / "output"
-    shutil.rmtree(output_dir, ignore_errors=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    legacy_output_dir = root / "output"
+    shutil.rmtree(legacy_output_dir, ignore_errors=True)
+    for path in (
+        root / "params.json",
+        root / "backtest.json",
+        root / "metrics.json",
+        root / "params-hyperopt.json",
+        root / "data.json",
+    ):
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
 
     if not isinstance(canvas, dict):
         return
@@ -208,11 +219,25 @@ def restore_strategy_workspace_from_snapshot(
     if not isinstance(output, dict):
         return
 
+    allowed = frozenset(
+        {
+            "params.json",
+            "backtest.json",
+            "metrics.json",
+            "params-hyperopt.json",
+            "data.json",
+        }
+    )
     for filename, contents in output.items():
         if not isinstance(filename, str) or not filename:
             continue
-        out_path = output_dir / filename
-        if out_path.name != filename:
+        name = filename.strip()
+        if name.lower() not in allowed:
+            continue
+        if name.lower() == "data.json":
+            name = "backtest.json"
+        out_path = root / name
+        if out_path.name != name:
             continue
         if isinstance(contents, (dict, list)) and out_path.suffix.lower() == ".json":
             out_path.write_text(json.dumps(contents, indent=2, sort_keys=True), encoding="utf-8")
@@ -251,10 +276,10 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             "name": RUN_STRATEGY_TOOL_NAME,
             "description": (
                 "Run a strategy command in this thread's workspace (no coding agent, no code edits). "
-                "Use python strategy.py for all normal runs (single entrypoint; params come from output/params.json). "
-                "Optional parameters_json (a JSON string) is parsed and recursively merged into output/params.json before the command runs (same merge rules as parameters_json field description). "
-                "Use python hyperopt.py when the user asked for hyperparameter optimization and the strategy writes output/params-hyperopt.json and output/metrics.json. "
-                "Refreshes output/data.json on success."
+                "Use python strategy.py for all normal runs (single entrypoint; params come from params.json). "
+                "Optional parameters_json (a JSON string) is parsed and recursively merged into params.json before the command runs (same merge rules as parameters_json field description). "
+                "Use python hyperopt.py when the user asked for hyperparameter optimization and the strategy writes params-hyperopt.json and metrics.json. "
+                "Refreshes backtest.json on success."
             ),
             "parameters": {
                 "type": "object",
@@ -263,13 +288,13 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": (
                             "Full shell command, e.g. python strategy.py or python hyperopt.py. "
-                            "Pass ticker or other overrides in parameters_json (merged into output/params.json), not on the command line."
+                            "Pass ticker or other overrides in parameters_json (merged into params.json), not on the command line."
                         ),
                     },
                     "parameters_json": {
                         "type": "string",
                         "description": (
-                            "If provided, must be valid JSON. Object values are merged recursively into existing output/params.json "
+                            "If provided, must be valid JSON. Object values are merged recursively into existing params.json "
                             "(nested dicts merged by key, lists merged by index with recursive dict merge where both sides are objects; "
                             "scalars and mismatched types take the new value). Non-object JSON replaces the file."
                         ),
@@ -327,7 +352,7 @@ def _trim_tool_payload_streams(
 
 def _read_strategy_params_text(thread_id: str) -> str:
     root = ensure_strategy_workspace(thread_id)
-    params_path = root / "output" / "params.json"
+    params_path = root / "params.json"
     if not params_path.is_file():
         return ""
     try:
@@ -426,7 +451,7 @@ def generate_strategy_algorithm_pseudocode(*, code: str, language: str = "") -> 
 def _strategy_output_file_key(filename: str) -> str:
     lower = filename.lower()
     if lower == "data.json":
-        return "data.json"
+        return "backtest.json"
     return filename
 
 
@@ -441,11 +466,15 @@ _IGNORED_STRATEGY_OUTPUT_FILES = frozenset(
 
 
 def _read_strategy_output_dir(thread_id: str) -> dict[str, Any]:
-    output_dir = strategy_root_for_thread(thread_id) / "output"
-    if not output_dir.is_dir():
-        return {}
+    root = strategy_root_for_thread(thread_id)
+    legacy_output_dir = root / "output"
     out: dict[str, Any] = {}
-    for path in sorted(output_dir.iterdir()):
+    filenames = ("params.json", "backtest.json", "data.json", "metrics.json", "params-hyperopt.json")
+    candidates: list[Path] = []
+    for name in filenames:
+        candidates.append(root / name)
+        candidates.append(legacy_output_dir / name)
+    for path in candidates:
         if not path.is_file():
             continue
         if path.name.lower() in _IGNORED_STRATEGY_OUTPUT_FILES:
@@ -593,8 +622,15 @@ def _strategy_script_help(workspace: Path) -> str:
 
 
 def read_strategy_name_from_workspace(root: Path) -> str:
-    for fname in ("params.json", "data.json"):
-        path = root / "output" / fname
+    candidates = (
+        root / "params.json",
+        root / "backtest.json",
+        root / "data.json",
+        root / "output" / "params.json",
+        root / "output" / "backtest.json",
+        root / "output" / "data.json",
+    )
+    for path in candidates:
         if not path.is_file():
             continue
         try:
@@ -741,9 +777,8 @@ def run_rerun_backtest(
                 parsed = json.loads(raw)
             except json.JSONDecodeError:
                 return {"ok": False, "error": "parameters_json is not valid JSON"}
-            out_dir = root / "output"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            params_path = out_dir / "params.json"
+            root.mkdir(parents=True, exist_ok=True)
+            params_path = root / "params.json"
             if isinstance(parsed, dict):
                 existing = _read_params_json_object(params_path)
                 to_write = _deep_merge_json_values(existing, parsed)
@@ -887,7 +922,7 @@ def build_agent_reply(
     strategy_help = _strategy_script_help(workspace)
     if strategy_help:
         strategy_parameters = ""
-        params_path = workspace / "output" / "params.json"
+        params_path = workspace / "params.json"
         if params_path.is_file():
             with open(params_path, "r", encoding="utf-8") as f:
                 strategy_parameters = f.read()

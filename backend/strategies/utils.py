@@ -17,9 +17,10 @@ from moexalgo import session as moex_session
 from moexalgo import Ticker
 
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "output"
+OUTPUT_DIR = Path(__file__).resolve().parent
 PARAMS_PATH = OUTPUT_DIR / "params.json"
-DATA_PATH = OUTPUT_DIR / "data.json"
+BACKTEST_PATH = OUTPUT_DIR / "backtest.json"
+DATA_PATH = BACKTEST_PATH
 METRICS_PATH = OUTPUT_DIR / "metrics.json"
 PARAMS_HYPEROPT_PATH = OUTPUT_DIR / "params-hyperopt.json"
 AVAILABLE_PROVIDERS = {"auto", "alpaca", "moex"}

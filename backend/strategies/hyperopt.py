@@ -8,10 +8,9 @@ import time
 from copy import deepcopy
 from pathlib import Path
 
-OUTPUT_DIR = Path("output")
-PARAMS_PATH = OUTPUT_DIR / "params.json"
-PARAMS_HYPEROPT_PATH = OUTPUT_DIR / "params-hyperopt.json"
-METRICS_PATH = OUTPUT_DIR / "metrics.json"
+PARAMS_PATH = Path("params.json")
+PARAMS_HYPEROPT_PATH = Path("params-hyperopt.json")
+METRICS_PATH = Path("metrics.json")
 
 
 def _load_json(path: Path) -> dict:
@@ -68,11 +67,11 @@ def _merge_flat(base: dict, overlay: dict) -> dict:
 def main() -> None:
     cfg = _load_json(PARAMS_HYPEROPT_PATH)
     if not cfg:
-        print("missing or empty output/params-hyperopt.json", file=sys.stderr)
+        print("missing or empty params-hyperopt.json", file=sys.stderr)
         sys.exit(1)
     base = _load_json(PARAMS_PATH)
     if not base:
-        print("missing or empty output/params.json", file=sys.stderr)
+        print("missing or empty params.json", file=sys.stderr)
         sys.exit(1)
     space = cfg.get("search_space")
     if not isinstance(space, dict) or not space:
@@ -123,7 +122,7 @@ def main() -> None:
             best_params = trial_params
     if best_params is None:
         _save_json(PARAMS_PATH, base)
-        print("no successful trials; restored output/params.json to pre-study values", file=sys.stderr)
+        print("no successful trials; restored params.json to pre-study values", file=sys.stderr)
         sys.exit(1)
     _save_json(PARAMS_PATH, best_params)
     print(f"best {metric_key}={best_value} over {completed} successful trials")

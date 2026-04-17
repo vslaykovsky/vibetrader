@@ -222,7 +222,7 @@ function hasRenderableChartOutput(output) {
   if (!output || typeof output !== 'object') {
     return false;
   }
-  let chartData = output['data.json'];
+  let chartData = output['backtest.json'] ?? output['data.json'];
   if (typeof chartData === 'string') {
     try {
       chartData = JSON.parse(chartData);
@@ -274,7 +274,7 @@ function strategyNameFromOutput(output) {
   if (!output || typeof output !== 'object') {
     return '';
   }
-  let data = output['data.json'];
+  let data = output['backtest.json'] ?? output['data.json'];
   if (data == null) {
     return '';
   }
@@ -1019,12 +1019,12 @@ export function StrategyPage() {
       }
       return undefined;
     }
-    let chartData = output['data.json'];
+    let chartData = output['backtest.json'] ?? output['data.json'];
     if (typeof chartData === 'string') {
       try {
         chartData = JSON.parse(chartData);
       } catch {
-        setChartError('Could not parse data.json');
+        setChartError('Could not parse backtest.json');
         mount.innerHTML = '';
         return undefined;
       }
