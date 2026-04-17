@@ -24,6 +24,7 @@ Strategy workspace: read `params.json`, write `backtest.json` (do not include `m
 
 - [Alpaca Market Data (Python)](https://alpaca.markets/sdks/python/market_data.html#market-data)
   - Credentials: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`
+  - Historical bars via Alpaca start in 2016; no market data before 2016 is available.
 - [MOEX Market Data](https://moexalgo.github.io/docs/api) 
   - Credentials: `MOEX_API_KEY` for Algopack access.
 - Provider choice rule:
