@@ -20,23 +20,29 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_openrouter import ChatOpenRouter
 
 
+CHAT_MODEL = 'openai/gpt-5.4-mini'
+CHAT_REASONING_EFFORT = 'low'
+
+CODEX_MODEL = 'gpt-5.4-mini'
+CODEX_REASONING_EFFORT = 'low'
+
+CODE_ANALYSIS_MODEL = 'anthropic/claude-opus-4.7'
+
 SYSTEM_PROMPT = f"""You help users design trading strategies in chat.
 
 Workflow
 
 * Before the first update_strategy, request any missing details needed to build the strategy (e.g., ticker, candlestick period, time range, stop loss, take profit, other parameters). 
-* Do not implement --hyperopt flag by default! Only implement it if the user asks for training/hyperparameter optimization of parameters.
+* Do not add hyperparameter search loops inside strategy.py by default; optimization is driven by the fixed workspace script hyperopt.py when the user asks for it.
 * To modify code call update_strategy with a brief task describing only the changes. Use english for the task description.
-* If the user only tweaks existing parameters (different ticker, dates, thresholds, optimization parameters etc.), call run_strategy with `python strategy.py --backtest` instead of update_strategy; pass parameters_json as a JSON string so the tool recursively merges into output/params.json before the run (do not use a --params CLI flag or teach strategies to accept one). 
-* If the user asks for exploratory data analysis, market research, or charts/metrics **without** defining a tradable strategy (no signals, no backtest of rules), use `update_strategy` for the analysis path, then run_strategy with the EDA entrypoint. Do not use backtest or hyperopt for that intent unless they switch to strategy building or optimization.
-* If the user asks for training/hyperparameter optimization of parameters, then 
-   1. make sure that the strategy implements `--hyperopt` flag. If it doesn't, then implement it with update_strategy call. 
-   2. use `python strategy.py --hyperopt` to train or optimize parameters.
+* If the user only tweaks existing parameters (different ticker, dates, thresholds, etc.), call run_strategy with `python strategy.py` instead of update_strategy; pass parameters_json as a JSON string so the tool recursively merges into output/params.json before the run (do not use a --params CLI flag or teach strategies to accept one). 
+* If the user asks for exploratory data analysis, market research, or charts **without** defining a tradable strategy (no signals, no rules backtest), use `update_strategy` for the analysis path, then run_strategy with `python strategy.py`. That path must not write output/metrics.json or output/params-hyperopt.json.
+* If the user asks for training/hyperparameter optimization, ensure via update_strategy that the strategy workspace writes output/params-hyperopt.json on runs (and output/metrics.json as a strategy), then run_strategy with `python hyperopt.py` (not strategy.py).
 * Always respond in the user’s language.
-* After each successful update_strategy, call run_strategy so results match the change (backtest, EDA, or hyperopt as appropriate). Only briefly summarize strategy performance based on the output of the run_strategy call, don't make up numbers. The user already sees all the charts and metrics.
+* After each successful update_strategy, call run_strategy so results match the change (`python strategy.py` or `python hyperopt.py` as appropriate). Only briefly summarize strategy performance based on the output of the run_strategy call, don't make up numbers. The user already sees all the charts and metrics.
 
 Notes
-* update_strategy edits the workspace strategy code via the coding agent; layout, CLI modes, and how results are surfaced follow AGENTS.md in that workspace.
+* update_strategy edits the workspace strategy code via the coding agent; layout, run contract, and how results are surfaced follow AGENTS.md in that workspace.
 * Market data providers: use Alpaca for all non-Russian markets; use MOEX (moexalgo/Algopack) for Russian instruments/markets.
 * Auto provider selection is allowed and preferred when uncertain: try Alpaca first, then MOEX.
 * Do not use yfinance or ask the user to switch to yfinance.
@@ -52,7 +58,8 @@ STRATEGY_AGENTS_TEMPLATE = STRATEGIES_DIR / "AGENTS.md"
 STRATEGY_CLAUDE_TEMPLATE = STRATEGIES_DIR / "CLAUDE.md"
 STRATEGY_CODE_TEMPLATE = STRATEGIES_DIR / "strategy.py"
 STRATEGY_UTILS_TEMPLATE = STRATEGIES_DIR / "utils.py"
-STRATEGY_CODE_AGENT_PREFIX = "Follow AGENTS.md in this workspace. User task: "
+STRATEGY_HYPEROPT_TEMPLATE = STRATEGIES_DIR / "hyperopt.py"
+STRATEGY_CODE_AGENT_PREFIX = ""
 UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
 RUN_STRATEGY_TOOL_NAME = "run_strategy"
 UPDATE_STRATEGY_TOOL_MESSAGE_MAX_JSON = 1024
@@ -77,6 +84,7 @@ def _run_logged_subprocess(
         proc = subprocess.run(
             cmd,
             cwd=cwd,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -144,6 +152,15 @@ def ensure_strategy_workspace(thread_id: str) -> Path:
             shutil.copy2(STRATEGY_UTILS_TEMPLATE, dest_utils)
     if dest_utils.is_file():
         _chmod_readonly(dest_utils)
+    dest_hyperopt = workspace / "hyperopt.py"
+    if STRATEGY_HYPEROPT_TEMPLATE.is_file():
+        if dest_hyperopt.is_file():
+            try:
+                dest_hyperopt.chmod(0o644)
+            except OSError:
+                logger.warning("could not make writable for refresh: %s", dest_hyperopt)
+        shutil.copy2(STRATEGY_HYPEROPT_TEMPLATE, dest_hyperopt)
+        _chmod_readonly(dest_hyperopt)
     return workspace
 
 
@@ -234,9 +251,9 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             "name": RUN_STRATEGY_TOOL_NAME,
             "description": (
                 "Run a strategy command in this thread's workspace (no coding agent, no code edits). "
-                "Use python strategy.py --backtest for strategy runs; use python strategy.py --eda for exploratory analysis-only workspaces or analysis reruns. "
+                "Use python strategy.py for all normal runs (single entrypoint; params come from output/params.json). "
                 "Optional parameters_json (a JSON string) is parsed and recursively merged into output/params.json before the command runs (same merge rules as parameters_json field description). "
-                "Use python strategy.py --hyperopt only when the user asked to optimize and the workspace strategy implements it. "
+                "Use python hyperopt.py when the user asked for hyperparameter optimization and the strategy writes output/params-hyperopt.json and output/metrics.json. "
                 "Refreshes output/data.json on success."
             ),
             "parameters": {
@@ -245,7 +262,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                     "command": {
                         "type": "string",
                         "description": (
-                            "Full shell command, e.g. python strategy.py --backtest or python strategy.py --eda. "
+                            "Full shell command, e.g. python strategy.py or python hyperopt.py. "
                             "Pass ticker or other overrides in parameters_json (merged into output/params.json), not on the command line."
                         ),
                     },
@@ -267,7 +284,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": ANALYSE_CODE_TOOL_NAME,
             "description": (
-                "Answer a question about the current strategy's code (strategy.py, utils.py), "
+                "Answer a question about the current strategy's code (strategy.py, utils.py, hyperopt.py), "
                 "and params in this thread. "
                 "Use for quick code comprehension without modifying files."
             ),
@@ -352,7 +369,7 @@ def run_analyse_code(
         f"{code if code else ''}"
     )
 
-    llm = ChatOpenRouter(model='anthropic/claude-opus-4.6', request_timeout=120_000)
+    llm = ChatOpenRouter(model=CODE_ANALYSIS_MODEL, request_timeout=120_000)
     msg = llm.invoke(
         [
             SystemMessage(content=analysis_system),
@@ -392,7 +409,7 @@ def generate_strategy_algorithm_pseudocode(*, code: str, language: str = "") -> 
         "Can use Markdown for formatting. "
         + lang_line
     )
-    llm = ChatOpenRouter(model='anthropic/claude-opus-4.6', request_timeout=120_000)
+    llm = ChatOpenRouter(model=CODE_ANALYSIS_MODEL, request_timeout=120_000)
     msg = llm.invoke(
         [
             SystemMessage(content=system),
@@ -480,8 +497,9 @@ def _run_codex_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
         "-c", "service_tier=fast",
+        "-c", f"model={CODEX_MODEL}",
         "-c", "model_verbosity=low",
-        "-c", "model_reasoning_effort=high", # minimal, low, medium, high, xhigh
+        "-c", f"model_reasoning_effort={CODEX_REASONING_EFFORT}", # minimal, low, medium, high, xhigh
         "-c", "features.fast_mode=true",
         task,
     ]
@@ -610,7 +628,7 @@ def run_update_strategy(
     if on_progress:
         on_progress("Updating strategy, this may take a few minutes…")
     runner, codegen = _run_coding_agent_exec(STRATEGY_CODE_AGENT_PREFIX + task, root)
-
+    logger.info(f"Coding agent exec result: {runner}, {codegen.returncode}, {codegen.stdout[:100]}, {codegen.stderr[:100]}")
     result: dict[str, Any] = {
         "runner": runner,
         "codex_returncode": codegen.returncode,
@@ -889,8 +907,7 @@ Current strategy parameters (overrides: pass parameters_json on run_strategy to 
 
     max_iterations = 10
     last_strategy_name = ""
-    llm = ChatOpenRouter(model='openai/gpt-5.4', request_timeout=120_000, reasoning={"effort": "high"})
-    # llm = ChatOpenRouter(model='anthropic/claude-opus-4.6', request_timeout=120_000)
+    llm = ChatOpenRouter(model=CHAT_MODEL, request_timeout=120_000, reasoning={"effort": CHAT_REASONING_EFFORT})
     llm_tools = llm.bind_tools(AGENT_TOOLS)
     tool_handlers = _tool_handlers_for_thread(
         thread_id,

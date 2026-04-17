@@ -7,23 +7,19 @@ Backtest strategies and emit JSON the frontend uses for charts and metrics.
 
 ## Layout
 
-- **`strategy.py`** — entry point; all authored strategy and backtest logic lives here.
+- **`strategy.py`** — entry point; all authored strategy and analysis logic lives here.
 - **`utils.py`** — shared helpers (Alpaca, moexalgo algopack, paths, JSON). Import only; never edit, replace, or delete.
-- **No other `.py` files** in this folder (only `strategy.py` and `utils.py`).
+- **`hyperopt.py`** — fixed platform hyperparameter driver (random search). Copied read-only into the workspace; do not edit or replace.
 
-## `strategy.py` CLI
+## Running `strategy.py`
 
-Ticker, timeframe, and dates are **not** separate flags; they come from `output/params.json`. Do **not** add a `--params` CLI argument; the platform merges run-time overrides into `output/params.json` before invoking the script.
+Invoked as **`python strategy.py`** only. Ticker, timeframe, and dates are **not** separate flags; they come from **`output/params.json`**. Do **not** add a **`--params`** CLI argument; the platform merges run-time overrides into **`output/params.json`** before the run.
 
-Implementing **`--backtest`**, **`--eda`**, and **`--hyperopt`** is optional; ship only what the task needs. **`--hyperopt`** must not be added until **`--backtest`** is implemented.
+Use **`ArgumentParser(description=...)`** with **`--help`** only so the chat UI can show a short summary of what the script does.
 
-- **`--backtest`** — Read `output/params.json`, run the backtest, write `output/data.json` (stats + chart data), print performance to stdout.
-- **`--eda`** — Read `output/params.json`, run **exploratory analysis** only (distributions, correlations, volatility, seasonality, liquidity, regimes, etc.) — **not** strategy rules or walk-forward performance. Write `output/data.json` with a `charts` array and `strategy_name` from params. Omit `metrics` unless you have meaningful backtest-style numbers. Print concise findings. Put analysis-only knobs in `output/params.json` with the same static-params rules as below.
-- **`--help`** — `ArgumentParser(description=...)` — one short paragraph on strategy logic; leave empty or minimal until there is behavior to describe.
+**EDA-style workspace:** exploratory analysis only (no tradable rules backtest). Read **`output/params.json`**, write **`output/data.json`** with **`strategy_name`**, **`charts`**, optional **`table`**. Omit the **`metrics`** key from **`data.json`**. Do **not** write **`output/metrics.json`** or **`output/params-hyperopt.json`**.
 
-**Mode choice:** `--eda` for data analysis or market research; `--backtest` for entries/exits, sizing, or walk-forward results. **`--hyperopt`** only when the user asks to **train or optimize parameters**, **`--backtest`** already exists, and you are not doing that search inside **`--eda`**. After `update_strategy`, refresh with `python strategy.py --eda` or `--backtest` as appropriate.
-
-**`--hyperopt`:** Only when requested and **`--backtest`** already exists. Optimize using ranges and training window from `output/params.json` (or equivalent in code), print results, write tuned params back to `output/params.json` for the next `--backtest`. Prefer Optuna or similar. **Hard cap: 120s** runtime.
+**Strategy workspace:** read **`output/params.json`**, write **`output/data.json`** (include the same **`metrics`** object under **`data.json`** for the frontend), write **`output/metrics.json`** with that metrics object for tooling, and write **`output/params-hyperopt.json`** describing the hyperparameter study (**`search_space`**, **`n_trials`**, **`timeout_seconds`**, **`direction`**, **`objective_metric`**, etc.) so **`python hyperopt.py`** can optimize. Do **not** write or update **`output/params.json`** from **`strategy.py`**.
 
 ## Data
 
@@ -43,11 +39,26 @@ Implementing **`--backtest`**, **`--eda`**, and **`--hyperopt`** is optional; sh
 
 ## `output/params.json`
 
-Single source of truth: ticker, bar timeframe (e.g. Alpaca `1Day`, `1Hour`), backtest window (`start_test_date` / `end_test_date` or equivalent), every fixed numeric/boolean input, and hyperopt config when applicable (train window, search ranges, etc.). No duplicates in code — read this file, do not hardcode those constants.
+Single source of truth: ticker, bar timeframe (e.g. Alpaca `1Day`, `1Hour`), backtest window (`start_test_date` / `end_test_date` or equivalent), and every fixed numeric/boolean input the run needs. No duplicates in code — read this file, do not hardcode those constants.
 
-Ship a valid file with sensible defaults so a fresh workspace runs. **Do not** use in-code defaults to paper over missing keys. **Do not** write or update this file from `strategy.py` — keep it static.
+Ship a valid file with sensible defaults so a fresh workspace runs. **Do not** use in-code defaults to paper over missing keys. **Do not** write or update this file from **`strategy.py`**; **`hyperopt.py`** may rewrite it after a study.
 
 Always include **`strategy_name`**: human-readable, no ticker in the name.
+
+## `output/metrics.json` and `output/params-hyperopt.json` (strategy only)
+
+When the workspace is a **strategy backtest** (not EDA-only), **`strategy.py`** must write:
+
+- **`output/metrics.json`** — JSON object with the scalar fields documented under **`metrics`** below (same shape as the **`metrics`** object embedded in **`data.json`**).
+- **`output/params-hyperopt.json`** — JSON for **`hyperopt.py`**: at minimum **`search_space`** (map of parameter name → range spec). Each name must match a **top-level** key in **`output/params.json`** that trials may override. Supported specs per key:
+  - **`{ "type": "int", "low": 5, "high": 30 }`**
+  - **`{ "type": "float", "low": 0.1, "high": 2.0 }`**
+  - **`{ "type": "categorical", "choices": ["a", "b"] }`**
+  Also set **`n_trials`**, **`timeout_seconds`** (wall clock for the whole study; cap **120** unless the user asks otherwise), **`direction`** (**`maximize`** or **`minimize`**), **`objective_metric`** (key or dotted path into **`metrics.json`**, e.g. **`total_return`**), and optionally **`seed`**, **`trial_timeout_seconds`**.
+
+## `hyperopt.py`
+
+Fixed file in the template tree; the workspace copy is read-only. **`python hyperopt.py`** reads **`output/params-hyperopt.json`**, samples parameters into **`output/params.json`**, runs **`python strategy.py`** per trial, reads **`output/metrics.json`**, then writes the best **`output/params.json`**. Do not implement this search loop inside **`strategy.py`**.
 
 ## `output/data.json`
 
@@ -65,7 +76,7 @@ Always include **`strategy_name`**: human-readable, no ticker in the name.
 - **`strategy_name`** (`string`) — always include; copy from params.
 - **`charts`** (`array`) — always include; at least one chart for anything to render.
 - **`table`** (`array`) — optional; tabular data (rankings, holdings, stats rows).
-- **`metrics`** (`object`) — `--backtest` only; omit for `--eda`.
+- **`metrics`** (`object`) — strategy backtests only; omit for EDA-only scripts (omit **`output/metrics.json`** as well).
 
 At least one of `charts` (non-empty) or `table` (non-empty) **must** be present or the frontend shows nothing.
 
@@ -153,7 +164,7 @@ Optional array of row objects. Column headers are derived from `Object.keys(rows
 
 ### `metrics`
 
-`--backtest` only. Object with these recognized keys:
+Strategy backtests only: include the same object in **`data.json`** here and mirror it to **`output/metrics.json`**. Recognized keys:
 
 - **`total_return`** — number, shown as `…%`, green/red by sign (e.g. `12.5`)
 - **`sharpe_ratio`** — number, `.toFixed(3)` (e.g. `1.234`)
@@ -162,7 +173,7 @@ Optional array of row objects. Column headers are derived from `Object.keys(rows
 - **`num_trades`** — number (e.g. `47`)
 - **`final_equity`** — number, shown as `$…` with locale formatting (e.g. `112500`)
 
-Omit `metrics` entirely for `--eda` to hide the panel.
+Omit **`metrics`** entirely (and omit **`output/metrics.json`**) for EDA-only runs to hide the panel.
 
 ### Chart rules
 

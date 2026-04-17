@@ -2,14 +2,13 @@ from services.agent import _parse_argparse_help_description
 
 
 def test_parse_argparse_help_description():
-    spy_help = """usage: strategy.py [-h] [--backtest]
+    spy_help = """usage: strategy.py [-h]
 
 Long-only daily SMA crossover strategy for SPY that buys when the 50-day SMA crosses above the 200-day SMA and sells when the
 50-day SMA crosses below it, with no stop loss or take profit.
 
 options:
   -h, --help  show this help message and exit
-  --backtest  Run the backtest using output/params.json.
 """
     assert _parse_argparse_help_description(spy_help) == (
         "Long-only daily SMA crossover strategy for SPY that buys when the 50-day SMA crosses above the 200-day SMA and sells when the\n"

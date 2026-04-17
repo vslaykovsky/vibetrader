@@ -3,8 +3,10 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional
+from typing import Annotated, Any, Literal, Optional
+
 import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field
 
 from alpaca.data.enums import CryptoFeed
 from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
@@ -18,7 +20,95 @@ from moexalgo import Ticker
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 PARAMS_PATH = OUTPUT_DIR / "params.json"
 DATA_PATH = OUTPUT_DIR / "data.json"
+METRICS_PATH = OUTPUT_DIR / "metrics.json"
+PARAMS_HYPEROPT_PATH = OUTPUT_DIR / "params-hyperopt.json"
 AVAILABLE_PROVIDERS = {"auto", "alpaca", "moex"}
+
+
+class LwcMarker(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    time: str | int | float
+    position: str
+    color: str
+    shape: str
+    text: str = ""
+
+
+class LwcCandlestickPoint(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    time: str | int | float
+    open: float
+    high: float
+    low: float
+    close: float
+
+
+class LwcTimeValuePoint(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    time: str | int | float
+    value: float
+
+
+class _LwcSeriesBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str
+    options: dict[str, Any] = Field(default_factory=dict)
+    markers: list[LwcMarker] | None = None
+
+
+class LwcCandlestickSeries(_LwcSeriesBase):
+    type: Literal["Candlestick"] = "Candlestick"
+    data: list[LwcCandlestickPoint] = Field(default_factory=list)
+
+
+LwcTimeValueSeriesKind = Literal["Line", "Area", "Histogram", "Baseline", "Bar"]
+
+
+class LwcTimeValueSeries(_LwcSeriesBase):
+    type: LwcTimeValueSeriesKind
+    data: list[LwcTimeValuePoint] = Field(default_factory=list)
+
+
+LwcSeries = Annotated[
+    LwcCandlestickSeries | LwcTimeValueSeries,
+    Field(discriminator="type"),
+]
+
+
+class LightweightChartsChart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["lightweight-charts"] = "lightweight-charts"
+    title: str
+    series: list[LwcSeries] = Field(default_factory=list)
+
+
+class PlotlyChart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["plotly"] = "plotly"
+    title: str
+    data: list[dict[str, Any]] = Field(default_factory=list)
+    layout: dict[str, Any] = Field(default_factory=dict)
+
+
+Chart = Annotated[LightweightChartsChart | PlotlyChart, Field(discriminator="type")]
+
+
+class Metrics(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    total_return: float | None = None
+    sharpe_ratio: float | None = None
+    max_drawdown: float | None = None
+    win_rate: float | None = None
+    num_trades: int | None = None
+    final_equity: float | None = None
+
+
+class DataJson(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    strategy_name: str
+    charts: list[Chart] = Field(default_factory=list)
+    table: list[dict[str, Any]] = Field(default_factory=list)
+    metrics: Metrics | None = None
 
 
 @dataclass
@@ -46,6 +136,19 @@ def save_json(path: Path, payload: dict) -> None:
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, sort_keys=True)
         f.write("\n")
+
+
+def serialize_data_json(document: DataJson) -> dict[str, Any]:
+    return document.model_dump(mode="json", exclude_none=True)
+
+
+def save_data_json(document: DataJson, path: Path | None = None) -> None:
+    target = path or DATA_PATH
+    if path is None:
+        ensure_output_dir()
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    save_json(target, serialize_data_json(document))
 
 
 def normalize_timeframe(value: str) -> str:

@@ -7,7 +7,7 @@ Chat UI + Flask API. An agent edits per-thread Python under `backend/strategies/
 - **Frontend** (`frontend/`): React/Vite, Supabase session, calls the API with a Bearer JWT.
 - **Backend** (`backend/`): Flask app in `app.py`; HTTP in `api/routes.py`; auth in `auth.py`; DB models/session in `db/`.
 - **Agent** (`services/agent.py`): LLM + tools; invokes Codex on the thread workspace and subprocess runs with cwd set to that folder. Thread state is persisted as `Strategy` rows (messages, canvas, code, status, etc.); strategy source on disk is the workspace for that `thread_id`.
-- **Strategy contract** (schemas, CLI, params/output JSON): **`backend/strategies/AGENTS.md`** — templates (`strategy.py`, `utils.py`, same `AGENTS.md`) are copied into each new workspace; change the template under `backend/strategies/`, not only one thread directory.
+- **Strategy contract** (schemas, run contract, params/output JSON): **`backend/strategies/AGENTS.md`** — templates (`strategy.py`, `utils.py`, `hyperopt.py`, same `AGENTS.md`) are copied into each new workspace; change the template under `backend/strategies/`, not only one thread directory.
 
 ## `strategy` table and DB access
 
