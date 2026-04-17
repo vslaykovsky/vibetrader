@@ -33,6 +33,8 @@ Install backend packages (better into a conda env!):
 pip install -r backend/requirements.txt
 ```
 
+On Linux, Codex `exec --full-auto` needs [bubblewrap](https://developers.openai.com/codex/concepts/sandboxing#prerequisites) on `PATH` (e.g. `sudo apt install bubblewrap`). If `bwrap` still cannot create user namespaces, apply the sysctl notes in `deploy/gke/README.md` (Codex section) on the host or cluster node. In Docker or Kubernetes where you cannot change those sysctls, set `CODEX_BYPASS_SANDBOX=1` for the backend process so Codex skips its sandbox (see the same deploy doc).
+
 Install frontend packages:
 ```
 cd frontend
