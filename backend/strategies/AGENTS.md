@@ -47,6 +47,7 @@ Always include `strategy_name`: human-readable, no ticker in the name.
 ## `params-hyperopt.json` (strategy only)
 
 For strategy backtests (not EDA), create a `params-hyperopt.json` file as a static config matching the `ParamsHyperopt` model in `utils.py`. Do not generate or update this file from `strategy.py`.
+This file should contain hyperparameters from params.json that are worth optimizing. 
 
 ## `metrics.json` (strategy only)
 
