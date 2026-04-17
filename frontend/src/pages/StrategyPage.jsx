@@ -233,9 +233,7 @@ function hasRenderableChartOutput(output) {
   if (chartData == null || typeof chartData !== 'object') {
     return false;
   }
-  const hasCharts = Array.isArray(chartData.charts) && chartData.charts.length > 0;
-  const hasTable = Array.isArray(chartData.table) && chartData.table.length > 0;
-  return hasCharts || hasTable;
+  return Array.isArray(chartData.charts) && chartData.charts.length > 0;
 }
 
 function strategyCliDescriptionFromOutput(output) {
@@ -268,6 +266,47 @@ function paramsJsonFromOutput(output) {
   } catch {
     return null;
   }
+}
+
+function paramsHyperoptJsonFromOutput(output) {
+  if (!output || typeof output !== 'object') {
+    return null;
+  }
+  const raw = output['params-hyperopt.json'];
+  if (raw == null) {
+    return null;
+  }
+  if (typeof raw === 'string') {
+    const t = raw.trim();
+    return t.length ? t : null;
+  }
+  try {
+    const s = JSON.stringify(raw, null, 2);
+    return s.trim().length ? s : null;
+  } catch {
+    return null;
+  }
+}
+
+function metricsJsonFromOutput(output) {
+  if (!output || typeof output !== 'object') {
+    return null;
+  }
+  const raw = output['metrics.json'];
+  if (raw == null) {
+    return null;
+  }
+  if (typeof raw === 'string') {
+    const t = raw.trim();
+    if (!t.length) return null;
+    try {
+      const parsed = JSON.parse(t);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  return raw && typeof raw === 'object' ? raw : null;
 }
 
 function strategyNameFromOutput(output) {
@@ -1033,9 +1072,14 @@ export function StrategyPage() {
       mount.innerHTML = '';
       return undefined;
     }
+    if (chartData.metrics == null) {
+      const m = metricsJsonFromOutput(output);
+      if (m) {
+        chartData = { ...chartData, metrics: m };
+      }
+    }
     const hasCharts = Array.isArray(chartData.charts) && chartData.charts.length > 0;
-    const hasTable = Array.isArray(chartData.table) && chartData.table.length > 0;
-    if (!hasCharts && !hasTable) {
+    if (!hasCharts) {
       mount.innerHTML = '';
       return undefined;
     }
@@ -1197,9 +1241,14 @@ export function StrategyPage() {
   const showCliDescription = cliDescriptionText != null;
   const paramsJsonText = paramsJsonFromOutput(output);
   const showParamsPanel = paramsJsonText != null;
+  const paramsHyperoptJsonText = paramsHyperoptJsonFromOutput(output);
+  const showHyperoptParamsPanel = paramsHyperoptJsonText != null;
+  const showMetricsPanel = metricsJsonFromOutput(output) != null;
   const hasAnyCanvasData =
     showCliDescription ||
     showParamsPanel ||
+    showHyperoptParamsPanel ||
+    showMetricsPanel ||
     hasRenderableChartOutput(output);
   const currentThreadMeta = useMemo(
     () => threads.find((t) => t?.thread_id && t.thread_id === threadId) || null,
@@ -1493,6 +1542,12 @@ export function StrategyPage() {
             <pre className="canvas-pseudocode">{paramsJsonText}</pre>
           </details>
         ) : null}
+        {showHyperoptParamsPanel ? (
+          <details className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details">
+            <summary className="canvas-pseudocode-summary">Hyperopt parameters</summary>
+            <pre className="canvas-pseudocode">{paramsHyperoptJsonText}</pre>
+          </details>
+        ) : null}
         {!loading && displayStrategyRunId ? (
           <details
             key={displayStrategyRunId}
@@ -1523,7 +1578,7 @@ export function StrategyPage() {
         {chartError ? <p className="canvas-chart-error">{chartError}</p> : null}
         {!hasRenderableChartOutput(output) && !chartError ? (
           <p className="canvas-charts-placeholder muted">
-            No charts or table yet. Send a message to refresh the strategy run.
+            No charts yet. Send a message to refresh the strategy run.
           </p>
         ) : null}
         <div

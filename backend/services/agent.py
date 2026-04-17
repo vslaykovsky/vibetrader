@@ -198,15 +198,8 @@ def restore_strategy_workspace_from_snapshot(
 
     (root / "strategy.py").write_text(code or "", encoding="utf-8")
 
-    legacy_output_dir = root / "output"
-    shutil.rmtree(legacy_output_dir, ignore_errors=True)
-    for path in (
-        root / "params.json",
-        root / "backtest.json",
-        root / "metrics.json",
-        root / "params-hyperopt.json",
-        root / "data.json",
-    ):
+    for name in CANVAS_OUTPUT_FILES:
+        path = root / name
         try:
             if path.is_file():
                 path.unlink()
@@ -219,26 +212,10 @@ def restore_strategy_workspace_from_snapshot(
     if not isinstance(output, dict):
         return
 
-    allowed = frozenset(
-        {
-            "params.json",
-            "backtest.json",
-            "metrics.json",
-            "params-hyperopt.json",
-            "data.json",
-        }
-    )
     for filename, contents in output.items():
-        if not isinstance(filename, str) or not filename:
+        if not isinstance(filename, str) or filename not in CANVAS_OUTPUT_FILES:
             continue
-        name = filename.strip()
-        if name.lower() not in allowed:
-            continue
-        if name.lower() == "data.json":
-            name = "backtest.json"
-        out_path = root / name
-        if out_path.name != name:
-            continue
+        out_path = root / filename
         if isinstance(contents, (dict, list)) and out_path.suffix.lower() == ".json":
             out_path.write_text(json.dumps(contents, indent=2, sort_keys=True), encoding="utf-8")
         elif isinstance(contents, str):
@@ -448,46 +425,33 @@ def generate_strategy_algorithm_pseudocode(*, code: str, language: str = "") -> 
     return {"ok": True, "algorithm": text or "(empty response)"}
 
 
-def _strategy_output_file_key(filename: str) -> str:
-    lower = filename.lower()
-    if lower == "data.json":
-        return "backtest.json"
-    return filename
-
-
-_IGNORED_STRATEGY_OUTPUT_FILES = frozenset(
+CANVAS_OUTPUT_FILES: frozenset[str] = frozenset(
     {
-        "summary.txt",
-        "pseudocode.txt",
-        "pseudocode.diff",
-        "pseudocode.old",
+        "params.json",
+        "backtest.json",
+        "metrics.json",
+        "params-hyperopt.json",
     }
 )
 
+CANVAS_OUTPUT_KEYS: frozenset[str] = CANVAS_OUTPUT_FILES | frozenset({"strategy_cli_description"})
 
-def _read_strategy_output_dir(thread_id: str) -> dict[str, Any]:
+
+def _read_strategy_workspace_files(thread_id: str) -> dict[str, Any]:
     root = strategy_root_for_thread(thread_id)
-    legacy_output_dir = root / "output"
     out: dict[str, Any] = {}
-    filenames = ("params.json", "backtest.json", "data.json", "metrics.json", "params-hyperopt.json")
-    candidates: list[Path] = []
-    for name in filenames:
-        candidates.append(root / name)
-        candidates.append(legacy_output_dir / name)
-    for path in candidates:
+    for name in CANVAS_OUTPUT_FILES:
+        path = root / name
         if not path.is_file():
             continue
-        if path.name.lower() in _IGNORED_STRATEGY_OUTPUT_FILES:
-            continue
-        key = _strategy_output_file_key(path.name)
         raw = path.read_text(encoding="utf-8", errors="replace")
         if path.suffix.lower() == ".json":
             try:
-                out[key] = json.loads(raw)
+                out[name] = json.loads(raw)
             except json.JSONDecodeError:
-                out[key] = raw
+                out[name] = raw
         else:
-            out[key] = raw
+            out[name] = raw
     return out
 
 
@@ -503,16 +467,16 @@ def canvas_with_output(existing_canvas: dict[str, Any], thread_id: str) -> dict[
         existing_output = merged.get("output")
         if not isinstance(existing_output, dict):
             existing_output = {}
-        disk_output = _read_strategy_output_dir(thread_id)
-        merged["output"] = {**existing_output, **disk_output} if disk_output else dict(existing_output)
+        filtered_existing = {k: v for k, v in existing_output.items() if k in CANVAS_OUTPUT_KEYS}
+        disk_output = _read_strategy_workspace_files(thread_id)
+        merged["output"] = {**filtered_existing, **disk_output}
         workspace = strategy_root_for_thread(thread_id)
-        desc = _parse_argparse_help_description(_run_strategy_help_stdout(workspace))
+        desc = read_strategy_description_from_workspace(workspace)
         out = merged["output"]
-        if isinstance(out, dict):
-            if desc:
-                out["strategy_cli_description"] = desc
-            else:
-                out.pop("strategy_cli_description", None)
+        if desc:
+            out["strategy_cli_description"] = desc
+        else:
+            out.pop("strategy_cli_description", None)
     else:
         merged["output"] = {}
     return sanitize_json_for_postgres(merged)
@@ -626,9 +590,6 @@ def read_strategy_name_from_workspace(root: Path) -> str:
         root / "params.json",
         root / "backtest.json",
         root / "data.json",
-        root / "output" / "params.json",
-        root / "output" / "backtest.json",
-        root / "output" / "data.json",
     )
     for path in candidates:
         if not path.is_file():
@@ -690,6 +651,22 @@ def _read_params_json_object(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def read_strategy_description_from_workspace(root: Path) -> str:
+    candidates = (
+        root / "params.json",
+    )
+    for path in candidates:
+        data = _read_params_json_object(path)
+        if not data:
+            continue
+        desc = data.get("description")
+        if isinstance(desc, str):
+            s = desc.strip()
+            if s:
+                return s[:2048]
+    return ""
 
 
 def _deep_merge_json_values(base: Any, overlay: Any) -> Any:

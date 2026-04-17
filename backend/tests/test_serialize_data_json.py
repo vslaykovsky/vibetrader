@@ -45,10 +45,13 @@ def test_serialize_data_json():
                 data=[{"type": "histogram", "x": [1.2, -0.5, 3.1], "marker": {"color": "#26a69a"}}],
                 layout={"xaxis": {"title": "Return %"}, "yaxis": {"title": "Count"}},
             ),
-        ],
-        table=[
-            {"Ticker": "AAPL", "Close": 189.5, "SMA50": 185.2, "Distance_pct": 2.32, "Side": "above"},
-            {"Ticker": "MSFT", "Close": 410.3, "SMA50": 412.1, "Distance_pct": -0.44, "Side": "below"},
+            utils.TableChart(
+                title="Trades",
+                rows=[
+                    {"entry_time": "2024-01-15", "exit_time": "2024-02-10", "pnl": 3.1, "comment": "EMA cross up"},
+                    {"entry_time": "2024-03-02", "exit_time": "2024-03-20", "pnl": -1.2, "comment": "Signal flip"},
+                ],
+            ),
         ],
         metrics=utils.Metrics(
             total_return=12.5,
@@ -97,10 +100,14 @@ def test_serialize_data_json():
                 "data": [{"type": "histogram", "x": [1.2, -0.5, 3.1], "marker": {"color": "#26a69a"}}],
                 "layout": {"xaxis": {"title": "Return %"}, "yaxis": {"title": "Count"}},
             },
-        ],
-        "table": [
-            {"Ticker": "AAPL", "Close": 189.5, "SMA50": 185.2, "Distance_pct": 2.32, "Side": "above"},
-            {"Ticker": "MSFT", "Close": 410.3, "SMA50": 412.1, "Distance_pct": -0.44, "Side": "below"},
+            {
+                "type": "table",
+                "title": "Trades",
+                "rows": [
+                    {"entry_time": "2024-01-15", "exit_time": "2024-02-10", "pnl": 3.1, "comment": "EMA cross up"},
+                    {"entry_time": "2024-03-02", "exit_time": "2024-03-20", "pnl": -1.2, "comment": "Signal flip"},
+                ],
+            },
         ],
         "metrics": {
             "total_return": 12.5,
@@ -114,8 +121,8 @@ def test_serialize_data_json():
     assert utils.serialize_data_json(doc) == expected
 
 
-def test_save_data_json(tmp_path):
+def test_save_backtest_json(tmp_path):
     path = tmp_path / "backtest.json"
-    utils.save_data_json(utils.DataJson(strategy_name="T", charts=[], table=[]), path=path)
+    utils.save_backtest_json(utils.DataJson(strategy_name="T", charts=[]), path=path)
     loaded = json.loads(path.read_text(encoding="utf-8"))
-    assert loaded == {"strategy_name": "T", "charts": [], "table": []}
+    assert loaded == {"strategy_name": "T", "charts": []}

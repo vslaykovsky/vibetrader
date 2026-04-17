@@ -17,12 +17,11 @@ from moexalgo import session as moex_session
 from moexalgo import Ticker
 
 
-OUTPUT_DIR = Path(__file__).resolve().parent
-PARAMS_PATH = OUTPUT_DIR / "params.json"
-BACKTEST_PATH = OUTPUT_DIR / "backtest.json"
-DATA_PATH = BACKTEST_PATH
-METRICS_PATH = OUTPUT_DIR / "metrics.json"
-PARAMS_HYPEROPT_PATH = OUTPUT_DIR / "params-hyperopt.json"
+WORKSPACE_DIR = Path(__file__).resolve().parent
+PARAMS_PATH = WORKSPACE_DIR / "params.json"
+BACKTEST_PATH = WORKSPACE_DIR / "backtest.json"
+METRICS_PATH = WORKSPACE_DIR / "metrics.json"
+PARAMS_HYPEROPT_PATH = WORKSPACE_DIR / "params-hyperopt.json"
 AVAILABLE_PROVIDERS = {"auto", "alpaca", "moex"}
 
 
@@ -91,7 +90,17 @@ class PlotlyChart(BaseModel):
     layout: dict[str, Any] = Field(default_factory=dict)
 
 
-Chart = Annotated[LightweightChartsChart | PlotlyChart, Field(discriminator="type")]
+class TableChart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["table"] = "table"
+    title: str = ""
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+
+
+Chart = Annotated[
+    LightweightChartsChart | PlotlyChart | TableChart,
+    Field(discriminator="type"),
+]
 
 
 class Metrics(BaseModel):
@@ -108,8 +117,44 @@ class DataJson(BaseModel):
     model_config = ConfigDict(extra="forbid")
     strategy_name: str
     charts: list[Chart] = Field(default_factory=list)
-    table: list[dict[str, Any]] = Field(default_factory=list)
     metrics: Metrics | None = None
+
+
+class HyperoptIntSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["int"] = "int"
+    low: int
+    high: int
+
+
+class HyperoptFloatSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["float"] = "float"
+    low: float
+    high: float
+
+
+class HyperoptCategoricalSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["categorical"] = "categorical"
+    choices: list[Any]
+
+
+HyperoptSearchSpec = Annotated[
+    HyperoptIntSpec | HyperoptFloatSpec | HyperoptCategoricalSpec,
+    Field(discriminator="type"),
+]
+
+
+class ParamsHyperopt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    search_space: dict[str, HyperoptSearchSpec]
+    n_trials: int = 30
+    timeout_seconds: int = 120
+    direction: Literal["maximize", "minimize"] = "maximize"
+    objective_metric: str = "total_return"
+    seed: int | None = None
+    trial_timeout_seconds: int | None = None
 
 
 @dataclass
@@ -122,10 +167,6 @@ class Trade:
     pnl: float
     return_pct: float
     reason: str
-
-
-def ensure_output_dir() -> None:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_params() -> dict:
@@ -143,12 +184,19 @@ def serialize_data_json(document: DataJson) -> dict[str, Any]:
     return document.model_dump(mode="json", exclude_none=True)
 
 
-def save_data_json(document: DataJson, path: Path | None = None) -> None:
-    target = path or DATA_PATH
-    if path is None:
-        ensure_output_dir()
-    else:
-        target.parent.mkdir(parents=True, exist_ok=True)
+def serialize_params_hyperopt(document: ParamsHyperopt) -> dict[str, Any]:
+    return document.model_dump(mode="json", exclude_none=True)
+
+
+def save_params_hyperopt(document: ParamsHyperopt, path: Path | None = None) -> None:
+    target = path or PARAMS_HYPEROPT_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    save_json(target, serialize_params_hyperopt(document))
+
+
+def save_backtest_json(document: DataJson, path: Path | None = None) -> None:
+    target = path or BACKTEST_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
     save_json(target, serialize_data_json(document))
 
 

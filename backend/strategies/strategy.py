@@ -3,14 +3,11 @@ from utils import *
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Placeholder strategy workspace. Implement data loading and runs."
-    )
+    parser = argparse.ArgumentParser()
     parser.parse_args()
-    ensure_output_dir()
     params = load_params()
     name = str(params.get("strategy_name") or "Untitled")
-    save_data_json(DataJson(strategy_name=name, charts=[], table=[]))
+    save_backtest_json(DataJson(strategy_name=name, charts=[]))
 
 
 if __name__ == "__main__":

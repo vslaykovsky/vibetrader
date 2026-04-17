@@ -8,6 +8,10 @@ import time
 from copy import deepcopy
 from pathlib import Path
 
+from pydantic import ValidationError
+
+from utils import HyperoptCategoricalSpec, HyperoptFloatSpec, HyperoptIntSpec, ParamsHyperopt
+
 PARAMS_PATH = Path("params.json")
 PARAMS_HYPEROPT_PATH = Path("params-hyperopt.json")
 METRICS_PATH = Path("metrics.json")
@@ -37,24 +41,28 @@ def _nested_get(obj: dict, dotted: str):
     return cur
 
 
+def _load_params_hyperopt(path: Path) -> ParamsHyperopt | None:
+    if not path.is_file():
+        return None
+    raw = path.read_text(encoding="utf-8").strip()
+    if not raw:
+        return None
+    return ParamsHyperopt.model_validate_json(raw)
+
+
 def _sample_from_space(rng: random.Random, space: dict) -> dict[str, object]:
     out: dict[str, object] = {}
     for key, spec in space.items():
-        if not isinstance(spec, dict):
-            continue
-        t = str(spec.get("type", "")).lower()
-        if t == "int":
-            lo = int(spec["low"])
-            hi = int(spec["high"])
+        if isinstance(spec, HyperoptIntSpec):
+            lo = int(spec.low)
+            hi = int(spec.high)
             out[key] = rng.randint(lo, hi)
-        elif t == "float":
-            lo = float(spec["low"])
-            hi = float(spec["high"])
+        elif isinstance(spec, HyperoptFloatSpec):
+            lo = float(spec.low)
+            hi = float(spec.high)
             out[key] = rng.uniform(lo, hi)
-        elif t == "categorical":
-            choices = spec.get("choices")
-            if isinstance(choices, list) and choices:
-                out[key] = rng.choice(choices)
+        elif isinstance(spec, HyperoptCategoricalSpec) and spec.choices:
+            out[key] = rng.choice(spec.choices)
     return out
 
 
@@ -65,26 +73,28 @@ def _merge_flat(base: dict, overlay: dict) -> dict:
 
 
 def main() -> None:
-    cfg = _load_json(PARAMS_HYPEROPT_PATH)
-    if not cfg:
+    try:
+        cfg = _load_params_hyperopt(PARAMS_HYPEROPT_PATH)
+    except ValidationError as exc:
+        print(f"invalid params-hyperopt.json: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if cfg is None:
         print("missing or empty params-hyperopt.json", file=sys.stderr)
         sys.exit(1)
     base = _load_json(PARAMS_PATH)
     if not base:
         print("missing or empty params.json", file=sys.stderr)
         sys.exit(1)
-    space = cfg.get("search_space")
-    if not isinstance(space, dict) or not space:
+    if not cfg.search_space:
         print("params-hyperopt.json needs a non-empty search_space object", file=sys.stderr)
         sys.exit(1)
-    n_trials = int(cfg.get("n_trials", 20))
-    wall = float(cfg.get("timeout_seconds", 120))
-    direction = str(cfg.get("direction", "maximize")).lower()
-    maximize = direction != "minimize"
-    metric_key = str(cfg.get("objective_metric", "total_return"))
-    seed = cfg.get("seed")
+    n_trials = int(cfg.n_trials)
+    wall = float(cfg.timeout_seconds)
+    maximize = cfg.direction != "minimize"
+    metric_key = str(cfg.objective_metric)
+    seed = cfg.seed
     rng = random.Random(seed if isinstance(seed, int) else None)
-    trial_timeout = float(cfg.get("trial_timeout_seconds", 600))
+    trial_timeout = float(cfg.trial_timeout_seconds) if cfg.trial_timeout_seconds is not None else 600.0
     exe = sys.executable
     t0 = time.perf_counter()
     best_value = float("-inf") if maximize else float("inf")
@@ -93,7 +103,7 @@ def main() -> None:
     for i in range(n_trials):
         if time.perf_counter() - t0 >= wall:
             break
-        sampled = _sample_from_space(rng, space)
+        sampled = _sample_from_space(rng, cfg.search_space)
         trial_params = _merge_flat(base, sampled)
         _save_json(PARAMS_PATH, trial_params)
         proc = subprocess.run(

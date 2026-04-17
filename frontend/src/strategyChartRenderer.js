@@ -265,7 +265,7 @@ function triggerCsvDownload(filename, csvText) {
   URL.revokeObjectURL(url);
 }
 
-function renderTablePanel(container, table) {
+function renderTablePanel(container, table, title) {
   if (!Array.isArray(table) || table.length === 0) return;
   const first = table[0];
   if (!first || typeof first !== 'object') return;
@@ -277,11 +277,11 @@ function renderTablePanel(container, table) {
   details.open = true;
   const summary = document.createElement('summary');
   summary.className = 'strategy-chart-summary';
-  summary.textContent = 'Table';
+  summary.textContent = typeof title === 'string' && title.trim() ? title : 'Table';
   details.appendChild(summary);
 
   const wrap = document.createElement('div');
-  wrap.style.cssText = 'padding:14px 4px 4px;overflow-x:auto;';
+  wrap.style.cssText = 'padding:14px 4px 4px;';
 
   const toolbar = document.createElement('div');
   toolbar.style.cssText =
@@ -303,6 +303,14 @@ function renderTablePanel(container, table) {
   });
   toolbar.appendChild(dlBtn);
   wrap.appendChild(toolbar);
+
+  const tableScroll = document.createElement('div');
+  const maxVisibleRows = 20;
+  if (table.length > maxVisibleRows) {
+    tableScroll.style.cssText = 'overflow:auto;max-height:560px;';
+  } else {
+    tableScroll.style.cssText = 'overflow-x:auto;';
+  }
 
   const tbl = document.createElement('table');
   tbl.style.cssText =
@@ -343,7 +351,8 @@ function renderTablePanel(container, table) {
   }
   tbl.appendChild(tbody);
 
-  wrap.appendChild(tbl);
+  tableScroll.appendChild(tbl);
+  wrap.appendChild(tableScroll);
   details.appendChild(wrap);
   container.appendChild(details);
 }
@@ -351,22 +360,37 @@ function renderTablePanel(container, table) {
 function renderMetricsPanel(container, metrics) {
   if (!metrics || typeof metrics !== 'object') return;
 
-  const fmt = (v) =>
-    typeof v === 'number'
+  const fmtNumber0 = (v) =>
+    typeof v === 'number' && Number.isFinite(v)
       ? v.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
       : String(v ?? '');
+
+  const fmtNumber3 = (v) =>
+    typeof v === 'number' && Number.isFinite(v)
+      ? v.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
+      : String(v ?? '');
+
+  const fmtPercent3 = (v) =>
+    typeof v === 'number' && Number.isFinite(v) ? `${fmtNumber3(v)}%` : `${String(v ?? '')}%`;
 
   const items = [
     {
       label: 'Total Return',
-      value: `${metrics.total_return}%`,
+      value: fmtPercent3(metrics.total_return),
       color: (metrics.total_return ?? 0) >= 0 ? '#26a69a' : '#ef5350',
     },
-    { label: 'Sharpe Ratio', value: Number(metrics.sharpe_ratio ?? 0).toFixed(3), color: '#d1d4dc' },
-    { label: 'Max Drawdown', value: `${metrics.max_drawdown}%`, color: '#ef5350' },
-    { label: 'Win Rate', value: `${metrics.win_rate}%`, color: '#d1d4dc' },
-    { label: '# Trades', value: metrics.num_trades, color: '#d1d4dc' },
-    { label: 'Final Equity', value: `$${fmt(metrics.final_equity)}`, color: '#d1d4dc' },
+    { label: 'Sharpe Ratio', value: fmtNumber3(metrics.sharpe_ratio), color: '#d1d4dc' },
+    { label: 'Max Drawdown', value: fmtPercent3(metrics.max_drawdown), color: '#ef5350' },
+    { label: 'Win Rate', value: fmtPercent3(metrics.win_rate), color: '#d1d4dc' },
+    {
+      label: '# Trades',
+      value:
+        typeof metrics.num_trades === 'number' && Number.isFinite(metrics.num_trades)
+          ? fmtNumber0(metrics.num_trades)
+          : metrics.num_trades,
+      color: '#d1d4dc',
+    },
+    { label: 'Final Equity', value: `$${fmtNumber3(metrics.final_equity)}`, color: '#d1d4dc' },
   ].filter((item) => item.value != null && item.value !== 'undefined%' && item.value !== '$undefined');
 
   if (items.length === 0) return;
@@ -411,11 +435,12 @@ export function renderCharts(container, dataJson) {
         lwCrosshairBindings.push({ chart, series: primarySeries });
       } else if (spec.type === 'plotly') {
         renderPlotlyChart(container, spec);
+      } else if (spec.type === 'table') {
+        renderTablePanel(container, spec.rows, spec.title);
       }
     }
   }
 
-  renderTablePanel(container, dataJson?.table);
   renderMetricsPanel(container, dataJson?.metrics);
 
   return { lwCharts, lwCrosshairBindings };
