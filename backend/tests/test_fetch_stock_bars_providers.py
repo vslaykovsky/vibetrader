@@ -1,4 +1,5 @@
 import pandas as pd
+from alpaca.data.timeframe import TimeFrame
 
 from strategies import utils
 
@@ -36,7 +37,7 @@ def test_fetch_stock_bars_uses_alpaca_provider(monkeypatch):
         start_test_date="2024-01-01",
         end_test_date="2024-01-10",
         history_padding_days=0,
-        timeframe="1d",
+        timeframe=TimeFrame.Day,
         provider="alpaca",
     )
 
@@ -64,7 +65,7 @@ def test_fetch_stock_bars_uses_moex_provider(monkeypatch):
         start_test_date="2024-01-01",
         end_test_date="2024-01-10",
         history_padding_days=0,
-        timeframe="1d",
+        timeframe=TimeFrame.Day,
         provider="moex",
     )
 
@@ -92,7 +93,7 @@ def test_fetch_stock_bars_auto_fallback_to_moex(monkeypatch):
         start_test_date="2024-01-01",
         end_test_date="2024-01-10",
         history_padding_days=0,
-        timeframe="1d",
+        timeframe=TimeFrame.Day,
         provider="auto",
     )
 

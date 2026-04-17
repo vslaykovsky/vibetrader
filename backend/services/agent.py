@@ -483,10 +483,13 @@ def canvas_with_output(existing_canvas: dict[str, Any], thread_id: str) -> dict[
 
 @traceable(name="run_codex_exec")
 def _run_codex_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    root = str(cwd.resolve())
     cmd = [
         "codex",
         "exec",
-        "--dangerously-bypass-approvals-and-sandbox",
+        "--full-auto",
+        "-C",
+        root,
         "--skip-git-repo-check",
         "-c", "service_tier=fast",
         "-c", f"model={CODEX_MODEL}",
@@ -495,7 +498,7 @@ def _run_codex_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
         "-c", "features.fast_mode=true",
         task,
     ]
-    return _run_logged_subprocess("codex exec", cmd, str(cwd), timeout=600)
+    return _run_logged_subprocess("codex exec", cmd, root, timeout=600)
 
 
 @traceable(name="run_claude_exec")

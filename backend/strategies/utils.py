@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from alpaca.data.enums import CryptoFeed
 from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
 from alpaca.data.requests import CryptoBarsRequest, StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 from moexalgo import session as moex_session
 from moexalgo import Ticker
@@ -199,40 +199,18 @@ def save_backtest_json(document: DataJson, path: Path | None = None) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     save_json(target, serialize_data_json(document))
 
+ 
 
-def normalize_timeframe(value: str) -> str:
-    normalized = str(value).strip().lower()
-    if normalized in {"1day", "day", "1d"}:
-        return "1d"
-    if normalized in {"1hour", "hour", "1h"}:
-        return "1h"
-    if normalized in {"1min", "1minute", "minute", "1m"}:
-        return "1m"
-    if normalized in {"1week", "week", "weekly", "1w", "w"}:
-        return "1w"
-    raise ValueError(f"Unsupported timeframe: {value}")
-
-
-def timeframe_from_string(value: str) -> TimeFrame:
-    normalized = normalize_timeframe(value)
-    if normalized == "1d":
-        return TimeFrame.Day
-    if normalized == "1h":
-        return TimeFrame.Hour
-    if normalized == "1w":
-        return TimeFrame.Week
-    return TimeFrame.Minute
-
-
-def period_from_string(value: str) -> int:
-    normalized = normalize_timeframe(value)
-    if normalized == "1d":
+def period_from_timeframe(tf: TimeFrame) -> int:
+    if tf.unit == TimeFrameUnit.Day and tf.amount == 1:
         return 24
-    if normalized == "1h":
+    if tf.unit == TimeFrameUnit.Hour and tf.amount == 1:
         return 60
-    if normalized == "1w":
+    if tf.unit == TimeFrameUnit.Week and tf.amount == 1:
         return 7
-    return 1
+    if tf.unit == TimeFrameUnit.Minute and tf.amount == 1:
+        return 1
+    raise ValueError(f"Unsupported timeframe for MOEX: {tf}")
 
 
 def normalize_crypto_symbol(ticker: str) -> str:
@@ -320,10 +298,10 @@ def _fetch_moex_bars(
     start_test_date: str,
     end_test_date: str,
     history_padding_days: int,
-    timeframe: str,
+    timeframe: TimeFrame,
 ) -> pd.DataFrame:
     moex_session.TOKEN = _moex_keys()
-    period = period_from_string(timeframe)
+    period = period_from_timeframe(timeframe)
 
     start = datetime.fromisoformat(start_test_date) - timedelta(days=int(history_padding_days))
     end = _end_datetime_capped_yesterday(end_test_date)
@@ -357,10 +335,9 @@ def _fetch_alpaca_bars(
     start_test_date: str,
     end_test_date: str,
     history_padding_days: int,
-    timeframe: str,
+    timeframe: TimeFrame,
 ) -> pd.DataFrame:
     api_key, secret_key = _alpaca_keys()
-    tf = timeframe_from_string(timeframe)
     client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
     start = datetime.fromisoformat(start_test_date) - timedelta(days=int(history_padding_days))
     end = _end_datetime_capped_yesterday(end_test_date)
@@ -368,7 +345,7 @@ def _fetch_alpaca_bars(
         symbol_or_symbols=ticker,
         start=start,
         end=end,
-        timeframe=tf,
+        timeframe=timeframe,
     )
     bars = client.get_stock_bars(request)
     df = bars.df if hasattr(bars, "df") else pd.DataFrame(bars)
@@ -386,7 +363,7 @@ def fetch_stock_bars(
     start_test_date: str,
     end_test_date: str,
     history_padding_days: int,
-    timeframe: str,
+    timeframe: TimeFrame,
     provider: Optional[str] = None,
 ) -> pd.DataFrame:
     provider = _market_data_provider_name(provider=provider)
@@ -439,10 +416,9 @@ def fetch_crypto_bars(
     ticker: str,
     start_test_date: str,
     end_test_date: str,
-    timeframe: str,
+    timeframe: TimeFrame,
 ) -> pd.DataFrame:
     api_key, secret_key = _alpaca_keys()
-    tf = timeframe_from_string(timeframe)
     client = CryptoHistoricalDataClient(api_key, secret_key)
     symbol = normalize_crypto_symbol(ticker)
     start = pd.Timestamp(start_test_date, tz="UTC")
@@ -451,7 +427,7 @@ def fetch_crypto_bars(
         symbol_or_symbols=symbol,
         start=start.to_pydatetime(),
         end=end.to_pydatetime(),
-        timeframe=tf,
+        timeframe=timeframe,
     )
     barset = client.get_crypto_bars(request, feed=CryptoFeed.US)
     df = barset.df.copy()
