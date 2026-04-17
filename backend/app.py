@@ -47,7 +47,6 @@ def _redact_query_string(qs: str) -> str:
 def create_app() -> Flask:
     app = Flask(__name__)
     app.config["JSON_SORT_KEYS"] = False
-    app.config["OPENROUTER_MODEL"] = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
     app.config["REQUEST_ID_HEADER"] = os.getenv("REQUEST_ID_HEADER", "X-Request-Id")
 
     CORS(

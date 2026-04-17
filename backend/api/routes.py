@@ -18,6 +18,7 @@ from db.strategy_queries import (
 )
 from services.agent import (
     STRATEGIES_DIR,
+    CHAT_MODEL,
     build_agent_reply,
     canvas_with_output,
     generate_strategy_algorithm_pseudocode,
@@ -218,7 +219,7 @@ def _stamp_langsmith_thread_metadata(thread_id: str) -> None:
 
 
 @traceable(name="post_strategy")
-def _execute_strategy_agent_job(run_id: str, thread_id: str, model: str) -> None:
+def _execute_strategy_agent_job(run_id: str, thread_id: str) -> None:
     def persist_status_text(text: str) -> None:
         t = (text or "")[:512]
         s = SessionLocal()
@@ -241,10 +242,9 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str, model: str) -> None
         try:
             logger.info(
                 "agent job started",
-                extra={"thread_id": thread_id, "run_id": run_id, "model": model},
+                extra={"thread_id": thread_id, "run_id": run_id, "model": CHAT_MODEL},
             )
             agent_result = build_agent_reply(
-                model=model,
                 messages=messages,
                 existing_canvas=canvas,
                 thread_id=thread_id,
@@ -274,7 +274,7 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str, model: str) -> None
         except Exception as exc:
             logger.exception(
                 "agent job failed",
-                extra={"thread_id": thread_id, "run_id": run_id, "model": model},
+                extra={"thread_id": thread_id, "run_id": run_id, "model": CHAT_MODEL},
             )
             strategy.status = "failure"
             strategy.status_text = str(exc)[:512]
@@ -286,12 +286,11 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str, model: str) -> None
         session.close()
 
 
-def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str, model: str) -> None:
+def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str) -> None:
     with app_obj.app_context():
         _execute_strategy_agent_job(
             run_id,
             thread_id,
-            model,
             langsmith_extra={"metadata": {"thread_id": thread_id}},
         )
 
@@ -395,10 +394,9 @@ def post_strategy() -> tuple:
 
         run_id = new_strategy.id
         app_obj = current_app._get_current_object()
-        model = app_obj.config["OPENROUTER_MODEL"]
         threading.Thread(
             target=_run_strategy_agent_job,
-            args=(app_obj, run_id, thread_id, model),
+            args=(app_obj, run_id, thread_id),
             daemon=True,
         ).start()
 

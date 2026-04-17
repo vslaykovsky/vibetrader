@@ -20,13 +20,13 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_openrouter import ChatOpenRouter
 
 
-CHAT_MODEL = 'openai/gpt-5.4-mini'
-CHAT_REASONING_EFFORT = 'low'
+CHAT_MODEL = os.getenv("CHAT_MODEL", "openai/gpt-5.4")
+CHAT_REASONING_EFFORT = os.getenv("CHAT_REASONING_EFFORT", "medium")
 
-CODEX_MODEL = 'gpt-5.4-mini'
-CODEX_REASONING_EFFORT = 'low'
+CODEX_MODEL = os.getenv("CODEX_MODEL", "gpt-5.4")
+CODEX_REASONING_EFFORT = os.getenv("CODEX_REASONING_EFFORT", "high")
 
-CODE_ANALYSIS_MODEL = 'anthropic/claude-opus-4.7'
+CODE_ANALYSIS_MODEL = os.getenv("CODE_ANALYSIS_MODEL", "anthropic/claude-opus-4.7")
 
 SYSTEM_PROMPT = f"""You help users design trading strategies in chat.
 
@@ -343,7 +343,6 @@ def run_analyse_code(
     *,
     thread_id: str,
     question: str,
-    model: str,
 ) -> dict[str, Any]:
     q = (question or "").strip()
     if not q:
@@ -743,7 +742,6 @@ def run_backtest(
 def _tool_handlers_for_thread(
     thread_id: str,
     *,
-    model: str,
     on_progress: ProgressCallback = None,
 ) -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
     def _update(args: dict[str, Any]) -> dict[str, Any]:
@@ -761,7 +759,6 @@ def _tool_handlers_for_thread(
         return run_analyse_code(
             thread_id=thread_id,
             question=str(args.get("question", "")),
-            model=model,
         )
 
     return {
@@ -833,7 +830,6 @@ def _tool_call_parts(tc: Any) -> tuple[str, dict[str, Any], str]:
 
 @traceable(name="build_agent_reply")
 def build_agent_reply(
-    model: str,
     messages: list[dict[str, Any]],
     existing_canvas: dict[str, Any],
     thread_id: str,
@@ -909,7 +905,6 @@ Current params.json (may be empty or missing):
     llm_tools = llm.bind_tools(AGENT_TOOLS)
     tool_handlers = _tool_handlers_for_thread(
         thread_id,
-        model=model,
         on_progress=on_progress,
     )
 
@@ -923,7 +918,7 @@ Current params.json (may be empty or missing):
             content = _aimessage_plain_text(assistant_msg).strip()
             if not content:
                 raise Exception(
-                    "The model returned an empty message. Try again or change OPENROUTER_MODEL; "
+                    "The model returned an empty message. Try again or adjust CHAT_MODEL; "
                     "empty content can happen when a provider blocks the request or returns no completion."
                 )
             return {
