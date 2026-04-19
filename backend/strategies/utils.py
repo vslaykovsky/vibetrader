@@ -202,14 +202,19 @@ def save_backtest_json(document: DataJson, path: Path | None = None) -> None:
  
 
 def period_from_timeframe(tf: TimeFrame) -> int:
+    """MOEX candle period in minutes (except daily=24, weekly=7 per moexalgo convention)."""
     if tf.unit == TimeFrameUnit.Day and tf.amount == 1:
         return 24
     if tf.unit == TimeFrameUnit.Hour and tf.amount == 1:
         return 60
+    if tf.unit == TimeFrameUnit.Hour and tf.amount == 4:
+        return 240
     if tf.unit == TimeFrameUnit.Week and tf.amount == 1:
         return 7
     if tf.unit == TimeFrameUnit.Minute and tf.amount == 1:
         return 1
+    if tf.unit == TimeFrameUnit.Minute and tf.amount == 15:
+        return 15
     raise ValueError(f"Unsupported timeframe for MOEX: {tf}")
 
 

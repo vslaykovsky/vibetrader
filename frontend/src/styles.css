@@ -2891,3 +2891,319 @@ html[data-theme='dark'] .chat-compose-fullscreen-send {
   outline: 2px solid var(--h-primary);
   outline-offset: 2px;
 }
+
+.canvas-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 0 0 12px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.canvas-tab {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.92rem;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.canvas-tab:hover {
+  color: var(--text);
+  background: var(--sidebar-hover-bg);
+}
+
+.canvas-tab.is-active {
+  color: var(--accent-strong);
+  border-color: rgba(13, 148, 136, 0.35);
+  background: rgba(13, 148, 136, 0.1);
+}
+
+html[data-theme='dark'] .canvas-tab.is-active {
+  border-color: rgba(45, 212, 191, 0.35);
+  background: rgba(45, 212, 191, 0.12);
+}
+
+.simulation-panel {
+  padding: 4px 0 16px;
+  min-height: 200px;
+}
+
+.simulation-intro {
+  margin: 0 0 14px;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.simulation-controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  align-items: flex-end;
+  margin-bottom: 14px;
+}
+
+.simulation-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.simulation-field input {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.simulation-field input:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.simulation-btn,
+.simulation-btn-primary {
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+
+.simulation-btn:hover:not(:disabled) {
+  background: var(--sidebar-hover-bg);
+  border-color: var(--line);
+}
+
+.simulation-btn-primary {
+  border-color: rgba(13, 148, 136, 0.45);
+  background: rgba(13, 148, 136, 0.14);
+  color: var(--accent-strong);
+}
+
+.simulation-btn-primary:hover:not(:disabled) {
+  background: rgba(13, 148, 136, 0.22);
+  border-color: rgba(13, 148, 136, 0.55);
+}
+
+html[data-theme='dark'] .simulation-btn-primary {
+  border-color: rgba(45, 212, 191, 0.4);
+  background: rgba(45, 212, 191, 0.12);
+  color: var(--accent-strong);
+}
+
+html[data-theme='dark'] .simulation-btn-primary:hover:not(:disabled) {
+  background: rgba(45, 212, 191, 0.2);
+  border-color: rgba(45, 212, 191, 0.5);
+}
+
+.simulation-btn:disabled,
+.simulation-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.simulation-error {
+  color: #f87171;
+  margin: 0 0 10px;
+  font-size: 0.9rem;
+}
+
+.simulation-error--inline {
+  display: inline-block;
+  margin: 0 0 0 8px;
+  font-size: 0.78rem;
+}
+
+.simulation-tf-sub {
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+.simulation-fine-loading {
+  margin-left: 8px;
+  font-size: 0.78rem;
+}
+
+.simulation-log {
+  max-height: min(420px, 50vh);
+  overflow: auto;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--code-block-bg);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.simulation-log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 2px 0;
+}
+
+.simulation-charts-placeholder {
+  margin: 0 0 12px;
+  font-size: 0.85rem;
+}
+
+.simulation-chart-section {
+  position: relative;
+  margin-bottom: 14px;
+}
+
+.simulation-chart-tf-loader-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px 16px;
+  text-align: center;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel-strong) 88%, transparent);
+  backdrop-filter: blur(4px);
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  box-shadow: 0 8px 32px rgba(15, 23, 42, 0.12);
+}
+
+.simulation-chart-tf-loader-spinner {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 3px solid color-mix(in srgb, var(--line) 80%, transparent);
+  border-top-color: var(--accent, #3b82f6);
+  animation: simulation-chart-tf-spin 0.75s linear infinite;
+}
+
+@keyframes simulation-chart-tf-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.simulation-chart-tf-loader-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 280px;
+}
+
+.simulation-chart-tf-loader-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.simulation-chart-tf-loader-sub {
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.simulation-chart-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: center;
+  margin-bottom: 10px;
+  font-size: 0.8rem;
+}
+
+.simulation-field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.simulation-field--inline span {
+  white-space: nowrap;
+}
+
+.simulation-field select {
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: 0.85rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.simulation-field select:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.simulation-source-tf {
+  font-size: 0.78rem;
+}
+
+.simulation-tf-mode {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.simulation-tf-hint {
+  flex: 1 1 200px;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.simulation-charts-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.simulation-chart-host {
+  width: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: #131722;
+}
+
+.simulation-chart-host--price {
+  height: min(320px, 42vh);
+  min-height: 220px;
+}
+
+.simulation-chart-host--equity {
+  height: min(200px, 28vh);
+  min-height: 140px;
+}
+
+.simulation-log-details {
+  margin-top: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  padding: 4px 10px 8px;
+  background: var(--panel);
+}
+
+.simulation-log-details summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 6px 0;
+}
+
+.simulation-log-details .simulation-log {
+  margin-top: 4px;
+}

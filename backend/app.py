@@ -15,6 +15,7 @@ from flask_cors import CORS
 from urllib.parse import parse_qsl, urlencode
 
 from api.routes import strategy_blueprint
+from api.simulation_routes import simulation_blueprint
 from db.models import Base
 from db.session import (
     engine,
@@ -70,6 +71,7 @@ def create_app() -> Flask:
     ensure_strategy_messages_count_column(engine)
 
     app.register_blueprint(strategy_blueprint)
+    app.register_blueprint(simulation_blueprint)
 
     log_level = os.getenv("LOG_LEVEL", "INFO")
     gcp = (os.getenv("GCP_LOGGING", "1").strip() not in ("0", "false", "False"))

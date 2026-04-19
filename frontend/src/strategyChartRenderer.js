@@ -7,10 +7,9 @@ import {
   BaselineSeries,
   BarSeries,
   createSeriesMarkers,
-  LineStyle,
-  MismatchDirection,
 } from 'lightweight-charts';
 import Plotly from 'plotly.js-dist-min';
+import { CHART_THEME } from './lib/chartTheme.js';
 
 const SERIES_TYPE_MAP = {
   Candlestick: CandlestickSeries,
@@ -19,24 +18,6 @@ const SERIES_TYPE_MAP = {
   Histogram: HistogramSeries,
   Baseline: BaselineSeries,
   Bar: BarSeries,
-};
-
-const CHART_THEME = {
-  layout: {
-    background: { color: '#131722' },
-    textColor: '#d1d4dc',
-    attributionLogo: false,
-  },
-  grid: {
-    vertLines: { color: '#1e2130' },
-    horzLines: { color: '#1e2130' },
-  },
-  crosshair: {
-    mode: 1,
-    vertLine: { style: LineStyle.Dashed },
-  },
-  timeScale: { borderColor: '#363a45', timeVisible: true },
-  rightPriceScale: { borderColor: '#363a45' },
 };
 
 const PLOTLY_LAYOUT_DEFAULTS = {
@@ -180,90 +161,7 @@ function renderLightweightChart(container, chartSpec) {
   return { chart, primarySeries };
 }
 
-function priceFromBarForCrosshair(bar) {
-  if (bar == null || typeof bar !== 'object') {
-    return null;
-  }
-  const v = bar.value;
-  if (typeof v === 'number' && Number.isFinite(v)) {
-    return v;
-  }
-  const c = bar.close;
-  if (typeof c === 'number' && Number.isFinite(c)) {
-    return c;
-  }
-  const o = bar.open;
-  if (typeof o === 'number' && Number.isFinite(o)) {
-    return o;
-  }
-  return null;
-}
-
-export function attachSyncedCrosshair(bindings) {
-  const valid = bindings.filter((b) => b.series != null);
-  if (valid.length < 2) {
-    return undefined;
-  }
-  let syncing = false;
-  const subs = valid.map(({ chart, series }) => {
-    const handler = (param) => {
-      if (syncing) {
-        return;
-      }
-      if (!param.time) {
-        syncing = true;
-        try {
-          for (const { chart: c } of valid) {
-            if (c !== chart) {
-              c.clearCrosshairPosition();
-            }
-          }
-        } finally {
-          syncing = false;
-        }
-        return;
-      }
-      if (param.sourceEvent == null) {
-        return;
-      }
-      const t = param.time;
-      syncing = true;
-      try {
-        for (const { chart: targetChart, series: targetSeries } of valid) {
-          if (targetChart === chart) {
-            continue;
-          }
-          const idx = targetChart.timeScale().timeToIndex(t, true);
-          if (idx === null) {
-            targetChart.clearCrosshairPosition();
-            continue;
-          }
-          let bar;
-          try {
-            bar = targetSeries.dataByIndex(idx, MismatchDirection.NearestLeft);
-          } catch {
-            bar = undefined;
-          }
-          const price = priceFromBarForCrosshair(bar);
-          if (price == null) {
-            targetChart.clearCrosshairPosition();
-          } else {
-            targetChart.setCrosshairPosition(price, t, targetSeries);
-          }
-        }
-      } finally {
-        syncing = false;
-      }
-    };
-    chart.subscribeCrosshairMove(handler);
-    return { chart, handler };
-  });
-  return () => {
-    for (const { chart, handler } of subs) {
-      chart.unsubscribeCrosshairMove(handler);
-    }
-  };
-}
+export { attachSyncedCrosshair } from './lib/lwcSync.js';
 
 function renderPlotlyChart(container, chartSpec) {
   const { details, chartEl: el } = makeSection(container, chartSpec.title || '');

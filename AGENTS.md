@@ -9,6 +9,13 @@ Chat UI + Flask API. An agent edits per-thread Python under `backend/strategies/
 - **Agent** (`services/agent.py`): LLM + tools; invokes Codex on the thread workspace and subprocess runs with cwd set to that folder. Thread state is persisted as `Strategy` rows (messages, canvas, code, status, etc.); strategy source on disk is the workspace for that `thread_id`.
 - **Strategy contract** (schemas, run contract, params/output JSON): **`backend/strategies/AGENTS.md`** — templates (`strategy.py`, `utils.py`, `hyperopt.py`, same `AGENTS.md`) are copied into each new workspace; change the template under `backend/strategies/`, not only one thread directory.
 
+## Simulation (historical replay)
+
+- **Purpose**: Run the shared workspace **`backend/strategies_v2/`** (see `strategies_v2/AGENTS.md`) on fetched OHLC, one bar at a time with pacing, and stream events to the UI.
+- **Python layer**: `backend/application/` — `use_cases/strategy_simulate.py` (orchestration), `services/` (`strategy_runtime` subprocess, `portfolio`, `speed_clock`, `indicators`), `queries/historical_bars.py` (wraps `strategies.utils.fetch_stock_bars` with a short TTL in-memory cache).
+- **HTTP**: `backend/api/simulation_routes.py` — `POST /simulation/start|pause|resume|speed|stop`, `GET /simulation/stream` (SSE: `bar`, `trade`, `pnl`, `status`, `speed`, keepalive), `GET /simulation/display_bars` (optional OHLC at a finer `scale` for chart-only replay, same ticker/dates as the form; strategy logic unchanged). Start validates date span and an estimated bar-count ceiling against `strategies_v2/params.json` `scale`.
+- **UI**: `frontend/src/pages/StrategyPage.jsx` (Strategy | Simulation tabs; last tab per `thread_id` in `localStorage`), `frontend/src/components/SimulationPanel.jsx` + `SimulationCharts.jsx`, client OHLC resample in `frontend/src/lib/ohlcResample.js`.
+
 ## `strategy` table and DB access
 
 Each row is one persisted snapshot for a chat thread: `id` (UUID primary key), `thread_id` (conversation key), `created_at` (ordering). Payload columns are JSON `messages` and `canvas`, and text `code` (copy of workspace `strategy.py` after runs). `status` / `status_text` record whether a run is in progress or finished and any error string. `created_by` / `created_by_email` tie rows to the authenticated user; `langsmith_trace` stores an optional trace URL.

@@ -4,10 +4,12 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { randomUUID } from '../randomUUID.js';
-import { attachSyncedCrosshair, renderCharts } from '../strategyChartRenderer.js';
+import { attachSyncedCrosshair, attachSyncedTimeScales } from '../lib/lwcSync.js';
+import { renderCharts } from '../strategyChartRenderer.js';
 import { useAuth } from '../AuthContext';
 import { useTheme } from '../ThemeContext';
 import { ProfileMenu } from '../ProfileMenu';
+import { SimulationPanel } from '../components/SimulationPanel.jsx';
 
 function ChatProcessingSpinner({ label }) {
   const text =
@@ -395,37 +397,6 @@ function strategyNameFromOutput(output) {
 }
 
 
-function attachSyncedTimeScales(charts) {
-  if (charts.length < 2) {
-    return undefined;
-  }
-  let syncing = false;
-  const subscriptions = charts.map((chart) => {
-    const handler = (logicalRange) => {
-      if (syncing || logicalRange === null) {
-        return;
-      }
-      syncing = true;
-      try {
-        for (const other of charts) {
-          if (other !== chart) {
-            other.timeScale().setVisibleLogicalRange(logicalRange);
-          }
-        }
-      } finally {
-        syncing = false;
-      }
-    };
-    chart.timeScale().subscribeVisibleLogicalRangeChange(handler);
-    return { chart, handler };
-  });
-  return () => {
-    for (const { chart, handler } of subscriptions) {
-      chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
-    }
-  };
-}
-
 export function StrategyPage() {
   const { threadId } = useParams();
   const navigate = useNavigate();
@@ -476,6 +447,33 @@ export function StrategyPage() {
   const [mobileCanvasOpen, setMobileCanvasOpen] = useState(false);
   const [chatPanelWidthPx, setChatPanelWidthPx] = useState(null);
   const [composerExpanded, setComposerExpanded] = useState(false);
+  const [canvasTab, setCanvasTab] = useState('strategy');
+
+  useLayoutEffect(() => {
+    if (!threadId) {
+      return;
+    }
+    try {
+      const v = localStorage.getItem(`vibetrader:lastTab:${threadId}`);
+      if (v === 'simulation' || v === 'strategy') {
+        setCanvasTab(v);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [threadId]);
+
+  useEffect(() => {
+    if (!threadId) {
+      return;
+    }
+    try {
+      localStorage.setItem(`vibetrader:lastTab:${threadId}`, canvasTab);
+    } catch {
+      /* ignore */
+    }
+  }, [threadId, canvasTab]);
+
   const layoutDualRef = useRef(null);
   const composerExpandedTextareaRef = useRef(null);
   const hashHydratedRef = useRef(false);
@@ -1584,6 +1582,32 @@ export function StrategyPage() {
       ) : null}
 
       <section className="canvas-panel canvas-panel-charts" style={canvasPanelStyle}>
+        <nav className="canvas-tabs" aria-label="Canvas view">
+          <button
+            type="button"
+            className={`canvas-tab${canvasTab === 'strategy' ? ' is-active' : ''}`}
+            onClick={() => setCanvasTab('strategy')}
+          >
+            Strategy
+          </button>
+          <button
+            type="button"
+            className={`canvas-tab${canvasTab === 'simulation' ? ' is-active' : ''}`}
+            onClick={() => setCanvasTab('simulation')}
+          >
+            Simulation
+          </button>
+        </nav>
+        {canvasTab === 'simulation' ? (
+          <SimulationPanel
+            threadId={threadId}
+            apiBaseUrl={API_BASE_URL}
+            authFetch={authFetch}
+            getAccessToken={getAccessToken}
+          />
+        ) : null}
+        {canvasTab === 'strategy' ? (
+        <>
         <header className="canvas-hero">
           <div className="canvas-hero-actions">
             {viewingRunId ? (
@@ -1721,6 +1745,8 @@ export function StrategyPage() {
           className="canvas-charts-mount"
           aria-label="Strategy backtest charts"
         />
+        </>
+        ) : null}
       </section>
       </div>
       {sidebarOpen ? (
