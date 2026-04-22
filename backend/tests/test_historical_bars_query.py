@@ -1,3 +1,4 @@
+import time
 from datetime import date
 
 import pandas as pd
@@ -82,3 +83,53 @@ def test_historical_bars_query_cache_reuses_fetch(monkeypatch):
     assert a.equals(expected)
     assert b.equals(expected)
     assert len(calls) == 1
+
+
+def test_historical_bars_query_disk_cache_reuses_across_instances(monkeypatch, tmp_path):
+    expected = pd.DataFrame(
+        {"open": [1.0], "high": [1.1], "low": [0.9], "close": [1.05], "volume": [10.0]},
+        index=pd.to_datetime(["2024-01-02"]),
+    )
+    calls: list[int] = []
+
+    def fake_fetch_stock_bars(**kwargs):
+        calls.append(1)
+        return expected
+
+    monkeypatch.setattr(
+        "application.queries.historical_bars.utils.fetch_stock_bars", fake_fetch_stock_bars
+    )
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    q1 = HistoricalBarsQuery(cache_dir=cache_dir, cache_ttl_seconds=600.0)
+    q1.fetch("SPY", "1d", date(2024, 1, 1), date(2024, 1, 31), padding_days=5, provider="alpaca")
+    q2 = HistoricalBarsQuery(cache_dir=cache_dir, cache_ttl_seconds=600.0)
+    q2.fetch("SPY", "1d", date(2024, 1, 1), date(2024, 1, 31), padding_days=5, provider="alpaca")
+    assert len(calls) == 1
+
+
+def test_historical_bars_query_disk_cache_expires_by_mtime(monkeypatch, tmp_path):
+    expected = pd.DataFrame(
+        {"open": [1.0], "high": [1.1], "low": [0.9], "close": [1.05], "volume": [10.0]},
+        index=pd.to_datetime(["2024-01-02"]),
+    )
+    calls: list[int] = []
+
+    def fake_fetch_stock_bars(**kwargs):
+        calls.append(1)
+        return expected
+
+    monkeypatch.setattr(
+        "application.queries.historical_bars.utils.fetch_stock_bars", fake_fetch_stock_bars
+    )
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    ttl = 0.05
+    q1 = HistoricalBarsQuery(cache_dir=cache_dir, cache_ttl_seconds=ttl)
+    q1.fetch("QQQ", "1d", date(2024, 2, 1), date(2024, 2, 28), padding_days=0, provider="alpaca")
+    time.sleep(0.15)
+    q2 = HistoricalBarsQuery(cache_dir=cache_dir, cache_ttl_seconds=ttl)
+    q2.fetch("QQQ", "1d", date(2024, 2, 1), date(2024, 2, 28), padding_days=0, provider="alpaca")
+    assert len(calls) == 2

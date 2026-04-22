@@ -6,7 +6,6 @@ from datetime import date, timedelta
 from pathlib import Path
 
 _DEFAULT_PARAMS = Path(__file__).resolve().parents[2] / "strategies_v2" / "params.json"
-_MAX_CALENDAR_YEARS = 5
 # Upper bound on *estimated* bars per single provider fetch; long ranges are split into windows.
 CHUNK_BAR_BUDGET = 100_000
 
@@ -39,9 +38,6 @@ def simulation_date_span_error(start: date, end: date) -> str | None:
     """Calendar / ordering limits shared by simulation start and display-bars."""
     if start > end:
         return "start_date must be on or before end_date"
-    max_days = int(_MAX_CALENDAR_YEARS * 366)
-    if (end - start).days > max_days:
-        return f"Date range must not exceed {_MAX_CALENDAR_YEARS} years"
     return None
 
 
@@ -89,11 +85,7 @@ def plan_display_bars_fetch_chunks(
     sc = (scale or "1d").strip().lower()
     out: list[tuple[date, date]] = []
     cur = start
-    safety = 0
     while cur <= end:
-        safety += 1
-        if safety > 10_000:
-            raise RuntimeError("plan_display_bars_fetch_chunks: iteration cap exceeded")
         ce = _max_chunk_end_inclusive(cur, end, sc, max_bars_per_chunk)
         if ce < cur:
             ce = cur

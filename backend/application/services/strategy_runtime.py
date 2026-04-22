@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import os
 import queue
 import subprocess
 import sys
@@ -7,6 +9,8 @@ import threading
 from pathlib import Path
 
 from strategies_v2.utils import StrategyInput, StrategyOutput
+
+logger = logging.getLogger(__name__)
 
 
 class StrategyRuntimeError(RuntimeError):
@@ -47,23 +51,46 @@ class StrategyRuntime:
         finally:
             self._out_q.put(None)
 
-    def start(self) -> StrategyOutput:
+    def start(self, *, initial_input: StrategyInput | None = None) -> StrategyOutput:
         script = self.workspace / self.entry_script
         if not script.is_file():
             raise StrategyRuntimeError(f"Strategy script not found: {script}")
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
         self._proc = subprocess.Popen(
-            [self.python_executable, self.entry_script],
+            [self.python_executable, "-u", self.entry_script],
             cwd=str(self.workspace),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=env,
         )
         if self._proc.stdout is None:
             raise StrategyRuntimeError("stdout not available")
         self._reader_thread = threading.Thread(target=self._stdout_reader, daemon=True)
         self._reader_thread.start()
+
+        if initial_input is not None:
+            if self._proc.stdin is None:
+                raise StrategyRuntimeError("stdin not available")
+            try:
+                self._proc.stdin.write(initial_input.model_dump_json() + "\n")
+                self._proc.stdin.flush()
+            except BrokenPipeError as exc:
+                err = self._drain_stderr()
+                raise StrategyRuntimeError(
+                    f"Broken pipe writing initial input to strategy. stderr={err!r}"
+                ) from exc
+
+        logger.info(
+            "await_strategy_first_stdout cwd=%s entry=%s pid=%s timeout_s=%s",
+            self.workspace,
+            self.entry_script,
+            self._proc.pid,
+            self.startup_timeout_seconds,
+        )
         try:
             line = self._out_q.get(timeout=self.startup_timeout_seconds)
         except queue.Empty as exc:

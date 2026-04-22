@@ -19,6 +19,8 @@ class StartSimulationCommand:
     """Override for tests (default: ``backend/strategies_v2``)."""
     strategy_workspace: Path | None = None
     strategy_entry: str = "strategy.py"
+    simulation_scale: str | None = None
+    """Driver bar resolution override (e.g. ``1h``). ``None`` → use ``params.json`` value or strategy ``scale``."""
 
 
 def simulation_event(kind: str, **fields: Any) -> dict[str, Any]:

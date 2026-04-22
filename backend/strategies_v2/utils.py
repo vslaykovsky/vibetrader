@@ -1,4 +1,4 @@
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
@@ -16,6 +16,7 @@ class InputOhlcDataPoint(BaseModel):
     kind: Literal["ohlc"] = "ohlc"
     ticker: str
     ohlc: Ohlc
+    closed: bool = True
 
 
 class InputIndicatorDataPoint(BaseModel):
@@ -23,13 +24,15 @@ class InputIndicatorDataPoint(BaseModel):
     kind: Literal["indicator"] = "indicator"
     name: str
     value: float
+    closed: bool = True
 
 
 class PortfolioPosition(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ticker: str
-    order_type: str
+    order_type: Literal["long", "short"]
     deposit_ratio: float = Field(ge=0, le=1)
+    volume_weighted_avg_entry_price: float = Field(gt=0)
 
 
 class InputPortfolioDataPoint(BaseModel):
@@ -71,6 +74,8 @@ class OutputTickerSubscription(BaseModel):
     kind: Literal["ticker_subscription"] = "ticker_subscription"
     ticker: str
     scale: str
+    update_scale: str | None = None
+    partial: bool = False
 
 
 class SmaIndicatorSubscription(BaseModel):
@@ -79,6 +84,8 @@ class SmaIndicatorSubscription(BaseModel):
     ticker: str
     scale: str
     period: int
+    update_scale: str | None = None
+    partial: bool = False
 
 
 class EmaIndicatorSubscription(BaseModel):
@@ -87,6 +94,8 @@ class EmaIndicatorSubscription(BaseModel):
     ticker: str
     scale: str
     period: int
+    update_scale: str | None = None
+    partial: bool = False
 
 
 class MacdIndicatorSubscription(BaseModel):
@@ -97,6 +106,8 @@ class MacdIndicatorSubscription(BaseModel):
     fast_period: int
     slow_period: int
     signal_period: int
+    update_scale: str | None = None
+    partial: bool = False
 
 
 class RsiIndicatorSubscription(BaseModel):
@@ -105,6 +116,8 @@ class RsiIndicatorSubscription(BaseModel):
     ticker: str
     scale: str
     period: int
+    update_scale: str | None = None
+    partial: bool = False
 
 
 class AtrIndicatorSubscription(BaseModel):
@@ -113,6 +126,8 @@ class AtrIndicatorSubscription(BaseModel):
     ticker: str
     scale: str
     period: int
+    update_scale: str | None = None
+    partial: bool = False
 
 
 IndicatorSubscriptionSpec = Annotated[
@@ -149,3 +164,40 @@ OutputDataPoint = Annotated[
 
 class StrategyOutput(RootModel[list[OutputDataPoint]]):
     pass
+
+
+class HyperoptIntSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["int"] = "int"
+    low: int
+    high: int
+
+
+class HyperoptFloatSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["float"] = "float"
+    low: float
+    high: float
+
+
+class HyperoptCategoricalSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["categorical"] = "categorical"
+    choices: list[Any]
+
+
+HyperoptSearchSpec = Annotated[
+    HyperoptIntSpec | HyperoptFloatSpec | HyperoptCategoricalSpec,
+    Field(discriminator="type"),
+]
+
+
+class ParamsHyperopt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    search_space: dict[str, HyperoptSearchSpec]
+    n_trials: int = 30
+    timeout_seconds: int = 120
+    direction: Literal["maximize", "minimize"] = "maximize"
+    objective_metric: str = "total_return"
+    seed: int | None = None
+    trial_timeout_seconds: int | None = None

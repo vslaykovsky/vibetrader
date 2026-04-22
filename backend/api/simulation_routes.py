@@ -45,6 +45,7 @@ def _parse_iso_date(label: str, raw: str) -> date | None:
 
 
 _STRATEGY_PARAMS_PATH = Path(__file__).resolve().parents[1] / "strategies_v2" / "params.json"
+_STRATEGIES_V2_ROOT = Path(__file__).resolve().parents[1] / "strategies_v2"
 
 
 def _read_strategy_ticker() -> str:
@@ -120,6 +121,14 @@ def simulation_start() -> tuple:
     if initial_deposit <= 0:
         return _bad("initial_deposit must be positive")
     bps = _parse_bps(payload.get("initial_speed_bps", 1.0))
+    sim_scale_raw = payload.get("simulation_scale")
+    sim_scale: str | None = None
+    if isinstance(sim_scale_raw, str) and sim_scale_raw.strip():
+        try:
+            scale_to_timeframe(sim_scale_raw)
+        except ValueError:
+            return _bad(f"unsupported simulation_scale {sim_scale_raw!r}")
+        sim_scale = sim_scale_raw.strip().lower()
     cmd = StartSimulationCommand(
         user_id=uid,
         thread_id=thread_id,
@@ -127,6 +136,9 @@ def simulation_start() -> tuple:
         end_date=end_d,
         initial_speed_bps=bps,
         initial_deposit=initial_deposit,
+        strategy_workspace=_STRATEGIES_V2_ROOT / thread_id,
+        strategy_entry="strategy.py",
+        simulation_scale=sim_scale,
     )
     try:
         _handler.start(cmd)

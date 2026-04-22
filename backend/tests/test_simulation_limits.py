@@ -29,10 +29,8 @@ def test_validation_accepts_reasonable_daily():
     assert simulation_start_validation_error(date(2024, 1, 1), date(2024, 12, 31), scale="1d") is None
 
 
-def test_validation_rejects_long_calendar_span():
-    err = simulation_start_validation_error(date(2010, 1, 1), date(2026, 1, 1), scale="1d")
-    assert err is not None
-    assert "5 years" in err
+def test_validation_accepts_long_calendar_span():
+    assert simulation_start_validation_error(date(2010, 1, 1), date(2026, 1, 1), scale="1d") is None
 
 
 def test_read_strategy_scale_reads_params(tmp_path: Path):

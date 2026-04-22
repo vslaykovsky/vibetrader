@@ -1,5 +1,5 @@
 .venv
-.env
+.env*
 .vscode
 node_modules
 __pycache__
@@ -10,3 +10,5 @@ backend/strategies/*/
 .leegheid.md
 .cursor/
 test.ipynb
+backend/strategies_v2/*/
+!backend/strategies_v2/*.*

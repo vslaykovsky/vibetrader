@@ -3,7 +3,13 @@ from pathlib import Path
 import pytest
 
 from application.services.strategy_runtime import StrategyRuntime, StrategyRuntimeError
-from strategies_v2.utils import InputOhlcDataPoint, Ohlc, StrategyInput, StrategyOutput
+from strategies_v2.utils import (
+    InputOhlcDataPoint,
+    InputPortfolioDataPoint,
+    Ohlc,
+    StrategyInput,
+    StrategyOutput,
+)
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -37,3 +43,19 @@ def test_strategy_runtime_missing_script():
     rt = StrategyRuntime(FIXTURES_DIR, entry_script="nonexistent_strategy.py")
     with pytest.raises(StrategyRuntimeError, match="not found"):
         rt.start()
+
+
+def test_strategy_runtime_start_with_initial_portfolio_line():
+    rt = StrategyRuntime(FIXTURES_DIR, entry_script="echo_strategy.py")
+    try:
+        startup = rt.start(
+            initial_input=StrategyInput(
+                unixtime=0,
+                points=[InputPortfolioDataPoint(positions=[])],
+            )
+        )
+        assert isinstance(startup, StrategyOutput)
+        kinds = [p.kind for p in startup.root]
+        assert "ticker_subscription" in kinds
+    finally:
+        rt.close()

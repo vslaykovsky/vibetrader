@@ -111,11 +111,13 @@ class Portfolio:
     def to_portfolio_datapoint(self) -> InputPortfolioDataPoint:
         positions: list[PortfolioPosition] = []
         if self.position_qty > 1e-12:
+            assert self.avg_entry_price is not None
             positions.append(
                 PortfolioPosition(
                     ticker=self.ticker,
                     order_type="long",
                     deposit_ratio=1.0,
+                    volume_weighted_avg_entry_price=float(self.avg_entry_price),
                 )
             )
         return InputPortfolioDataPoint(kind="portfolio", positions=positions)

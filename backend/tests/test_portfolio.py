@@ -64,3 +64,4 @@ def test_portfolio_to_portfolio_datapoint_in_position():
     assert len(pt.positions) == 1
     assert pt.positions[0].ticker == "SPY"
     assert pt.positions[0].order_type == "long"
+    assert pt.positions[0].volume_weighted_avg_entry_price == pytest.approx(100.0)
