@@ -3,6 +3,84 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 
+class LwcMarker(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    time: str | int | float
+    position: str
+    color: str
+    shape: str
+    text: str = ""
+
+
+class LwcCandlestickPoint(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    time: str | int | float
+    open: float
+    high: float
+    low: float
+    close: float
+
+
+class LwcTimeValuePoint(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    time: str | int | float
+    value: float
+
+
+class _LwcSeriesBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str
+    options: dict[str, Any] = Field(default_factory=dict)
+    markers: list[LwcMarker] | None = None
+
+
+class LwcCandlestickSeries(_LwcSeriesBase):
+    type: Literal["Candlestick"] = "Candlestick"
+    data: list[LwcCandlestickPoint] = Field(default_factory=list)
+
+
+LwcTimeValueSeriesKind = Literal["Line", "Area", "Histogram", "Baseline", "Bar"]
+
+
+class LwcTimeValueSeries(_LwcSeriesBase):
+    type: LwcTimeValueSeriesKind
+    data: list[LwcTimeValuePoint] = Field(default_factory=list)
+
+
+LwcSeries = Annotated[
+    LwcCandlestickSeries | LwcTimeValueSeries,
+    Field(discriminator="type"),
+]
+
+
+class LightweightChartsChart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["lightweight-charts"] = "lightweight-charts"
+    title: str
+    series: list[LwcSeries] = Field(default_factory=list)
+
+
+class PlotlyChart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["plotly"] = "plotly"
+    title: str
+    data: list[dict[str, Any]] = Field(default_factory=list)
+    layout: dict[str, Any] = Field(default_factory=dict)
+
+
+class TableChart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["table"] = "table"
+    title: str = ""
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+
+
+Chart = Annotated[
+    LightweightChartsChart | PlotlyChart | TableChart,
+    Field(discriminator="type"),
+]
+
+
 class Ohlc(BaseModel):
     model_config = ConfigDict(extra="forbid")
     open: float
@@ -22,6 +100,7 @@ class InputOhlcDataPoint(BaseModel):
 class InputIndicatorDataPoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["indicator"] = "indicator"
+    ticker: str | None = None
     name: str
     value: float
     closed: bool = True
@@ -41,8 +120,22 @@ class InputPortfolioDataPoint(BaseModel):
     positions: list[PortfolioPosition]
 
 
+class InputRenkoDataPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["renko"] = "renko"
+    ticker: str
+    brick_size: float = Field(gt=0)
+    open: float
+    close: float
+    direction: Literal["up", "down"]
+    closed: bool = True
+
+
 InputDataPoint = Annotated[
-    InputOhlcDataPoint | InputIndicatorDataPoint | InputPortfolioDataPoint,
+    InputOhlcDataPoint
+    | InputIndicatorDataPoint
+    | InputPortfolioDataPoint
+    | InputRenkoDataPoint,
     Field(discriminator="kind"),
 ]
 
@@ -130,12 +223,48 @@ class AtrIndicatorSubscription(BaseModel):
     partial: bool = False
 
 
+class BollingerBandsIndicatorSubscription(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["bb"] = "bb"
+    ticker: str
+    scale: str
+    period: int = Field(default=20, ge=1)
+    std_dev: float = Field(default=2.0, gt=0)
+    update_scale: str | None = None
+    partial: bool = False
+
+
+class StochasticIndicatorSubscription(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["stochastic"] = "stochastic"
+    ticker: str
+    scale: str
+    k_period: int = Field(default=14, ge=1)
+    k_slowing: int = Field(default=3, ge=1)
+    d_period: int = Field(default=3, ge=1)
+    update_scale: str | None = None
+    partial: bool = False
+
+
+class RenkoIndicatorSubscription(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["renko"] = "renko"
+    ticker: str
+    scale: str
+    brick_size: float = Field(gt=0)
+    update_scale: str | None = None
+    partial: bool = False
+
+
 IndicatorSubscriptionSpec = Annotated[
     SmaIndicatorSubscription
     | EmaIndicatorSubscription
     | MacdIndicatorSubscription
     | RsiIndicatorSubscription
-    | AtrIndicatorSubscription,
+    | AtrIndicatorSubscription
+    | BollingerBandsIndicatorSubscription
+    | StochasticIndicatorSubscription
+    | RenkoIndicatorSubscription,
     Field(discriminator="kind"),
 ]
 
@@ -152,12 +281,19 @@ class OutputTimeAck(BaseModel):
     unixtime: int
 
 
+class OutputChart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["chart"] = "chart"
+    chart: Chart
+
+
 OutputDataPoint = Annotated[
     OutputIndicatorDataPoint
     | OutputMarketTradeOrder
     | OutputTickerSubscription
     | OutputIndicatorSubscriptionOrder
-    | OutputTimeAck,
+    | OutputTimeAck
+    | OutputChart,
     Field(discriminator="kind"),
 ]
 

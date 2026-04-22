@@ -6,10 +6,12 @@ from application.services import indicator_series as ind
 from application.services.indicators import IndicatorEngine
 from strategies_v2.utils import (
     AtrIndicatorSubscription,
+    BollingerBandsIndicatorSubscription,
     EmaIndicatorSubscription,
     MacdIndicatorSubscription,
     RsiIndicatorSubscription,
     SmaIndicatorSubscription,
+    StochasticIndicatorSubscription,
 )
 
 
@@ -114,3 +116,59 @@ def test_indicator_engine_fit_requires_columns():
     bad = pd.DataFrame({"close": [1.0, 2.0]})
     with pytest.raises(ValueError, match="missing columns"):
         eng.fit(bad)
+
+
+def test_bollinger_bands_series():
+    close = pd.Series([1.0, 2.0, 3.0], dtype=float)
+    mid, up, lo = ind.bollinger_bands_series(close, period=2, std_dev=2.0)
+    assert float(mid.iloc[1]) == pytest.approx(1.5)
+    assert float(up.iloc[1]) == pytest.approx(2.5)
+    assert float(lo.iloc[1]) == pytest.approx(0.5)
+
+
+def test_stochastic_k_d_series():
+    high = pd.Series([10.0, 11.0, 12.0], dtype=float)
+    low = pd.Series([9.0, 10.0, 10.0], dtype=float)
+    cl = pd.Series([9.5, 10.5, 11.5], dtype=float)
+    k_s, d_s = ind.stochastic_k_d_series(high, low, cl, k_period=2, k_slowing=1, d_period=2)
+    assert float(k_s.iloc[2]) == pytest.approx(75.0)
+    assert float(d_s.iloc[2]) == pytest.approx(75.0)
+
+
+def test_indicator_engine_bollinger_bands_three_names():
+    df = _sample_ohlc(40)
+    sub = BollingerBandsIndicatorSubscription(
+        kind="bb", ticker="X", scale="1d", period=5, std_dev=2.0
+    )
+    eng = IndicatorEngine([sub])
+    eng.fit(df)
+    i = 20
+    pts = eng.values_at_row_for_subscription(0, i)
+    names = sorted(p.name for p in pts)
+    assert names == ["bb_lower", "bb_middle", "bb_upper"]
+    mid_ref = ind.sma_series(df["close"], 5).iloc[i]
+    by_n = {p.name: p.value for p in pts}
+    assert by_n["bb_middle"] == pytest.approx(float(mid_ref))
+
+
+def test_indicator_engine_stochastic_two_names():
+    df = _sample_ohlc(60)
+    sub = StochasticIndicatorSubscription(
+        kind="stochastic",
+        ticker="X",
+        scale="1d",
+        k_period=5,
+        k_slowing=1,
+        d_period=3,
+    )
+    eng = IndicatorEngine([sub])
+    eng.fit(df)
+    i = 30
+    pts = eng.values_at_row_for_subscription(0, i)
+    assert sorted(p.name for p in pts) == ["stoch_d", "stoch_k"]
+    k_ref, d_ref = ind.stochastic_k_d_series(
+        df["high"], df["low"], df["close"], 5, 1, 3
+    )
+    by_n = {p.name: p.value for p in pts}
+    assert by_n["stoch_k"] == pytest.approx(float(k_ref.iloc[i]))
+    assert by_n["stoch_d"] == pytest.approx(float(d_ref.iloc[i]))

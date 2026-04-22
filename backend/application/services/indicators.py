@@ -7,11 +7,13 @@ import pandas as pd
 from application.services import indicator_series as ind
 from strategies_v2.utils import (
     AtrIndicatorSubscription,
+    BollingerBandsIndicatorSubscription,
     EmaIndicatorSubscription,
     InputIndicatorDataPoint,
     MacdIndicatorSubscription,
     RsiIndicatorSubscription,
     SmaIndicatorSubscription,
+    StochasticIndicatorSubscription,
 )
 
 Subscription = (
@@ -20,6 +22,8 @@ Subscription = (
     | MacdIndicatorSubscription
     | RsiIndicatorSubscription
     | AtrIndicatorSubscription
+    | BollingerBandsIndicatorSubscription
+    | StochasticIndicatorSubscription
 )
 
 
@@ -33,7 +37,7 @@ class IndicatorEngine:
 
     def __init__(self, subscriptions: Sequence[Subscription]) -> None:
         self._subs: list[Subscription] = list(subscriptions)
-        self._series: list[tuple[str, pd.Series]] = []
+        self._series_groups: list[list[tuple[str, pd.Series]]] = []
         self._close: pd.Series | None = None
         self._high: pd.Series | None = None
         self._low: pd.Series | None = None
@@ -49,32 +53,72 @@ class IndicatorEngine:
         self._close = close
         self._high = high
         self._low = low
-        self._series.clear()
+        self._series_groups.clear()
         for sub in self._subs:
-            self._series.append(self._compute_series(sub, close, high, low))
+            self._series_groups.append(self._compute_series_group(sub, close, high, low))
 
     @staticmethod
-    def _compute_series(
+    def _compute_series_group(
         sub: Subscription,
         close: pd.Series,
         high: pd.Series,
         low: pd.Series,
-    ) -> tuple[str, pd.Series]:
+    ) -> list[tuple[str, pd.Series]]:
         if isinstance(sub, SmaIndicatorSubscription):
-            return ("sma", ind.sma_series(close, sub.period))
+            return [("sma", ind.sma_series(close, sub.period))]
         if isinstance(sub, EmaIndicatorSubscription):
-            return ("ema", ind.ema_series(close, sub.period))
+            return [("ema", ind.ema_series(close, sub.period))]
         if isinstance(sub, MacdIndicatorSubscription):
-            return ("macd", ind.macd_line_series(close, sub.fast_period, sub.slow_period))
+            return [
+                (
+                    "macd",
+                    ind.macd_line_series(close, sub.fast_period, sub.slow_period),
+                )
+            ]
         if isinstance(sub, RsiIndicatorSubscription):
-            return ("rsi", ind.rsi_series(close, sub.period))
+            return [("rsi", ind.rsi_series(close, sub.period))]
         if isinstance(sub, AtrIndicatorSubscription):
-            return ("atr", ind.atr_series(high, low, close, sub.period))
+            return [("atr", ind.atr_series(high, low, close, sub.period))]
+        if isinstance(sub, BollingerBandsIndicatorSubscription):
+            mid, up, lo = ind.bollinger_bands_series(
+                close, sub.period, float(sub.std_dev)
+            )
+            return [
+                ("bb_middle", mid),
+                ("bb_upper", up),
+                ("bb_lower", lo),
+            ]
+        if isinstance(sub, StochasticIndicatorSubscription):
+            k_s, d_s = ind.stochastic_k_d_series(
+                high,
+                low,
+                close,
+                sub.k_period,
+                sub.k_slowing,
+                sub.d_period,
+            )
+            return [("stoch_k", k_s), ("stoch_d", d_s)]
         raise TypeError(f"Unsupported subscription type: {type(sub)!r}")
 
     def values_at_row(self, row: int) -> list[InputIndicatorDataPoint]:
         out: list[InputIndicatorDataPoint] = []
-        for name, s in self._series:
+        for group in self._series_groups:
+            for name, s in group:
+                if row < 0 or row >= len(s):
+                    continue
+                v = s.iloc[row]
+                if pd.isna(v):
+                    continue
+                out.append(InputIndicatorDataPoint(name=name, value=float(v), closed=True))
+        return out
+
+    def values_at_row_for_subscription(
+        self, subscription_index: int, row: int
+    ) -> list[InputIndicatorDataPoint]:
+        if subscription_index < 0 or subscription_index >= len(self._series_groups):
+            return []
+        out: list[InputIndicatorDataPoint] = []
+        for name, s in self._series_groups[subscription_index]:
             if row < 0 or row >= len(s):
                 continue
             v = s.iloc[row]
@@ -82,19 +126,6 @@ class IndicatorEngine:
                 continue
             out.append(InputIndicatorDataPoint(name=name, value=float(v), closed=True))
         return out
-
-    def value_at_row_for_subscription(
-        self, subscription_index: int, row: int
-    ) -> InputIndicatorDataPoint | None:
-        if subscription_index < 0 or subscription_index >= len(self._series):
-            return None
-        name, s = self._series[subscription_index]
-        if row < 0 or row >= len(s):
-            return None
-        v = s.iloc[row]
-        if pd.isna(v):
-            return None
-        return InputIndicatorDataPoint(name=name, value=float(v), closed=True)
 
     def partial_values_at_row(
         self,
@@ -104,7 +135,6 @@ class IndicatorEngine:
         partial_high: float,
         partial_low: float,
     ) -> list[InputIndicatorDataPoint]:
-        """Recompute indicators at ``row`` with the last bar overridden by the running partial OHLC."""
         if self._close is None or self._high is None or self._low is None:
             return []
         if row < 0 or row >= len(self._close):
@@ -117,14 +147,14 @@ class IndicatorEngine:
         low.iloc[row] = float(partial_low)
         out: list[InputIndicatorDataPoint] = []
         for sub in self._subs:
-            name, s = self._compute_series(sub, close, high, low)
-            v = s.iloc[row]
-            if pd.isna(v):
-                continue
-            out.append(InputIndicatorDataPoint(name=name, value=float(v), closed=False))
+            for name, s in self._compute_series_group(sub, close, high, low):
+                v = s.iloc[row]
+                if pd.isna(v):
+                    continue
+                out.append(InputIndicatorDataPoint(name=name, value=float(v), closed=False))
         return out
 
-    def partial_value_at_row_for_subscription(
+    def partial_values_at_row_for_subscription(
         self,
         subscription_index: int,
         row: int,
@@ -132,13 +162,13 @@ class IndicatorEngine:
         partial_close: float,
         partial_high: float,
         partial_low: float,
-    ) -> InputIndicatorDataPoint | None:
+    ) -> list[InputIndicatorDataPoint]:
         if self._close is None or self._high is None or self._low is None:
-            return None
+            return []
         if subscription_index < 0 or subscription_index >= len(self._subs):
-            return None
+            return []
         if row < 0 or row >= len(self._close):
-            return None
+            return []
         close = self._close.copy()
         high = self._high.copy()
         low = self._low.copy()
@@ -146,14 +176,16 @@ class IndicatorEngine:
         high.iloc[row] = float(partial_high)
         low.iloc[row] = float(partial_low)
         sub = self._subs[subscription_index]
-        name, s = self._compute_series(sub, close, high, low)
-        v = s.iloc[row]
-        if pd.isna(v):
-            return None
-        return InputIndicatorDataPoint(name=name, value=float(v), closed=False)
+        out: list[InputIndicatorDataPoint] = []
+        for name, s in self._compute_series_group(sub, close, high, low):
+            v = s.iloc[row]
+            if pd.isna(v):
+                continue
+            out.append(InputIndicatorDataPoint(name=name, value=float(v), closed=False))
+        return out
 
     @property
     def n_rows(self) -> int:
-        if not self._series:
+        if not self._series_groups:
             return 0
-        return int(self._series[0][1].shape[0])
+        return int(self._series_groups[0][0][1].shape[0])

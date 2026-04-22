@@ -234,6 +234,37 @@ function renderTablePanel(container, table, title) {
   const columns = Object.keys(first);
   if (columns.length === 0) return;
 
+  const toComparable = (v) => {
+    if (v === null || v === undefined) return { kind: 'empty', value: null };
+    if (typeof v === 'number' && Number.isFinite(v)) return { kind: 'number', value: v };
+    if (v instanceof Date) return { kind: 'number', value: v.getTime() };
+    if (typeof v === 'boolean') return { kind: 'number', value: v ? 1 : 0 };
+    const s = typeof v === 'string' ? v.trim() : typeof v === 'object' ? JSON.stringify(v) : String(v);
+    const n = s !== '' ? Number(s) : NaN;
+    if (Number.isFinite(n) && /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(s)) {
+      return { kind: 'number', value: n };
+    }
+    return { kind: 'string', value: s.toLowerCase() };
+  };
+
+  const makeSortedRows = (rows, sortCol, sortDir) => {
+    if (!sortCol || !sortDir) return rows;
+    const dir = sortDir === 'desc' ? -1 : 1;
+    const decorated = rows.map((r, i) => ({ r, i }));
+    decorated.sort((a, b) => {
+      const av = toComparable(a.r?.[sortCol]);
+      const bv = toComparable(b.r?.[sortCol]);
+      if (av.kind !== bv.kind) {
+        const order = av.kind === 'empty' ? 1 : bv.kind === 'empty' ? -1 : av.kind === 'number' ? -1 : 1;
+        return order * dir;
+      }
+      if (av.value < bv.value) return -1 * dir;
+      if (av.value > bv.value) return 1 * dir;
+      return a.i - b.i;
+    });
+    return decorated.map((d) => d.r);
+  };
+
   const details = document.createElement('details');
   details.className = 'strategy-chart-details';
   details.open = true;
@@ -259,10 +290,6 @@ function renderTablePanel(container, table, title) {
   dlBtn.addEventListener('mouseleave', () => {
     dlBtn.style.background = '#2a2e39';
   });
-  dlBtn.addEventListener('click', () => {
-    const csv = tableRowsToCsv(columns, table);
-    triggerCsvDownload('strategy-table.csv', csv);
-  });
   toolbar.appendChild(dlBtn);
   wrap.appendChild(toolbar);
 
@@ -280,38 +307,83 @@ function renderTablePanel(container, table, title) {
 
   const thead = document.createElement('thead');
   const hr = document.createElement('tr');
+
+  let sortCol = null;
+  let sortDir = null;
+  let currentRows = [...table];
+
+  const tbody = document.createElement('tbody');
+
+  const fmtCell = (v) => {
+    if (v === null || v === undefined) return '';
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      return Number.isInteger(v) ? String(v) : v.toLocaleString('en-US', { maximumFractionDigits: 6 });
+    }
+    return String(v);
+  };
+
+  const renderBody = () => {
+    tbody.innerHTML = '';
+    for (const row of currentRows) {
+      const tr = document.createElement('tr');
+      tr.style.cssText = 'border-bottom:1px solid #2a2e39;';
+      for (const col of columns) {
+        const td = document.createElement('td');
+        td.textContent = fmtCell(row?.[col]);
+        td.style.cssText = 'padding:8px 12px;';
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+  };
+
+  const updateHeaders = () => {
+    for (const th of hr.children) {
+      const col = th?.dataset?.col;
+      const base = typeof col === 'string' ? col.replace(/_/g, ' ') : '';
+      if (col && col === sortCol && sortDir) {
+        th.textContent = `${base} ${sortDir === 'asc' ? '▲' : '▼'}`;
+      } else {
+        th.textContent = base;
+      }
+    }
+  };
+
   for (const col of columns) {
     const th = document.createElement('th');
+    th.dataset.col = col;
     th.textContent = col.replace(/_/g, ' ');
     th.style.cssText =
-      'text-align:left;padding:10px 12px;border-bottom:1px solid #363a45;color:#888;font-weight:600;text-transform:capitalize;';
+      'text-align:left;padding:10px 12px;border-bottom:1px solid #363a45;color:#888;font-weight:600;text-transform:capitalize;cursor:pointer;user-select:none;';
+    th.addEventListener('click', () => {
+      if (sortCol !== col) {
+        sortCol = col;
+        sortDir = 'asc';
+      } else if (sortDir === 'asc') {
+        sortDir = 'desc';
+      } else if (sortDir === 'desc') {
+        sortCol = null;
+        sortDir = null;
+      } else {
+        sortDir = 'asc';
+      }
+      currentRows = makeSortedRows([...table], sortCol, sortDir);
+      updateHeaders();
+      renderBody();
+    });
     hr.appendChild(th);
   }
   thead.appendChild(hr);
   tbl.appendChild(thead);
-
-  const tbody = document.createElement('tbody');
-  for (const row of table) {
-    const tr = document.createElement('tr');
-    tr.style.cssText = 'border-bottom:1px solid #2a2e39;';
-    for (const col of columns) {
-      const td = document.createElement('td');
-      const v = row[col];
-      if (v === null || v === undefined) {
-        td.textContent = '';
-      } else if (typeof v === 'number' && Number.isFinite(v)) {
-        td.textContent = Number.isInteger(v)
-          ? String(v)
-          : v.toLocaleString('en-US', { maximumFractionDigits: 6 });
-      } else {
-        td.textContent = String(v);
-      }
-      td.style.cssText = 'padding:8px 12px;';
-      tr.appendChild(td);
-    }
-    tbody.appendChild(tr);
-  }
   tbl.appendChild(tbody);
+
+  dlBtn.addEventListener('click', () => {
+    const csv = tableRowsToCsv(columns, currentRows);
+    triggerCsvDownload('strategy-table.csv', csv);
+  });
+
+  updateHeaders();
+  renderBody();
 
   tableScroll.appendChild(tbl);
   wrap.appendChild(tableScroll);

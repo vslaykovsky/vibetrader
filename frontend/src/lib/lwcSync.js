@@ -1,7 +1,25 @@
 import { MismatchDirection } from 'lightweight-charts';
 
+const SYNC_SUPPRESS_MS = 80;
+
+function nowMs() {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
+}
+
 /**
- * Keep horizontal zoom/pan aligned across multiple charts (logical bar indices).
+ * Keep horizontal zoom/pan aligned across multiple charts.
+ *
+ * Prefer syncing by visible time range (works even when charts have different
+ * numbers of bars, e.g. Renko vs time-series). Fall back to logical range if
+ * the time-range API isn't available.
+ *
+ * To avoid feedback loops where chart A -> setRange(B) -> B snaps to slightly
+ * different range -> B emits event -> loop, we briefly suppress range-change
+ * events on any chart we just wrote to programmatically.
+ *
  * @param {import('lightweight-charts').IChartApi[]} charts
  * @returns {(() => void) | undefined}
  */
@@ -9,29 +27,76 @@ export function attachSyncedTimeScales(charts) {
   if (charts.length < 2) {
     return undefined;
   }
-  let syncing = false;
+
+  const suppressUntil = new WeakMap();
+
+  const isSuppressed = (chart) => {
+    const until = suppressUntil.get(chart) || 0;
+    return nowMs() < until;
+  };
+
+  const suppress = (chart) => {
+    suppressUntil.set(chart, nowMs() + SYNC_SUPPRESS_MS);
+  };
+
   const subscriptions = charts.map((chart) => {
-    const handler = (logicalRange) => {
-      if (syncing || logicalRange === null) {
-        return;
-      }
-      syncing = true;
-      try {
+    const timeScale = chart.timeScale();
+    const hasTimeRangeApi =
+      typeof timeScale.subscribeVisibleTimeRangeChange === 'function' &&
+      typeof timeScale.unsubscribeVisibleTimeRangeChange === 'function' &&
+      typeof timeScale.setVisibleRange === 'function';
+
+    if (hasTimeRangeApi) {
+      const handler = (timeRange) => {
+        if (timeRange === null) {
+          return;
+        }
+        if (isSuppressed(chart)) {
+          return;
+        }
         for (const other of charts) {
-          if (other !== chart) {
-            other.timeScale().setVisibleLogicalRange(logicalRange);
+          if (other === chart) continue;
+          suppress(other);
+          try {
+            other.timeScale().setVisibleRange(timeRange);
+          } catch {
+            /* ignore */
           }
         }
-      } finally {
-        syncing = false;
+      };
+      timeScale.subscribeVisibleTimeRangeChange(handler);
+      return { chart, handler, kind: 'timeRange' };
+    }
+
+    const handler = (logicalRange) => {
+      if (logicalRange === null) {
+        return;
+      }
+      if (isSuppressed(chart)) {
+        return;
+      }
+      for (const other of charts) {
+        if (other === chart) continue;
+        suppress(other);
+        try {
+          other.timeScale().setVisibleLogicalRange(logicalRange);
+        } catch {
+          /* ignore */
+        }
       }
     };
-    chart.timeScale().subscribeVisibleLogicalRangeChange(handler);
-    return { chart, handler };
+    timeScale.subscribeVisibleLogicalRangeChange(handler);
+    return { chart, handler, kind: 'logicalRange' };
   });
+
   return () => {
-    for (const { chart, handler } of subscriptions) {
-      chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
+    for (const { chart, handler, kind } of subscriptions) {
+      const ts = chart.timeScale();
+      if (kind === 'timeRange') {
+        ts.unsubscribeVisibleTimeRangeChange(handler);
+      } else {
+        ts.unsubscribeVisibleLogicalRangeChange(handler);
+      }
     }
   };
 }
@@ -70,7 +135,7 @@ export function attachSyncedCrosshair(bindings) {
       if (syncing) {
         return;
       }
-      if (!param.time) {
+      if (param.time == null) {
         syncing = true;
         try {
           for (const { chart: c } of valid) {

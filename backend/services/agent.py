@@ -12,6 +12,8 @@ import shutil
 import subprocess
 import sys
 import time
+import signal
+import selectors
 from pathlib import Path
 from typing import Any, Callable
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -530,9 +532,146 @@ def _run_simulation(*, workspace: Path) -> subprocess.CompletedProcess[str]:
         str(workspace / "strategy.py"),
     ]
     timeout_s = int(os.getenv("STRATEGY_BACKTEST_TIMEOUT_S", "1800"))
-    return _run_logged_subprocess(
-        "strategy simulation", cmd, str(workspace), timeout=timeout_s
+    freeze_timeout_s = int(os.getenv("STRATEGY_BACKTEST_FREEZE_TIMEOUT_S", "120"))
+    return _run_logged_subprocess_with_freeze_watchdog(
+        label="strategy simulation",
+        cmd=cmd,
+        cwd=str(workspace),
+        timeout=timeout_s,
+        freeze_timeout=freeze_timeout_s,
     )
+
+
+@traceable(name="run_logged_subprocess_with_freeze_watchdog")
+def _run_logged_subprocess_with_freeze_watchdog(
+    *,
+    label: str,
+    cmd: list[str],
+    cwd: str,
+    timeout: int,
+    freeze_timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    if freeze_timeout <= 0:
+        return _run_logged_subprocess(label, cmd, cwd, timeout=timeout)
+
+    t0 = time.monotonic()
+    last_progress = t0
+    out_chunks: list[str] = []
+    err_chunks: list[str] = []
+    max_capture_chars = 200_000
+
+    def _append(chunks: list[str], s: str) -> None:
+        if not s:
+            return
+        chunks.append(s)
+        total = sum(len(x) for x in chunks)
+        while total > max_capture_chars and chunks:
+            dropped = chunks.pop(0)
+            total -= len(dropped)
+
+    def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
+        try:
+            pgid = os.getpgid(proc.pid)
+        except Exception:
+            pgid = None
+        try:
+            if pgid is not None:
+                os.killpg(pgid, signal.SIGTERM)
+            else:
+                proc.terminate()
+        except Exception:
+            pass
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                return
+            time.sleep(0.05)
+        try:
+            if pgid is not None:
+                os.killpg(pgid, signal.SIGKILL)
+            else:
+                proc.kill()
+        except Exception:
+            pass
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+            start_new_session=True,
+        )
+    except OSError as e:
+        logger.error("%s failed to start: %s", label, e)
+        raise
+
+    sel = selectors.DefaultSelector()
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    sel.register(proc.stdout, selectors.EVENT_READ, data="stdout")
+    sel.register(proc.stderr, selectors.EVENT_READ, data="stderr")
+
+    try:
+        while True:
+            rc = proc.poll()
+            if rc is not None:
+                try:
+                    remaining_out, remaining_err = proc.communicate(timeout=0.2)
+                except Exception:
+                    remaining_out, remaining_err = "", ""
+                _append(out_chunks, remaining_out or "")
+                _append(err_chunks, remaining_err or "")
+                break
+
+            now = time.monotonic()
+            if timeout > 0 and (now - t0) > timeout:
+                _kill_process_tree(proc)
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+            if (now - last_progress) > freeze_timeout:
+                _kill_process_tree(proc)
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=freeze_timeout)
+
+            events = sel.select(timeout=0.25)
+            if not events:
+                continue
+
+            for key, _mask in events:
+                stream_name = key.data
+                try:
+                    line = key.fileobj.readline()
+                except Exception:
+                    line = ""
+                if not line:
+                    continue
+                last_progress = time.monotonic()
+                if stream_name == "stdout":
+                    _append(out_chunks, line)
+                else:
+                    _append(err_chunks, line)
+    finally:
+        try:
+            sel.close()
+        except Exception:
+            pass
+
+    stdout = "".join(out_chunks)
+    stderr = "".join(err_chunks)
+    completed = subprocess.CompletedProcess(args=cmd, returncode=proc.returncode or 0, stdout=stdout, stderr=stderr)
+    if completed.returncode != 0:
+        logger.error(
+            "%s failed: returncode=%s\nstdout:\n%s\nstderr:\n%s",
+            label,
+            completed.returncode,
+            _tail(completed.stdout or ""),
+            _tail(completed.stderr or ""),
+        )
+    return completed
 
 
 @traceable(name="run_workspace_command")
@@ -779,7 +918,36 @@ def run_backtest(
         start_date, end_date, deposit, provider = resolved
         if on_progress:
             on_progress("Running simulation…")
-        bt = _run_simulation(workspace=root)
+        try:
+            bt = _run_simulation(workspace=root)
+        except subprocess.TimeoutExpired as e:
+            freeze_timeout_s = int(os.getenv("STRATEGY_BACKTEST_FREEZE_TIMEOUT_S", "120"))
+            msg = f"backtest froze and was killed after {freeze_timeout_s}s without output"
+            logger.error("%s: %s", "strategy simulation", msg)
+
+            fix_attempt = run_update_strategy(
+                thread_id,
+                (
+                    "The backtest froze and was killed due to no output for over 120 seconds. "
+                    "Fix strategy.py so it cannot hang: remove infinite loops, ensure per-bar processing is fast, "
+                    "avoid blocking network calls, and always read stdin line-by-line and emit outputs regularly per AGENTS.md. "
+                    "Then keep the strategy logic intact as much as possible."
+                ),
+                on_progress=on_progress,
+            )
+            if fix_attempt.get("ok"):
+                if on_progress:
+                    on_progress("Retrying simulation after auto-fix…")
+                bt = _run_simulation(workspace=root)
+            else:
+                return {
+                    "ok": False,
+                    "error": msg,
+                    "backtest_returncode": 124,
+                    "backtest_stdout": "",
+                    "backtest_stderr": "",
+                    "autofix": fix_attempt,
+                }
         extras: dict[str, Any] = {
             "start_date": start_date,
             "end_date": end_date,

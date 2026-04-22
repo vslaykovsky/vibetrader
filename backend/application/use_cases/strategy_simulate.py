@@ -20,6 +20,7 @@ from application.services.scale_utils import (
 from application.services.simulation_driver import (
     aggregate_to_base,
     compile_subscriptions,
+    expand_step_to_lines,
     iter_simulation_steps,
 )
 from application.services.simulation_registry import SimulationRegistry
@@ -27,6 +28,7 @@ from application.services.simulation_session import SimulationSession
 from application.services.speed_clock import ClockStopped, SpeedClock
 from application.services.strategy_runtime import StrategyRuntime, StrategyRuntimeError
 from strategies_v2.utils import (
+    InputPortfolioDataPoint,
     OutputIndicatorSubscriptionOrder,
     OutputMarketTradeOrder,
     OutputTickerSubscription,
@@ -65,6 +67,13 @@ def _padding_days_for_indicator_subscriptions(subs: list[Any]) -> int:
             max_bars = max(max_bars, int(s.period) * 3)
         elif k == "atr":
             max_bars = max(max_bars, int(s.period) * 3)
+        elif k == "bb":
+            max_bars = max(max_bars, int(s.period) * 3)
+        elif k == "stochastic":
+            max_bars = max(
+                max_bars,
+                (int(s.k_period) + int(s.k_slowing) + int(s.d_period)) * 3,
+            )
     return max(30, min(500, max_bars))
 
 
@@ -182,7 +191,12 @@ class StrategySimulateCommandHandler:
             try:
                 sess.emit(simulation_event("status", status="starting"))
                 rt = StrategyRuntime(workspace, entry_script=cmd.strategy_entry)
-                startup = rt.start()
+                startup = rt.start(
+                    initial_input=StrategyInput(
+                        unixtime=0,
+                        points=[InputPortfolioDataPoint(positions=[])],
+                    )
+                )
                 ticker, base_scale = _ticker_and_scale_from_startup(startup)
                 base_scale = normalize_scale(base_scale)
                 sim_scale = (
@@ -218,9 +232,12 @@ class StrategySimulateCommandHandler:
                 if base_df.empty:
                     raise ValueError("No base-scale bars after aggregation")
                 start_i, end_i = _simulation_row_range(base_df, cmd.start_date, cmd.end_date)
-                engine = IndicatorEngine(ind_specs)
+                engine_subs = [
+                    s for s in ind_specs if getattr(s, "kind", None) != "renko"
+                ]
+                engine = IndicatorEngine(engine_subs)
                 engine.fit(base_df)
-                ticker_subs, indicator_subs = compile_subscriptions(
+                ticker_subs, indicator_subs, renko_subs = compile_subscriptions(
                     startup, base_scale, sim_scale
                 )
                 portfolio = Portfolio(initial_deposit=cmd.initial_deposit, ticker=ticker)
@@ -235,6 +252,7 @@ class StrategySimulateCommandHandler:
                     ticker_subs=ticker_subs,
                     indicator_subs=indicator_subs,
                     indicator_engine=engine,
+                    renko_subs=renko_subs,
                 ):
                     if sess.stop_requested:
                         sess.emit(simulation_event("status", status="stopped"))
@@ -247,31 +265,31 @@ class StrategySimulateCommandHandler:
 
                     fill_price = step.running.close
                     if step.fired:
-                        points: list = [portfolio.to_portfolio_datapoint()]
-                        points.extend(step.ticker_points)
-                        points.extend(step.indicator_points)
-                        step_input = StrategyInput(unixtime=step.unixtime, points=points)
-                        out = rt.send(step_input)
-                        for item in out.root:
-                            if isinstance(item, OutputMarketTradeOrder):
-                                portfolio.apply_market_order(
-                                    direction=item.direction,
-                                    deposit_ratio=item.deposit_ratio,
-                                    price=fill_price,
-                                    unixtime=step.unixtime,
-                                    reason="strategy",
-                                )
-                                sess.emit(
-                                    simulation_event(
-                                        "trade",
-                                        unixtime=step.unixtime,
-                                        ticker=item.ticker,
+                        for line in expand_step_to_lines(
+                            step,
+                            portfolio_provider=portfolio.to_portfolio_datapoint,
+                        ):
+                            out = rt.send(line)
+                            for item in out.root:
+                                if isinstance(item, OutputMarketTradeOrder):
+                                    portfolio.apply_market_order(
                                         direction=item.direction,
-                                        price=fill_price,
                                         deposit_ratio=item.deposit_ratio,
+                                        price=fill_price,
+                                        unixtime=line.unixtime,
                                         reason="strategy",
                                     )
-                                )
+                                    sess.emit(
+                                        simulation_event(
+                                            "trade",
+                                            unixtime=line.unixtime,
+                                            ticker=item.ticker,
+                                            direction=item.direction,
+                                            price=fill_price,
+                                            deposit_ratio=item.deposit_ratio,
+                                            reason="strategy",
+                                        )
+                                    )
                     portfolio.record_equity(step.unixtime, fill_price)
 
                     if step.is_base_close and start_i <= step.base_row <= end_i:

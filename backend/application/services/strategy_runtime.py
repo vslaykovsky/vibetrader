@@ -37,6 +37,39 @@ class StrategyRuntime:
         self._proc: subprocess.Popen[str] | None = None
         self._out_q: queue.Queue[str | None] = queue.Queue()
         self._reader_thread: threading.Thread | None = None
+        self._recorded_inputs: list[str] = []
+        self._recorded_outputs: list[str] = []
+
+    @property
+    def recorded_inputs(self) -> list[str]:
+        return list(self._recorded_inputs)
+
+    @property
+    def recorded_outputs(self) -> list[str]:
+        return list(self._recorded_outputs)
+
+    def write_io_files(
+        self,
+        *,
+        inputs_path: Path | None = None,
+        outputs_path: Path | None = None,
+    ) -> tuple[Path | None, Path | None]:
+        in_path = inputs_path or (self.workspace / "inputs.json")
+        out_path = outputs_path or (self.workspace / "outputs.json")
+
+        in_payload = [StrategyInput.model_validate_json(s).model_dump(mode="json") for s in self._recorded_inputs]
+        out_payload = [
+            StrategyOutput.model_validate_json(s).model_dump(mode="json") for s in self._recorded_outputs
+        ]
+        in_path.write_text(
+            __import__("json").dumps(in_payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        out_path.write_text(
+            __import__("json").dumps(out_payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return in_path, out_path
 
     def _stdout_reader(self) -> None:
         proc = self._proc
@@ -76,7 +109,9 @@ class StrategyRuntime:
             if self._proc.stdin is None:
                 raise StrategyRuntimeError("stdin not available")
             try:
-                self._proc.stdin.write(initial_input.model_dump_json() + "\n")
+                line_out = initial_input.model_dump_json()
+                self._recorded_inputs.append(line_out)
+                self._proc.stdin.write(line_out + "\n")
                 self._proc.stdin.flush()
             except BrokenPipeError as exc:
                 err = self._drain_stderr()
@@ -102,6 +137,7 @@ class StrategyRuntime:
             err = self._drain_stderr()
             raise StrategyRuntimeError(f"Empty startup line from strategy. stderr={err!r}")
         try:
+            self._recorded_outputs.append(line.strip())
             return StrategyOutput.model_validate_json(line.strip())
         except Exception as exc:
             err = self._drain_stderr()
@@ -111,6 +147,7 @@ class StrategyRuntime:
         if self._proc is None or self._proc.stdin is None:
             raise StrategyRuntimeError("Strategy process not started")
         line_out = step.model_dump_json()
+        self._recorded_inputs.append(line_out)
         try:
             self._proc.stdin.write(line_out + "\n")
             self._proc.stdin.flush()
@@ -131,10 +168,59 @@ class StrategyRuntime:
                 f"Strategy stdout closed before response (exit={code}). stderr={err!r}"
             )
         try:
+            self._recorded_outputs.append(line.strip())
             return StrategyOutput.model_validate_json(line.strip())
         except Exception as exc:
             err = self._drain_stderr()
             raise StrategyRuntimeError(f"Invalid response JSON: {exc!s}; stderr={err!r}") from exc
+
+    def finalize(self, *, timeout_seconds: float = 60.0) -> StrategyOutput:
+        """Close stdin and drain any remaining stdout lines until the process exits.
+
+        EDA strategies detect stdin EOF and then emit a final stdout line with
+        ``OutputChart`` items (accumulated analytics). Call this once after the last
+        ``send`` to collect those final outputs. Non-EDA strategies that emit nothing
+        after EOF return an empty ``StrategyOutput``.
+        """
+        if self._proc is None:
+            return StrategyOutput([])
+        try:
+            if self._proc.stdin is not None:
+                self._proc.stdin.close()
+        except Exception:
+            pass
+        collected: list[object] = []
+        import queue as _queue
+        import time as _time
+
+        deadline = _time.monotonic() + max(0.0, float(timeout_seconds))
+        while True:
+            remaining = deadline - _time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                line = self._out_q.get(timeout=remaining)
+            except _queue.Empty:
+                break
+            if line is None:
+                break
+            s = line.strip()
+            if not s:
+                continue
+            try:
+                self._recorded_outputs.append(s)
+                parsed = StrategyOutput.model_validate_json(s)
+            except Exception as exc:
+                err = self._drain_stderr()
+                raise StrategyRuntimeError(
+                    f"Invalid final JSON from strategy: {exc!s}; stderr={err!r}"
+                ) from exc
+            collected.extend(parsed.root)
+        try:
+            self._proc.wait(timeout=max(0.0, deadline - _time.monotonic()))
+        except Exception:
+            pass
+        return StrategyOutput(collected)
 
     def close(self) -> None:
         proc = self._proc

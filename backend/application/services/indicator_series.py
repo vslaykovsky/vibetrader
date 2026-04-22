@@ -48,3 +48,39 @@ def atr_series(high: pd.Series, low: pd.Series, close: pd.Series, period: int) -
         axis=1,
     ).max(axis=1)
     return tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+
+
+def bollinger_bands_series(
+    close: pd.Series, period: int, std_dev: float
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    c = close.astype(float)
+    middle = c.rolling(window=period, min_periods=period).mean()
+    std = c.rolling(window=period, min_periods=period).std(ddof=0)
+    upper = middle + float(std_dev) * std
+    lower = middle - float(std_dev) * std
+    return middle, upper, lower
+
+
+def stochastic_k_d_series(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    k_period: int,
+    k_slowing: int,
+    d_period: int,
+) -> tuple[pd.Series, pd.Series]:
+    hi = high.astype(float)
+    lo = low.astype(float)
+    cl = close.astype(float)
+    lowest = lo.rolling(window=k_period, min_periods=k_period).min()
+    highest = hi.rolling(window=k_period, min_periods=k_period).max()
+    denom = (highest - lowest).replace(0.0, float("nan"))
+    raw_k = 100.0 * (cl - lowest) / denom
+    if k_slowing <= 1:
+        slow_k = raw_k
+    else:
+        slow_k = raw_k.rolling(
+            window=k_slowing, min_periods=k_slowing
+        ).mean()
+    d_line = slow_k.rolling(window=d_period, min_periods=d_period).mean()
+    return slow_k, d_line
