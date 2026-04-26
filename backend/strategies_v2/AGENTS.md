@@ -1,6 +1,6 @@
 # strategies_v2 — agent instructions
 
-You implement **`strategy.py`** and keep **`params.json`** up to date. Author **`params-hyperopt.json`** as a static config whenever the strategy emits `market_order` outputs. Do not change **`utils.py`** (it defines the JSON shapes) or **`hyperopt.py`** (fixed platform hyperparameter driver, copied read-only into the workspace).
+You implement **`strategy.py`** and keep **`params.json`** up to date. Do not embed tunable values (ticker, scale, periods, thresholds, sizing, renko brick size, etc.) as literals in `strategy.py` — define them in `params.json` and read them after load (see **`params.json`**). Author **`params-hyperopt.json`** as a static config whenever the strategy emits `market_order` outputs. Do not change **`utils.py`** (it defines the JSON shapes) or **`hyperopt.py`** (fixed platform hyperparameter driver, copied read-only into the workspace).
 Always import everything from utils with: `from utils import *`
 
 Two workspace flavours are supported:
@@ -15,6 +15,8 @@ Do not run `strategy.py` or `hyperopt.py` here — the platform runs them throug
 Single source of truth next to `strategy.py`: ticker, bar `scale` (strategy's native timeframe), a human-readable `strategy_name` (no ticker in the name), and a short `description` for the UI.
 
 Also include simulator inputs consumed by the host (not read by `strategy.py`): `start_date` / `end_date` (ISO `YYYY-MM-DD`) defining the historical backtest window, `initial_deposit` (positive number), an optional `provider` (`alpaca`, `moex`, or `auto`), and an optional `simulation_scale` (`1m` / `15m` / `1h` / `4h` / `1d` / `1w`, default = `scale`) — see **Simulation scale** below.
+
+**No hardcoded strategy parameters in `strategy.py`:** Anything a user, the UI, or hyperopt might change must live in `params.json`, not as literals in `strategy.py`. Load `params.json` once at startup, bind tunables to variables, and use those everywhere — subscriptions (`ticker`, `scale`, `period`, `brick_size`, MACD lengths, BB multipliers, etc.), thresholds, lookbacks, min bars, and buy sizing keys read by **Market orders**. Do not write `ticker="SPY"`, `period=14`, `brick_size=1.0`, or `if rsi > 70` when `70` should be a knob unless `70` is only the default in `params.json` and the code compares against `params["rsi_overbought"]` (or equivalent). Literals are only for values that are fixed by contract and not mirrored in `params.json` (for example structural `0`/`1`, required `utils.py` enums, or a `default` inside `params.get` that matches the default in `params.json`).
 
 **Tunable parameters (strategy knobs, sizing, thresholds, indicator periods, etc.):** define every such value as a **top-level key** in `params.json` (flat JSON). `strategy.py` must read each tunable with `params["<key>"]` (or `params.get("<key>", default)`), using **the same key string** you will use in `params-hyperopt.json` `search_space`. Do not tuck tunables only under nested objects (for example `rsi.period` as the sole path while hyperopt writes a sibling key `rsi.period` at the root): `hyperopt.py` shallow-merges sampled values onto the **root** object only, so nested fields are never updated by a study. Nested objects are fine only for **fixed** blobs the host or strategy reads as a whole when those inner fields are not individually tuned or overridden.
 
@@ -42,18 +44,22 @@ Every `OutputTickerSubscription` and every `*IndicatorSubscription` accepts an o
 - `InputIndicatorDataPoint.name` — which output column for that subscription (e.g. `bb_lower` vs `bb_upper` vs `bb_middle`, or `macd` / `signal` / `histogram` for MACD). Allowed names depend on the subscription type and on your `outputs` list (see below). Indicator points do **not** repeat `ticker` or subscription `kind` on stdin: after you print subscriptions at startup, keep a map `id →` your subscription object (or ticker + `kind` + `outputs`) and branch in the stdin loop on **`id` + `name`** only.
 - `InputRenkoDataPoint.id` — id of the `RenkoIndicatorSubscription` that produced this brick.
 
-**`outputs` on multi-line subscriptions (`utils.py`):** `MacdIndicatorSubscription`, `BollingerBandsIndicatorSubscription`, and `StochasticIndicatorSubscription` each include an `outputs` field listing which series the host computes and streams (defaults: all lines). Request only what you need (e.g. MACD `signal` alone). `FibonacciIndicatorSubscription` uses `levels` instead (same idea: which retracement ratios you want).
+**`outputs` on multi-line subscriptions (`utils.py`):** `MacdIndicatorSubscription`, `BollingerBandsIndicatorSubscription`, `StochasticIndicatorSubscription`, and `FibonacciIndicatorSubscription` each include an `outputs` field listing which series the host computes and streams (defaults: all lines). Request only what you need (e.g. MACD `signal` alone). For Fibonacci, each entry is a string key such as `fib_0p618` (same value as `InputIndicatorDataPoint.name` on stdin); allowed keys are the `FibonacciOutputKey` literals in `utils.py`.
 
 Match input points to subscriptions by `point.id` rather than by `(ticker, name)` heuristics or by the order of items in `points`. This keeps your code obviously correct when you have **two of the same kind** (two SMAs, two tickers, fast/slow EMAs, etc.):
 
 ```python
+import json
+params = json.load(open("params.json"))
+ticker, scale = params["ticker"], params["scale"]
+fast_p, slow_p = int(params["fast_ema_period"]), int(params["slow_ema_period"])
 outs = [
     OutputTickerSubscription(id="price", ticker=ticker, scale=scale),
     OutputIndicatorSubscriptionOrder(
-        indicator=EmaIndicatorSubscription(id="fast_ema", ticker=ticker, scale=scale, period=12)
+        indicator=EmaIndicatorSubscription(id="fast_ema", ticker=ticker, scale=scale, period=fast_p)
     ),
     OutputIndicatorSubscriptionOrder(
-        indicator=EmaIndicatorSubscription(id="slow_ema", ticker=ticker, scale=scale, period=26)
+        indicator=EmaIndicatorSubscription(id="slow_ema", ticker=ticker, scale=scale, period=slow_p)
     ),
 ]
 print(StrategyOutput(outs).model_dump_json(), flush=True)

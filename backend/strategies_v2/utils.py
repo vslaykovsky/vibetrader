@@ -8,6 +8,21 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 MacdOutputKey = Literal["macd", "signal", "histogram"]
 BbOutputKey = Literal["bb_lower", "bb_middle", "bb_upper"]
 StochasticOutputKey = Literal["stoch_k", "stoch_d"]
+FibonacciOutputKey = Literal[
+    "fib_0p236",
+    "fib_0p382",
+    "fib_0p5",
+    "fib_0p618",
+    "fib_0p786",
+]
+
+
+def fibonacci_output_retracement_ratio(key: FibonacciOutputKey) -> float:
+    body = key.removeprefix("fib_")
+    left, sep, right = body.partition("p")
+    if sep == "" or right == "":
+        raise ValueError(f"invalid fibonacci output key: {key!r}")
+    return float(left + "." + right)
 
 
 class LwcMarker(BaseModel):
@@ -304,11 +319,25 @@ class FibonacciIndicatorSubscription(BaseModel):
     ticker: str
     scale: str
     lookback: int = Field(default=50, ge=2)
-    levels: list[float] = Field(
-        default_factory=lambda: [0.236, 0.382, 0.5, 0.618, 0.786]
+    outputs: list[FibonacciOutputKey] = Field(
+        default_factory=lambda: [
+            "fib_0p236",
+            "fib_0p382",
+            "fib_0p5",
+            "fib_0p618",
+            "fib_0p786",
+        ]
     )
     update_scale: str | None = None
     partial: bool = False
+
+    @model_validator(mode="after")
+    def _fib_outputs(self) -> FibonacciIndicatorSubscription:
+        if not self.outputs:
+            raise ValueError("outputs must be non-empty")
+        if len(self.outputs) != len(set(self.outputs)):
+            raise ValueError("outputs must not contain duplicates")
+        return self
 
 
 class RenkoIndicatorSubscription(BaseModel):

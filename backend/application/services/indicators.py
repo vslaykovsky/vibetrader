@@ -15,6 +15,7 @@ from strategies_v2.utils import (
     RsiIndicatorSubscription,
     SmaIndicatorSubscription,
     StochasticIndicatorSubscription,
+    fibonacci_output_retracement_ratio,
 )
 
 Subscription = (
@@ -107,13 +108,13 @@ class IndicatorEngine:
             return [(k, all_s[k]) for k in sub.outputs]
         if isinstance(sub, FibonacciIndicatorSubscription):
             out: list[tuple[str, pd.Series]] = []
-            for lv in sub.levels:
-                name = "fib_" + str(float(lv)).replace(".", "p")
+            for key in sub.outputs:
+                lv = fibonacci_output_retracement_ratio(key)
                 out.append(
                     (
-                        name,
+                        key,
                         ind.fibonacci_retracement_level_series(
-                            high, low, lookback=sub.lookback, level=float(lv)
+                            high, low, lookback=sub.lookback, level=lv
                         ),
                     )
                 )

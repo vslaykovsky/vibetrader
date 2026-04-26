@@ -13,6 +13,7 @@ from strategies_v2.utils import (
     RsiIndicatorSubscription,
     SmaIndicatorSubscription,
     StochasticIndicatorSubscription,
+    fibonacci_output_retracement_ratio,
 )
 from pydantic import ValidationError
 
@@ -190,7 +191,29 @@ def test_fibonacci_retracement_level_series():
     assert float(s.iloc[3]) == pytest.approx(4.5)
 
 
-def test_indicator_engine_fibonacci_levels():
+def test_fibonacci_output_retracement_ratio():
+    assert fibonacci_output_retracement_ratio("fib_0p5") == pytest.approx(0.5)
+    assert fibonacci_output_retracement_ratio("fib_0p618") == pytest.approx(0.618)
+
+
+def test_fibonacci_indicator_subscription_rejects_invalid_outputs():
+    with pytest.raises(ValidationError):
+        FibonacciIndicatorSubscription(
+            kind="fibonacci",
+            ticker="X",
+            scale="1d",
+            outputs=[],
+        )
+    with pytest.raises(ValidationError):
+        FibonacciIndicatorSubscription(
+            kind="fibonacci",
+            ticker="X",
+            scale="1d",
+            outputs=["fib_0p5", "fib_0p5"],
+        )
+
+
+def test_indicator_engine_fibonacci_outputs():
     df = pd.DataFrame(
         {
             "open": [1.0, 2.0, 3.0, 4.0],
@@ -200,28 +223,30 @@ def test_indicator_engine_fibonacci_levels():
         },
         index=pd.date_range("2024-01-01", periods=4, freq="1D", tz="UTC"),
     )
-    levels = [0.382, 0.618]
+    keys = ["fib_0p382", "fib_0p618"]
     sub = FibonacciIndicatorSubscription(
-        ticker="X", scale="1d", lookback=3, levels=levels
+        ticker="X", scale="1d", lookback=3, outputs=keys
     )
     eng = IndicatorEngine([sub])
     eng.fit(df)
     refs = {
-        lv: ind.fibonacci_retracement_level_series(
-            df["high"], df["low"], lookback=sub.lookback, level=float(lv)
+        k: ind.fibonacci_retracement_level_series(
+            df["high"],
+            df["low"],
+            lookback=sub.lookback,
+            level=fibonacci_output_retracement_ratio(k),
         )
-        for lv in levels
+        for k in keys
     }
     for i in range(len(df)):
         pts = eng.values_at_row_for_subscription(0, i)
         by_n = {p.name: p.value for p in pts}
-        for lv in levels:
-            name = "fib_" + str(float(lv)).replace(".", "p")
-            rv = refs[lv].iloc[i]
+        for k in keys:
+            rv = refs[k].iloc[i]
             if np.isnan(rv):
-                assert name not in by_n
+                assert k not in by_n
             else:
-                assert by_n[name] == pytest.approx(float(rv))
+                assert by_n[k] == pytest.approx(float(rv))
 
 
 def test_macd_indicator_subscription_rejects_empty_outputs():

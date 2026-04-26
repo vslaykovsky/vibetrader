@@ -463,6 +463,14 @@ export function StrategyPage() {
     }
   }, [threadId]);
 
+  useLayoutEffect(() => {
+    if (!threadId) {
+      return;
+    }
+    setServerJob({ status: null, statusText: '' });
+    setSubmitting(false);
+  }, [threadId]);
+
   useEffect(() => {
     if (!threadId) {
       return;
