@@ -354,12 +354,24 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
       const lastOpen = sorted[sorted.length - 1].unixtime;
       const padSec = Math.max(tfSec * 2, 120);
       // Widen the look-ahead window each time we don't get fresh bars; helps when the
-      // provider's bar timestamps are sparse / lag behind the calendar.
+      // provider's bar timestamps are sparse / lag behind the calendar (markets are
+      // closed at the end of a trading day, weekends, holidays — naive ``N*tfSec``
+      // for 1m would only span a handful of minutes of *wall-clock* time and never
+      // cross the next trading session, leaving the chart stuck on the last loaded bar).
       const widen = Math.min(8, 1 << prefetchEmptyStreakRef.current);
+      // Inflate the wall-clock window for intraday TFs the same way we do on
+      // pan-history / init: stocks trade ~6.5h per calendar day, weekends are
+      // closed entirely, and holidays add further gaps. Use a min 2-day floor
+      // so even widen=1 always crosses at least one full overnight close — this
+      // unsticks 1m playback at the boundary of the trading session.
+      const tradingFractionPerDay = tfSec >= 86400 ? 1 : Math.min(1, (6.5 * 3600) / 86400);
+      const weekendInflation = tfSec >= 86400 ? 1 : 7 / 5;
+      const wantSec = (chunkBars + 5) * tfSec + padSec;
+      const inflatedSec = Math.ceil((wantSec / tradingFractionPerDay) * weekendInflation);
+      const minPadSec = tfSec >= 86400 ? 0 : 2 * 86400;
+      const lookaheadSec = Math.max(inflatedSec + minPadSec, wantSec) * widen;
       const apiStart = unixToIsoDateUTC(Math.floor(lastOpen + 1));
-      const apiEnd = unixToIsoDateUTC(
-        Math.ceil(lastOpen + ((chunkBars + 5) * tfSec + padSec) * widen),
-      );
+      const apiEnd = unixToIsoDateUTC(Math.ceil(lastOpen + lookaheadSec));
       const seq = tfFetchSeqRef.current;
       prefetchInFlightRef.current = true;
       void (async () => {
@@ -442,19 +454,33 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
           lastWatchdogLog = now;
           frameCount = 0;
         }
-        // Halt the loop only when there is genuinely nothing left to reveal:
+        // Halt the loop only when there is *truly* nothing left to reveal:
         //  * we're at the rightmost loaded bar (``tail<=0``), AND
-        //  * either the provider is exhausted OR the backend already announced
-        //    that the simulation finished (so no more bars / trades will arrive).
+        //  * the provider has been confirmed exhausted (3 consecutive empty
+        //    prefetch responses), AND
+        //  * no prefetch is currently in flight (one might still bring back
+        //    fresh bars and unstick playback).
+        // NOTE: backend ``status:done`` only means the *trade stream* is over;
+        // it must NOT terminate playback — the chart pulls bars exclusively
+        // from ``GET /simulation/display_bars`` and the provider may still
+        // have many more calendar days available.
         if (
           tail <= 0 &&
-          (forwardExhaustedRef.current || streamDoneRef.current)
+          forwardExhaustedRef.current &&
+          !prefetchInFlightRef.current
         ) {
           appendLog('[playback] paused at end of available data');
           setBusy(false);
           setPaused(false);
           cancelled = true;
           return;
+        }
+        // If we've reached the end of the buffer but a prefetch is in flight
+        // (or we just haven't tried since arriving here), proactively kick a
+        // prefetch and keep the loop alive — once the response merges into
+        // ``barsRef`` we'll have ``tail > 0`` again and continue revealing.
+        if (tail <= 0 && !forwardExhaustedRef.current) {
+          triggerPrefetch();
         }
       } else if (now - lastWatchdogLog > 1000) {
         appendLog('[tick] empty bars buffer');
@@ -618,14 +644,20 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
             if (st) setStrategyTfFromInit(st);
           }
           if (payload.status === 'ready') setSessionReady(true);
-          if (payload.status === 'paused') setPaused(true);
-          if (payload.status === 'running' || payload.status === 'starting') setPaused(false);
-          // ``done`` / ``stopped`` mean the *backend* finished — but the chart
-          // typically still has buffered bars that the user has not yet seen,
-          // because the playback loop reveals them at the chosen speed (bps).
-          // Close the stream, but keep ``busy`` true: the playback loop will
-          // self-terminate once it shows the last buffered bar AND prefetch is
-          // exhausted (``streamDoneRef && tail<=0`` branch in the tick fn).
+          // NOTE: ``paused`` / ``running`` reflect the *backend worker*. The
+          // chart playback pacing is now driven entirely by the local
+          // setInterval loop (Play/Pause buttons toggle it), so we deliberately
+          // do NOT mirror these into ``paused`` state — the backend would
+          // otherwise yank the chart out of pause whenever the worker emits
+          // ``status:running`` (e.g. on SSE reconnect or speed change).
+          // ``done`` / ``stopped`` mean only that the backend's *trade stream*
+          // has finished — no more trades / pnl events will arrive. It tells
+          // us NOTHING about whether the provider has more historical bars.
+          // The chart pulls OHLC exclusively from ``GET /simulation/display_bars``
+          // and may have many more days available even after the strategy is
+          // done. Just close the SSE stream and let the playback loop keep
+          // revealing / prefetching bars; it self-terminates when prefetch
+          // returns no new bars 3× in a row (``forwardExhaustedRef``).
           if (payload.status === 'done' || payload.status === 'stopped') {
             streamDoneRef.current = true;
             stopStream();
@@ -758,6 +790,11 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
       streamDoneRef.current = false;
       prefetchEmptyStreakRef.current = 0;
       playbackAccumRef.current = 0;
+      // Drive the local playback loop *immediately* — the chart pacing is
+      // entirely client-side now; we don't wait for the backend's
+      // ``status:running`` echo (which never arrives once the strategy run
+      // has already finished, leaving Play/Pause feeling unresponsive).
+      setPaused(false);
       setBusy(true);
       const res = await authFetchRef.current(`${apiBaseUrl}/simulation/play`, {
         method: 'POST',
@@ -775,11 +812,22 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
   }
 
   async function handlePause() {
-    await authFetchRef.current(`${apiBaseUrl}/simulation/pause`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ thread_id: threadId }),
-    });
+    // Pause the local playback loop *immediately* — independent of the
+    // backend SSE stream. The strategy worker often finishes within a few
+    // seconds (it's CPU-bound, not paced); after the SSE stream closes
+    // (``status:done``) any backend ``status:paused`` echo would land in a
+    // queue nobody reads, leaving the chart playing while the user thinks
+    // they paused it.
+    setPaused(true);
+    try {
+      await authFetchRef.current(`${apiBaseUrl}/simulation/pause`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ thread_id: threadId }),
+      });
+    } catch {
+      /* ignore — local pause already in effect */
+    }
   }
 
   async function handleStop() {
