@@ -1,23 +1,32 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { DateTimePickerModal } from './DateTimePickerModal.jsx';
 import { SimulationCharts } from './SimulationCharts.jsx';
 import {
   bucketStart,
-  coarserChartTimeframes,
+  DISPLAY_TF_OPTIONS,
   equityOnCandleCloseTimes,
-  finerChartTimeframes,
   normalizeTimeframe,
-  resampleEquity,
-  resampleOhlc,
   timeframeRank,
+  TF_SECONDS,
 } from '../lib/ohlcResample.js';
 
-const MAX_SIM_BARS = 50_000;
-const MAX_SIM_TRADES = 5_000;
+/** Hard caps for in-memory buffers. */
+const MAX_OHLC_BARS = 50_000;
+const MAX_TRADES = 5_000;
 const MAX_LOG_LINES = 400;
-/** Max finer candles to release in one frame (very high bps / Max preset). */
-const MAX_FINER_BARS_PER_FRAME = 800;
+/** Initial window: ``rightBarUnix`` + 20 bars to the left (21 total). */
+const LEFT_WINDOW_BARS = 20;
+/** Per-tick prefetch chunk in bars: ~``liveBps * SPEED_PREFETCH_MULT``. */
+const SPEED_PREFETCH_MULT = 5;
+/** Debounce for visible-range driven older-history fetches. */
+const PAN_HISTORY_DEBOUNCE_MS = 250;
+/** Whitespace (in bars) to the left of the oldest loaded bar that triggers a history fetch. */
+const HISTORY_TRIGGER_BARS = 1;
+/** Extra older bars requested beyond the visible whitespace (TradingView-style small look-back). */
+const HISTORY_PREFETCH_PAD_BARS = 10;
+/** Hard ceiling on the number of bars to request in a single pan-history call. */
+const HISTORY_REQUEST_MAX_BARS = 500;
 
-/** Chart follows streamed bars one-to-one (strategy native TF). */
 const DISPLAY_TF_NATIVE = 'native';
 
 const SPEED_OPTIONS = [
@@ -29,414 +38,530 @@ const SPEED_OPTIONS = [
   { id: 'max', bps: 1_000_000, label: 'Max' },
 ];
 
-function presetIdFromBps(bps) {
-  if (!Number.isFinite(bps)) return '2';
-  if (bps >= 999_999) return 'max';
-  const hit = SPEED_OPTIONS.find((o) => o.id !== 'max' && Math.abs(o.bps - bps) < 0.001);
-  return hit ? hit.id : '2';
-}
-
-function defaultEndDateKey() {
-  const d = new Date();
+function isoDateLocal(d) {
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function defaultStartDateKey() {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() - 30);
+function unixToIsoDateUTC(sec) {
+  const d = new Date(sec * 1000);
   const yyyy = d.getUTCFullYear();
   const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
   const dd = String(d.getUTCDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function startNoonUnix(isoDate) {
+  return Math.floor(new Date(`${isoDate}T12:00:00Z`).getTime() / 1000);
+}
+
+/** Sorted unique by ``unixtime`` (ascending). */
+function mergeBars(prev, next) {
+  const map = new Map();
+  for (const b of prev) map.set(b.unixtime, b);
+  for (const b of next) map.set(b.unixtime, b);
+  const out = [...map.values()].sort((a, b) => a.unixtime - b.unixtime);
+  if (out.length > MAX_OHLC_BARS) return out.slice(-MAX_OHLC_BARS);
+  return out;
+}
+
 export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToken }) {
-  const [startDate, setStartDate] = useState(defaultStartDateKey);
-  const [endDate, setEndDate] = useState(defaultEndDateKey);
+  // ── User input / session ──────────────────────────────────────────────
+  const [startDate, setStartDate] = useState('');
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
   const [speedPresetId, setSpeedPresetId] = useState('2');
-  /** Bars per second for the *visible* chart TF when finer than strategy (see rAF playback). */
-  const [liveBps, setLiveBps] = useState(2);
   const [displayTfMode, setDisplayTfMode] = useState(DISPLAY_TF_NATIVE);
-  const [logLines, setLogLines] = useState([]);
+  const [sessionReady, setSessionReady] = useState(false);
+  const [initLoading, setInitLoading] = useState(false);
+  const [initEpoch, setInitEpoch] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [paused, setPaused] = useState(false);
   const [error, setError] = useState('');
-  const [sourceScale, setSourceScale] = useState('');
-  const [rawBars, setRawBars] = useState([]);
-  const [rawTrades, setRawTrades] = useState([]);
-  const [rawEquity, setRawEquity] = useState([]);
-  const [fineBars, setFineBars] = useState([]);
-  const [fineBarsLoading, setFineBarsLoading] = useState(false);
-  const [fineBarsError, setFineBarsError] = useState('');
+  const [logLines, setLogLines] = useState([]);
+  const [strategyTfFromInit, setStrategyTfFromInit] = useState('');
+  /** Strategy-declared indicator-series catalog (from /simulation/stream) — passed to chart for tooltips. */
   const [indicatorSeriesCatalog, setIndicatorSeriesCatalog] = useState([]);
-  /** True while we paused the backend to load finer OHLC (user switched chart TF during a run). */
-  const [chartLoadHoldsSim, setChartLoadHoldsSim] = useState(false);
-  /** Backend simulation clock paused (user Pause / chart load); finer-chart rAF playback freezes with it. */
-  const [simWallClockPaused, setSimWallClockPaused] = useState(false);
-  /** How many finer TF candles (from the head of finePool) are shown; paced by liveBps. */
-  const [fineRevealCount, setFineRevealCount] = useState(0);
-  /** Chart TF dropdown: show overlay so the UI does not look frozen (finer fetch or resample). */
-  const [chartTfSwitching, setChartTfSwitching] = useState(false);
+
+  // ── Chart bars (display only, comes from /simulation/display_bars) ────
+  const [bars, setBars] = useState([]);
+  const [barsScale, setBarsScale] = useState('');
+  const [barsLoading, setBarsLoading] = useState(false);
+  const [barsError, setBarsError] = useState('');
+
+  // ── Right-side pointer (bar open unix in current chartTf). Left side is implicit (= bars[0]).
+  const [rightBarUnix, setRightBarUnix] = useState(0);
+
+  // ── Trades / equity (from /simulation/stream) ─────────────────────────
+  const [trades, setTrades] = useState([]);
+  const [equityPts, setEquityPts] = useState([]);
+
+  // ── Refs ──────────────────────────────────────────────────────────────
   const esRef = useRef(null);
   const logEndRef = useRef(null);
+  const authFetchRef = useRef(authFetch);
+  authFetchRef.current = authFetch;
   const busyRef = useRef(false);
   busyRef.current = busy;
-  const liveBpsRef = useRef(liveBps);
-  liveBpsRef.current = liveBps;
-  const fineBarsRef = useRef(fineBars);
-  fineBarsRef.current = fineBars;
-  const cursorUnixRef = useRef(0);
+  const pausedRef = useRef(false);
+  pausedRef.current = paused;
+  const barsRef = useRef([]);
+  useEffect(() => { barsRef.current = bars; }, [bars]);
+  const rightBarUnixRef = useRef(0);
+  useEffect(() => { rightBarUnixRef.current = rightBarUnix; }, [rightBarUnix]);
+  const liveBpsRef = useRef(2);
   const playbackAccumRef = useRef(0);
-  const prevDisplayTfRef = useRef(displayTfMode);
-  const prevFineBarsLoadingRef = useRef(false);
+  const prefetchInFlightRef = useRef(false);
+  const historyInFlightRef = useRef(false);
+  const panDebounceRef = useRef(0);
+  const tfFetchSeqRef = useRef(0);
+  const forwardExhaustedRef = useRef(false);
+  const prefetchEmptyStreakRef = useRef(0);
+  // Set when the *backend* finishes the simulation (``status:done``/``stopped``).
+  // The frontend playback loop must keep revealing buffered bars at the chosen
+  // speed until the buffer is exhausted; only this combined condition ends the
+  // run from the user's perspective.
+  const streamDoneRef = useRef(false);
+  // Last known "playback cursor" captured BEFORE we wipe the OHLC buffer on a
+  // chart-TF switch. We store the *end* of that bucket (open-time + tf-seconds)
+  // so the new TF anchors at the latest sub-bar that fits inside the previous
+  // bar — e.g. switching 1d→4h on Thursday lands on Thursday's 20:00 4h bar,
+  // not Wednesday's last one.
+  const lastCursorEndUnixRef = useRef(0);
 
+  // ── Derived ───────────────────────────────────────────────────────────
+  const knownSourceTf = normalizeTimeframe(strategyTfFromInit);
+  const chartTf = useMemo(() => {
+    if (displayTfMode === DISPLAY_TF_NATIVE) return knownSourceTf || '1d';
+    return normalizeTimeframe(displayTfMode) || knownSourceTf || '1d';
+  }, [displayTfMode, knownSourceTf]);
+  const tfSec = TF_SECONDS[chartTf] || TF_SECONDS['1d'];
+  const chartTfRef = useRef(chartTf);
+  const prevTfSecRef = useRef(tfSec);
+
+  const selectedBps = useMemo(() => {
+    const opt = SPEED_OPTIONS.find((o) => o.id === speedPresetId);
+    return opt ? opt.bps : 2;
+  }, [speedPresetId]);
+  liveBpsRef.current = selectedBps;
+
+  const chartTfChoices = useMemo(() => {
+    const merged = [...DISPLAY_TF_OPTIONS, ...(knownSourceTf && !DISPLAY_TF_OPTIONS.includes(knownSourceTf) ? [knownSourceTf] : [])];
+    return [...new Set(merged)].sort((a, b) => (timeframeRank(a) ?? 99) - (timeframeRank(b) ?? 99));
+  }, [knownSourceTf]);
+
+  // ── Helpers ───────────────────────────────────────────────────────────
   const appendLog = useCallback((line) => {
     setLogLines((prev) => [...prev.slice(-MAX_LOG_LINES), line]);
   }, []);
+  const appendLogRef = useRef(appendLog);
+  appendLogRef.current = appendLog;
 
   const stopStream = useCallback(() => {
     esRef.current?.close();
     esRef.current = null;
   }, []);
 
-  useEffect(() => () => stopStream(), [stopStream]);
-
-  useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logLines]);
-
-  const knownSource = normalizeTimeframe(sourceScale);
-  const sourceRankFallback = '1d';
-  const rankBase = knownSource || sourceRankFallback;
-
-  const chartTf =
-    displayTfMode === DISPLAY_TF_NATIVE
-      ? knownSource || sourceRankFallback
-      : normalizeTimeframe(displayTfMode) || knownSource || sourceRankFallback;
-
-  const srcRank = timeframeRank(knownSource);
-  const chartRank = timeframeRank(chartTf);
-
-  const isNativeChart =
-    displayTfMode === DISPLAY_TF_NATIVE ||
-    (knownSource !== '' && normalizeTimeframe(chartTf) === knownSource);
-
-  const isFinerChart =
-    !isNativeChart &&
-    knownSource !== '' &&
-    srcRank != null &&
-    chartRank != null &&
-    chartRank < srcRank;
-
-  const isCoarserChart = !isNativeChart && !isFinerChart;
-
-  const chartTfOptions = useMemo(() => {
-    const nativeLabel = knownSource
-      ? `Native (${knownSource}) — same as strategy`
-      : 'Native (strategy timeframe)';
-    const finer = finerChartTimeframes(rankBase);
-    const coarse = coarserChartTimeframes(rankBase);
-    return [
-      { value: DISPLAY_TF_NATIVE, label: nativeLabel },
-      ...finer.map((tf) => ({ value: tf, label: `View ${tf} (market OHLC)` })),
-      ...coarse.map((tf) => ({ value: tf, label: `Aggregate → ${tf}` })),
-    ];
-  }, [knownSource, rankBase]);
-
-  useEffect(() => {
-    const valid = new Set(chartTfOptions.map((o) => o.value));
-    if (!valid.has(displayTfMode)) {
-      setDisplayTfMode(DISPLAY_TF_NATIVE);
-    }
-  }, [chartTfOptions, displayTfMode]);
-
-  useEffect(() => {
-    const prev = prevDisplayTfRef.current;
-    if (prev !== displayTfMode) {
-      prevDisplayTfRef.current = displayTfMode;
-      setChartTfSwitching(true);
-    }
-  }, [displayTfMode]);
-
-  useEffect(() => {
-    if (!chartTfSwitching) return undefined;
-    if (isFinerChart) {
-      if (!fineBarsLoading) {
-        setChartTfSwitching(false);
-      }
-      return undefined;
-    }
-    let cancelled = false;
-    let id2 = 0;
-    const id1 = requestAnimationFrame(() => {
-      id2 = requestAnimationFrame(() => {
-        if (!cancelled) setChartTfSwitching(false);
+  const callDisplayBars = useCallback(
+    async (apiStart, apiEnd, signal) => {
+      const tid = String(threadId || '').trim();
+      const qs = new URLSearchParams({
+        thread_id: tid,
+        scale: chartTf,
+        start_date: apiStart,
+        end_date: apiEnd,
       });
-    });
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(id1);
-      cancelAnimationFrame(id2);
-    };
-  }, [chartTfSwitching, isFinerChart, fineBarsLoading, displayTfMode]);
+      if (busyRef.current && rightBarUnixRef.current > 0) {
+        qs.set('chart_last_bar_unixtime', String(rightBarUnixRef.current));
+      }
+      const res = await authFetchRef.current(`${apiBaseUrl}/simulation/display_bars?${qs}`, {
+        method: 'GET',
+        signal,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(typeof data.error === 'string' ? data.error : 'Failed to load chart OHLC');
+      }
+      const out = Array.isArray(data.bars) ? data.bars : [];
+      out.sort((a, b) => a.unixtime - b.unixtime);
+      return out;
+    },
+    [apiBaseUrl, chartTf, threadId],
+  );
 
-  useEffect(() => {
-    if (!isFinerChart || !chartTf || !startDate || !endDate || !String(threadId || '').trim()) {
-      setFineBars([]);
-      setFineBarsError('');
-      setFineBarsLoading(false);
-      setChartLoadHoldsSim(false);
-      return;
+  // ── Reset chart buffers when the chart TF changes ──────────────────────
+  useLayoutEffect(() => {
+    // Remember where the user was *before* we wipe the buffer. We anchor the
+    // new TF to the *end* of the previous right-most bucket (open + tfSec_prev)
+    // so the new init lands on the latest sub-bar that fits inside that bucket.
+    if (rightBarUnixRef.current > 0) {
+      const prevTfSec = prevTfSecRef.current || tfSec;
+      lastCursorEndUnixRef.current = rightBarUnixRef.current + prevTfSec;
     }
+    chartTfRef.current = chartTf;
+    prevTfSecRef.current = tfSec;
+    tfFetchSeqRef.current += 1;
+    setBars([]);
+    setBarsScale('');
+    setBarsError('');
+    setBarsLoading(false);
+    setRightBarUnix(0);
+    barsRef.current = [];
+    rightBarUnixRef.current = 0;
+    playbackAccumRef.current = 0;
+    prefetchInFlightRef.current = false;
+    forwardExhaustedRef.current = false;
+    streamDoneRef.current = false;
+    prefetchEmptyStreakRef.current = 0;
+    historyInFlightRef.current = false;
+    window.clearTimeout(panDebounceRef.current);
+  }, [chartTf]);
+
+  // ── Initial load: 21 bars ending at the temporal anchor in the current TF.
+  // The anchor is either:
+  //  • ``lastCursorEndUnixRef`` — end of the right-most bucket from the
+  //    previous chart TF, so switching TF keeps the same point in time on
+  //    screen and lands on the latest sub-bar inside the previous bucket;
+  //  • or the noon-bucket of ``start_date`` — the very first init.
+  useEffect(() => {
+    if (!sessionReady) return undefined;
+    const sd = startDate.trim();
+    const tid = String(threadId || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(sd) || !tid) return undefined;
+    if (bars.length > 0) return undefined;
+
+    const seq = tfFetchSeqRef.current;
     const ac = new AbortController();
     let alive = true;
-    const tid = String(threadId).trim();
-    const qs = new URLSearchParams({
-      thread_id: tid,
-      scale: chartTf,
-      start_date: startDate,
-      end_date: endDate,
-    });
-    let pausedForThisLoad = false;
 
+    const cursorEndUnix = lastCursorEndUnixRef.current;
+    // ``cursorEndUnix`` is the *end* of the previous bucket; subtract 1s so we
+    // bucket-start strictly inside it (avoids landing on the next bucket).
+    const baseUnix =
+      cursorEndUnix > 0 ? cursorEndUnix - 1 : startNoonUnix(sd);
+    const anchorBucket = bucketStart(baseUnix, chartTf);
+    // Use the same trading-day inflation we apply on pan-history: intraday TFs
+    // see ~6.5h of trading per calendar day with weekends fully closed, so a
+    // naive ``padBack=N*tfSec`` for 1m would only span 25 *real-time* minutes
+    // (often deep in after-hours) and the provider would only return a handful
+    // of sparse bars sprinkled across the closing minutes of multiple days.
+    const want = LEFT_WINDOW_BARS + 1;
+    const tradingFractionPerDay = tfSec >= 86400 ? 1 : Math.min(1, (6.5 * 3600) / 86400);
+    const weekendInflation = tfSec >= 86400 ? 1 : 7 / 5;
+    const wantSec = want * tfSec;
+    const inflatedSec = Math.ceil((wantSec / tradingFractionPerDay) * weekendInflation);
+    const minPadSec = tfSec >= 86400 ? 0 : 2 * 86400;
+    const padBack = Math.max(inflatedSec + minPadSec, wantSec);
+    // ``apiEnd`` anchors at the moment *just before* the previous bucket's end
+    // (or anchorBucket + tfSec for the very first init); it bounds the search
+    // and avoids landing on the next-bucket sub-bars.
+    const upperUnix = cursorEndUnix > 0 ? cursorEndUnix - 1 : anchorBucket + tfSec;
+    const apiStart = unixToIsoDateUTC(upperUnix - padBack);
+    // Add a 1-day cushion so providers (which often treat ``end_date`` as
+    // exclusive) still include the anchor bucket itself.
+    const apiEnd = unixToIsoDateUTC(upperUnix + 86400);
+
+    appendLog(
+      `[init] start_date=${sd} chartTf=${chartTf} cursorEnd=${cursorEndUnix} anchorBucket=${anchorBucket} (${new Date(
+        anchorBucket * 1000,
+      ).toISOString()}) apiStart=${apiStart} apiEnd=${apiEnd} padBackSec=${padBack}`,
+    );
+    setBarsLoading(true);
+    setBarsError('');
+    forwardExhaustedRef.current = false;
+    streamDoneRef.current = false;
     void (async () => {
-      setFineBarsLoading(true);
-      setFineBarsError('');
       try {
-        if (busyRef.current) {
-          setChartLoadHoldsSim(true);
-          await authFetch(`${apiBaseUrl}/simulation/pause`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ thread_id: tid }),
-          });
-          if (!alive) {
-            await authFetch(`${apiBaseUrl}/simulation/resume`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ thread_id: tid }),
-            });
-            return;
-          }
-          pausedForThisLoad = true;
-        }
-        const res = await authFetch(`${apiBaseUrl}/simulation/display_bars?${qs}`, {
-          method: 'GET',
-          signal: ac.signal,
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(typeof data.error === 'string' ? data.error : 'Failed to load chart OHLC');
-        }
-        const bars = Array.isArray(data.bars) ? data.bars : [];
-        if (alive) {
-          setFineBars(bars);
+        const fetched = await callDisplayBars(apiStart, apiEnd, ac.signal);
+        if (!alive || ac.signal.aborted || seq !== tfFetchSeqRef.current) return;
+        // Filter STRICTLY before ``upperUnix`` (or ``<=`` anchorBucket on first
+        // init): when switching coarse→fine, the provider returns whole calendar
+        // days and we don't want to show any sub-bars *after* the previous
+        // bucket's end. Take only the last ``want`` rows that survive — which
+        // for intraday TFs naturally clusters near the latest trading minute
+        // before ``upperUnix`` rather than scattering across multiple sessions.
+        const upTo =
+          cursorEndUnix > 0
+            ? fetched.filter((b) => b.unixtime < cursorEndUnix)
+            : fetched.filter((b) => b.unixtime <= anchorBucket);
+        const initial = (upTo.length > 0 ? upTo : fetched).slice(-want);
+        barsRef.current = initial;
+        setBars(initial);
+        setBarsScale(chartTf);
+        if (initial.length > 0) {
+          rightBarUnixRef.current = initial[initial.length - 1].unixtime;
+          setRightBarUnix(initial[initial.length - 1].unixtime);
+          const firstIso = new Date(initial[0].unixtime * 1000).toISOString();
+          const lastIso = new Date(
+            initial[initial.length - 1].unixtime * 1000,
+          ).toISOString();
+          // Bar-times in HH:MM UTC, comma-joined: makes it obvious whether the
+          // chart actually has 4 intraday 4h bars per session or just one.
+          const stamps = initial
+            .map((b) => {
+              const d = new Date(b.unixtime * 1000);
+              const hh = String(d.getUTCHours()).padStart(2, '0');
+              const mm = String(d.getUTCMinutes()).padStart(2, '0');
+              const dd = String(d.getUTCDate()).padStart(2, '0');
+              return `${dd}/${hh}:${mm}`;
+            })
+            .join(',');
+          appendLog(
+            `[init] loaded ${initial.length} bars: first=${initial[0].unixtime}(${firstIso}) last=${initial[initial.length - 1].unixtime}(${lastIso})`,
+          );
+          appendLog(`[init] stamps=${stamps}`);
         }
       } catch (err) {
-        if (ac.signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
-          /* cancelled */
-        } else if (alive) {
-          setFineBars([]);
-          setFineBarsError(err instanceof Error ? err.message : String(err));
-        }
+        if (!alive || ac.signal.aborted) return;
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        setBarsError(err instanceof Error ? err.message : String(err));
       } finally {
-        if (pausedForThisLoad) {
-          try {
-            await authFetch(`${apiBaseUrl}/simulation/resume`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ thread_id: tid }),
-            });
-          } catch {
-            /* ignore */
-          }
-        }
-        if (alive) {
-          setFineBarsLoading(false);
-          setChartLoadHoldsSim(false);
-        }
+        if (alive) setBarsLoading(false);
       }
     })();
-
     return () => {
       alive = false;
       ac.abort();
     };
-  }, [isFinerChart, chartTf, startDate, endDate, threadId, apiBaseUrl, authFetch]);
+  }, [sessionReady, startDate, threadId, chartTf, tfSec, callDisplayBars, bars.length, appendLog]);
 
-  const cursorUnix = useMemo(() => {
-    if (!rawBars.length) return 0;
-    return Math.max(...rawBars.map((b) => b.unixtime));
-  }, [rawBars]);
-  cursorUnixRef.current = cursorUnix;
-
-  const finePool = useMemo(() => {
-    if (!isFinerChart || !fineBars.length || cursorUnix <= 0) return [];
-    return fineBars
-      .filter((b) => b.unixtime <= cursorUnix)
-      .sort((a, b) => a.unixtime - b.unixtime);
-  }, [isFinerChart, fineBars, cursorUnix]);
-
-  /** Reset finer playback only when the sim date range changes — not when switching chart TF. */
+  // ── Playback loop: rAF reveals next bar at ``liveBps``; prefetches more when buffer is low. ─
+  // Effect identity is stable across ``bars`` updates so the rAF clock never resets.
   useEffect(() => {
-    setFineRevealCount(0);
-    playbackAccumRef.current = 0;
-  }, [startDate, endDate]);
+    if (!busy || paused) return undefined;
+    const sd = startDate.trim();
+    const tid = String(threadId || '').trim();
+    if (!sessionReady || !/^\d{4}-\d{2}-\d{2}$/.test(sd) || !tid) return undefined;
 
-  useEffect(() => {
-    setFineRevealCount((c) => Math.min(c, finePool.length));
-  }, [finePool.length]);
-
-  /** After OHLC load for a finer TF (incl. switching 4h→1h mid-run), show all candles through current cursor. */
-  useEffect(() => {
-    if (!isFinerChart) {
-      prevFineBarsLoadingRef.current = false;
-      return;
-    }
-    const wasLoading = prevFineBarsLoadingRef.current;
-    prevFineBarsLoadingRef.current = fineBarsLoading;
-    if (wasLoading && !fineBarsLoading) {
-      const pool = fineBarsRef.current
-        .filter((b) => b.unixtime <= cursorUnixRef.current)
-        .sort((a, b) => a.unixtime - b.unixtime);
-      setFineRevealCount(pool.length);
-      playbackAccumRef.current = 0;
-    }
-  }, [isFinerChart, fineBarsLoading]);
-
-  useEffect(() => {
-    if (
-      !isFinerChart ||
-      fineBarsLoading ||
-      !fineBars.length ||
-      !busy ||
-      simWallClockPaused ||
-      chartLoadHoldsSim
-    ) {
-      return undefined;
-    }
-    let raf = 0;
+    let timer = 0;
     let lastTs = performance.now();
+    let cancelled = false;
+    let lastWatchdogLog = lastTs;
+    let frameCount = 0;
+    // ~30 Hz; ``setInterval`` keeps ticking when the tab is in the background
+    // or DevTools steal focus, unlike ``requestAnimationFrame`` which Chrome
+    // throttles to ~1 Hz (and sometimes pauses entirely) for inactive tabs.
+    const TICK_INTERVAL_MS = 1000 / 30;
+    appendLog('[playback] loop started');
 
-    const tick = (now) => {
-      const dt = Math.min((now - lastTs) / 1000, 0.25);
-      lastTs = now;
-      const bps = Math.max(0.05, liveBpsRef.current);
-      playbackAccumRef.current += bps * dt;
-      let steps = Math.floor(playbackAccumRef.current);
-      if (steps > 0) {
-        playbackAccumRef.current -= steps;
-        steps = Math.min(steps, MAX_FINER_BARS_PER_FRAME);
-        setFineRevealCount((c) => {
-          const pool = fineBarsRef.current
-            .filter((b) => b.unixtime <= cursorUnixRef.current)
-            .sort((a, b) => a.unixtime - b.unixtime);
-          const cap = pool.length;
-          if (cap === 0) return 0;
-          return Math.min(cap, c + steps);
-        });
-      }
-      raf = requestAnimationFrame(tick);
+    const triggerPrefetch = () => {
+      if (prefetchInFlightRef.current) return;
+      if (forwardExhaustedRef.current) return;
+      const sorted = barsRef.current;
+      if (sorted.length === 0) return;
+      const chunkBars = Math.max(2, Math.ceil(liveBpsRef.current * SPEED_PREFETCH_MULT));
+      const lastOpen = sorted[sorted.length - 1].unixtime;
+      const padSec = Math.max(tfSec * 2, 120);
+      // Widen the look-ahead window each time we don't get fresh bars; helps when the
+      // provider's bar timestamps are sparse / lag behind the calendar.
+      const widen = Math.min(8, 1 << prefetchEmptyStreakRef.current);
+      const apiStart = unixToIsoDateUTC(Math.floor(lastOpen + 1));
+      const apiEnd = unixToIsoDateUTC(
+        Math.ceil(lastOpen + ((chunkBars + 5) * tfSec + padSec) * widen),
+      );
+      const seq = tfFetchSeqRef.current;
+      prefetchInFlightRef.current = true;
+      void (async () => {
+        try {
+          const fetched = await callDisplayBars(apiStart, apiEnd);
+          if (seq !== tfFetchSeqRef.current) return;
+          const prev = barsRef.current;
+          const known = new Set(prev.map((b) => b.unixtime));
+          const fresh = fetched.filter((b) => !known.has(b.unixtime));
+          if (fresh.length > 0) {
+            const merged = mergeBars(prev, fetched);
+            barsRef.current = merged;
+            setBars(merged);
+            prefetchEmptyStreakRef.current = 0;
+            appendLog(
+              `[prefetch] +${fresh.length} new (got=${fetched.length}) buf ${prev.length}→${merged.length} widen=${widen}`,
+            );
+          } else {
+            prefetchEmptyStreakRef.current += 1;
+            appendLog(
+              `[prefetch] no new bars (got=${fetched.length} dup-streak=${prefetchEmptyStreakRef.current} widen=${widen})`,
+            );
+            if (prefetchEmptyStreakRef.current >= 3) {
+              forwardExhaustedRef.current = true;
+              appendLog('[prefetch] giving up — provider seems exhausted');
+              setBarsError('No more historical bars available from provider.');
+            }
+          }
+        } catch (err) {
+          if (err instanceof DOMException && err.name === 'AbortError') return;
+          setBarsError(err instanceof Error ? err.message : String(err));
+          appendLog(`[prefetch error] ${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          prefetchInFlightRef.current = false;
+        }
+      })();
     };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [
-    isFinerChart,
-    fineBarsLoading,
-    fineBars.length,
-    liveBps,
-    busy,
-    simWallClockPaused,
-    chartLoadHoldsSim,
-  ]);
 
-  useEffect(() => {
-    if (!busy && isFinerChart && finePool.length > 0) {
-      setFineRevealCount(finePool.length);
-    }
-  }, [busy, isFinerChart, finePool.length]);
+    const tick = () => {
+      if (cancelled) return;
+      try {
+        runTick(performance.now());
+      } catch (err) {
+        appendLog(
+          `[tick error] ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    };
 
-  const chartCandles = useMemo(() => {
-    if (isNativeChart) {
-      if (!rawBars.length) return [];
-      return rawBars.map((b) => {
-        const c = {
-          time: b.unixtime,
-          open: b.ohlc.open,
-          high: b.ohlc.high,
-          low: b.ohlc.low,
-          close: b.ohlc.close,
-        };
-        if (typeof b.ohlc.volume === 'number' && Number.isFinite(b.ohlc.volume)) {
-          c.volume = b.ohlc.volume;
+    const runTick = (now) => {
+      frameCount += 1;
+      const dt = Math.min(0.25, (now - lastTs) / 1000);
+      lastTs = now;
+      playbackAccumRef.current += Math.max(0.05, liveBpsRef.current) * dt;
+      const steps = Math.floor(playbackAccumRef.current);
+      const sorted = barsRef.current;
+      if (sorted.length > 0) {
+        const cur = rightBarUnixRef.current;
+        const ix = cur > 0 ? sorted.findIndex((b) => b.unixtime === cur) : sorted.length - 1;
+        if (steps > 0) {
+          playbackAccumRef.current -= steps;
+          const baseIx = ix < 0 ? sorted.length - 1 : ix;
+          const next = Math.min(sorted.length - 1, baseIx + steps);
+          if (next >= 0 && next > baseIx) {
+            rightBarUnixRef.current = sorted[next].unixtime;
+            setRightBarUnix(sorted[next].unixtime);
+          }
         }
-        return c;
-      });
-    }
-    if (isFinerChart) {
-      if (!finePool.length) return [];
-      const n = Math.min(fineRevealCount, finePool.length);
-      return finePool.slice(0, n).map((b) => {
-        const c = {
-          time: b.unixtime,
-          open: b.ohlc.open,
-          high: b.ohlc.high,
-          low: b.ohlc.low,
-          close: b.ohlc.close,
-        };
-        if (typeof b.ohlc.volume === 'number' && Number.isFinite(b.ohlc.volume)) {
-          c.volume = b.ohlc.volume;
+        const refIx = ix < 0 ? sorted.length - 1 : ix;
+        const tail = sorted.length - 1 - refIx;
+        const lowMark = Math.max(2, Math.ceil(liveBpsRef.current * SPEED_PREFETCH_MULT * 0.5));
+        if (tail <= lowMark && !forwardExhaustedRef.current) {
+          triggerPrefetch();
         }
-        return c;
-      });
-    }
-    if (!rawBars.length) return [];
-    return resampleOhlc(rawBars, chartTf);
-  }, [isNativeChart, isFinerChart, rawBars, finePool, fineRevealCount, chartTf]);
+        if (now - lastWatchdogLog > 1000) {
+          const lastBar = sorted[sorted.length - 1]?.unixtime;
+          appendLog(
+            `[tick] frames/s≈${frameCount} buf=${sorted.length} ix=${refIx} tail=${tail} lowMark=${lowMark} cur=${cur} lastBar=${lastBar} accum=${playbackAccumRef.current.toFixed(2)} pref=${prefetchInFlightRef.current ? 'Y' : 'N'} exh=${forwardExhaustedRef.current ? 'Y' : 'N'}`,
+          );
+          lastWatchdogLog = now;
+          frameCount = 0;
+        }
+        // Halt the loop only when there is genuinely nothing left to reveal:
+        //  * we're at the rightmost loaded bar (``tail<=0``), AND
+        //  * either the provider is exhausted OR the backend already announced
+        //    that the simulation finished (so no more bars / trades will arrive).
+        if (
+          tail <= 0 &&
+          (forwardExhaustedRef.current || streamDoneRef.current)
+        ) {
+          appendLog('[playback] paused at end of available data');
+          setBusy(false);
+          setPaused(false);
+          cancelled = true;
+          return;
+        }
+      } else if (now - lastWatchdogLog > 1000) {
+        appendLog('[tick] empty bars buffer');
+        lastWatchdogLog = now;
+      }
+    };
+    timer = window.setInterval(tick, TICK_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      appendLog('[playback] loop stopped');
+    };
+  }, [busy, paused, sessionReady, startDate, threadId, tfSec, callDisplayBars, appendLog]);
 
-  const chartEquity = useMemo(() => {
-    if (!rawEquity.length) return [];
-    if (isNativeChart) {
-      return rawEquity.map((p) => ({ time: p.unixtime, value: p.equity }));
-    }
-    if (isFinerChart) {
-      return equityOnCandleCloseTimes(chartCandles, rawEquity);
-    }
-    return resampleEquity(rawEquity, chartTf);
-  }, [rawEquity, isNativeChart, isFinerChart, chartCandles, chartTf]);
+  // ── Pan-history (left): TradingView-style — fetch only the whitespace + small pad. ─────
+  const handleVisibleTimeRange = useCallback((range) => {
+    window.clearTimeout(panDebounceRef.current);
+    panDebounceRef.current = window.setTimeout(() => {
+      if (!range || !Number.isFinite(range.from)) return;
+      if (historyInFlightRef.current) return;
+      const sd = startDate.trim();
+      const tid = String(threadId || '').trim();
+      if (!sessionReady || !/^\d{4}-\d{2}-\d{2}$/.test(sd) || !tid) return;
 
-  const chartMarkers = useMemo(() => {
-    let maxTradeUnix = Number.POSITIVE_INFINITY;
-    if (isFinerChart) {
-      const n = Math.min(fineRevealCount, finePool.length);
-      maxTradeUnix = n > 0 ? finePool[n - 1].unixtime : 0;
-    } else if (cursorUnix > 0) {
-      maxTradeUnix = cursorUnix;
-    }
-    return rawTrades
-      .filter((tr) => tr.unixtime <= maxTradeUnix)
-      .map((tr) => {
-        const buy = String(tr.direction || '').toLowerCase() === 'buy';
-        const markerTime = isCoarserChart ? bucketStart(tr.unixtime, chartTf) : tr.unixtime;
-        const dep =
-          typeof tr.deposit_ratio === 'number' && Number.isFinite(tr.deposit_ratio)
-            ? `${Math.round(tr.deposit_ratio * 100)}`
-            : '?';
-        const pr =
-          typeof tr.price === 'number' && Number.isFinite(tr.price) ? tr.price.toFixed(2) : '?';
-        return {
-          time: markerTime,
-          position: buy ? 'belowBar' : 'aboveBar',
-          color: buy ? '#26a69a' : '#ef5350',
-          shape: buy ? 'arrowUp' : 'arrowDown',
-          text: `${buy ? 'BUY' : 'SELL'} @ ${pr} (${dep}% dep.)`,
-        };
-      })
-      .sort((a, b) => a.time - b.time);
-  }, [rawTrades, isCoarserChart, isFinerChart, chartTf, cursorUnix, finePool, fineRevealCount]);
+      const sorted = barsRef.current;
+      if (sorted.length === 0) return;
+      const oldest = sorted[0].unixtime;
+      const whitespaceBars =
+        typeof range.barsBefore === 'number' && range.barsBefore < 0 ? -range.barsBefore : 0;
+      if (whitespaceBars < HISTORY_TRIGGER_BARS) return;
 
+      const want = Math.min(
+        HISTORY_REQUEST_MAX_BARS,
+        Math.max(HISTORY_TRIGGER_BARS + HISTORY_PREFETCH_PAD_BARS, Math.ceil(whitespaceBars) + HISTORY_PREFETCH_PAD_BARS),
+      );
+      // Intraday TFs only see ~6.5h of trading per calendar day, plus weekends
+      // are fully closed. Inflate the wall-clock window so ``want`` bars are
+      // actually reachable, but bound the inflation so daily/weekly TFs don't
+      // pull in months of extra data for a small whitespace.
+      const tradingFractionPerDay = tfSec >= 86400 ? 1 : Math.min(1, (6.5 * 3600) / 86400);
+      const weekendInflation = tfSec >= 86400 ? 1 : 7 / 5;
+      const wantSec = want * tfSec;
+      const inflatedSec = Math.ceil((wantSec / tradingFractionPerDay) * weekendInflation);
+      const minPadSec = tfSec >= 86400 ? 0 : 86400; // ensure apiStart < apiEnd
+      const apiEnd = unixToIsoDateUTC(Math.floor(oldest - 1));
+      const apiStart = unixToIsoDateUTC(
+        Math.floor(oldest - Math.max(inflatedSec + minPadSec, wantSec)),
+      );
+      historyInFlightRef.current = true;
+      const seq = tfFetchSeqRef.current;
+      const ac = new AbortController();
+      appendLogRef.current?.(
+        `[history] pan-left whitespaceBars=${whitespaceBars.toFixed(1)} want=${want} apiStart=${apiStart} apiEnd=${apiEnd}`,
+      );
+      void (async () => {
+        try {
+          const fetched = await callDisplayBars(apiStart, apiEnd, ac.signal);
+          if (ac.signal.aborted || seq !== tfFetchSeqRef.current) return;
+          if (fetched.length === 0) {
+            appendLogRef.current?.('[history] empty response from display_bars');
+            return;
+          }
+          // The provider returns whole calendar days, so for intraday TFs the
+          // response can be massively larger than ``want``. Keep only the
+          // ``want`` newest bars strictly older than ``oldest`` so we extend
+          // the buffer left by exactly the visible whitespace + small pad.
+          const trimmed = fetched
+            .filter((b) => b.unixtime < oldest)
+            .slice(-want);
+          if (trimmed.length === 0) {
+            appendLogRef.current?.(
+              `[history] no bars older than ${oldest} in response (got=${fetched.length})`,
+            );
+            return;
+          }
+          const before = barsRef.current.length;
+          const merged = mergeBars(barsRef.current, trimmed);
+          const added = merged.length - before;
+          appendLogRef.current?.(
+            `[history] +${added} bars (got=${fetched.length} kept=${trimmed.length} buf ${before}→${merged.length})`,
+          );
+          if (trimmed.length > 0) {
+            const stamps = trimmed
+              .map((b) => {
+                const d = new Date(b.unixtime * 1000);
+                const hh = String(d.getUTCHours()).padStart(2, '0');
+                const mm = String(d.getUTCMinutes()).padStart(2, '0');
+                const dd = String(d.getUTCDate()).padStart(2, '0');
+                return `${dd}/${hh}:${mm}`;
+              })
+              .join(',');
+            appendLogRef.current?.(`[history] kept-stamps=${stamps}`);
+          }
+          barsRef.current = merged;
+          setBars(merged);
+        } catch (err) {
+          appendLogRef.current?.(
+            `[history] error: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        } finally {
+          historyInFlightRef.current = false;
+        }
+      })();
+    }, PAN_HISTORY_DEBOUNCE_MS);
+  }, [sessionReady, startDate, threadId, tfSec, callDisplayBars]);
+
+  // ── Stream: trades / equity / status (no bars consumed for chart) ────
   const openStream = useCallback(async () => {
     stopStream();
     const token = await getAccessToken();
@@ -449,20 +574,16 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
       try {
         const payload = JSON.parse(event.data);
         appendLog(JSON.stringify(payload));
-        if (payload?.kind === 'speed' && typeof payload.bps === 'number') {
-          setLiveBps(payload.bps);
-          setSpeedPresetId(presetIdFromBps(payload.bps));
-        }
-        if (payload?.kind === 'bar' && payload.ohlc) {
-          const sc = typeof payload.scale === 'string' ? normalizeTimeframe(payload.scale) : '';
-          setSourceScale((s) => s || sc || '');
-          setRawBars((prev) => {
-            const row = { unixtime: payload.unixtime, ohlc: payload.ohlc };
-            const next = [...prev, row];
-            return next.length > MAX_SIM_BARS ? next.slice(-MAX_SIM_BARS) : next;
-          });
-        } else if (payload?.kind === 'trade') {
-          setRawTrades((prev) => {
+        if (payload?.kind === 'trade') {
+          const tu = Number(payload.unixtime) || 0;
+          const tIso = tu > 0 ? new Date(tu * 1000).toISOString() : '?';
+          const bucket = tu > 0 ? bucketStart(tu, chartTfRef.current) : 0;
+          const bIso = bucket > 0 ? new Date(bucket * 1000).toISOString() : '?';
+          appendLog(
+            `[trade-event] dir=${payload.direction} price=${payload.price} ` +
+              `unixtime=${tu} (${tIso}) bucket@${chartTfRef.current}=${bucket} (${bIso})`,
+          );
+          setTrades((prev) => {
             const row = {
               unixtime: payload.unixtime,
               direction: payload.direction,
@@ -470,13 +591,13 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
               deposit_ratio: payload.deposit_ratio,
             };
             const next = [...prev, row];
-            return next.length > MAX_SIM_TRADES ? next.slice(-MAX_SIM_TRADES) : next;
+            return next.length > MAX_TRADES ? next.slice(-MAX_TRADES) : next;
           });
         } else if (payload?.kind === 'pnl' && typeof payload.equity === 'number') {
-          setRawEquity((prev) => {
+          setEquityPts((prev) => {
             const row = { unixtime: payload.unixtime, equity: payload.equity };
             const next = [...prev, row];
-            return next.length > MAX_SIM_BARS ? next.slice(-MAX_SIM_BARS) : next;
+            return next.length > MAX_OHLC_BARS ? next.slice(-MAX_OHLC_BARS) : next;
           });
         } else if (payload?.kind === 'indicator_series_catalog' && Array.isArray(payload.series)) {
           setIndicatorSeriesCatalog(
@@ -485,22 +606,36 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
               .map((row) => ({
                 name: row.name,
                 description: typeof row.description === 'string' ? row.description : '',
-              }))
+              })),
           );
-        }
-        if (payload?.kind === 'status' && typeof payload.status === 'string') {
-          if (payload.status === 'paused') {
-            setSimWallClockPaused(true);
-          } else if (payload.status === 'running' || payload.status === 'starting') {
-            setSimWallClockPaused(false);
+        } else if (payload?.kind === 'status' && typeof payload.status === 'string') {
+          const rawSc =
+            (typeof payload.strategy_scale === 'string' && payload.strategy_scale) ||
+            (typeof payload.strategyScale === 'string' && payload.strategyScale) ||
+            '';
+          if (rawSc) {
+            const st = normalizeTimeframe(rawSc.trim());
+            if (st) setStrategyTfFromInit(st);
           }
-          if (
-            payload.status === 'done' ||
-            payload.status === 'error' ||
-            payload.status === 'stopped'
-          ) {
-            setBusy(false);
-            setSimWallClockPaused(false);
+          if (payload.status === 'ready') setSessionReady(true);
+          if (payload.status === 'paused') setPaused(true);
+          if (payload.status === 'running' || payload.status === 'starting') setPaused(false);
+          // ``done`` / ``stopped`` mean the *backend* finished — but the chart
+          // typically still has buffered bars that the user has not yet seen,
+          // because the playback loop reveals them at the chosen speed (bps).
+          // Close the stream, but keep ``busy`` true: the playback loop will
+          // self-terminate once it shows the last buffered bar AND prefetch is
+          // exhausted (``streamDoneRef && tail<=0`` branch in the tick fn).
+          if (payload.status === 'done' || payload.status === 'stopped') {
+            streamDoneRef.current = true;
+            stopStream();
+          }
+          if (payload.status === 'error') {
+            const msg =
+              typeof payload.message === 'string' && payload.message
+                ? payload.message
+                : 'Trade stream reported an error; chart playback continues.';
+            setError(msg);
             stopStream();
           }
         }
@@ -509,56 +644,130 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
       }
     };
     es.onerror = () => {
-      appendLog('[stream closed or error]');
-      stopStream();
-      setBusy(false);
-      setSimWallClockPaused(false);
+      const state = es.readyState; // 0 connecting, 1 open, 2 closed
+      appendLog(`[stream closed or error] readyState=${state}`);
+      if (state === 2) {
+        stopStream();
+      }
+      // Don't kill playback on transport errors — chart bars come from a separate
+      // HTTP endpoint. The user can press Stop to fully end the session.
+    };
+    es.onopen = () => {
+      appendLog('[stream open]');
     };
   }, [apiBaseUrl, threadId, getAccessToken, appendLog, stopStream]);
+  const openStreamRef = useRef(openStream);
+  openStreamRef.current = openStream;
 
-  const selectedBps = useMemo(() => {
-    const opt = SPEED_OPTIONS.find((o) => o.id === speedPresetId);
-    return opt ? opt.bps : 2;
-  }, [speedPresetId]);
-
-  async function handleStart() {
-    const tid = String(threadId || '').trim();
-    if (!tid) return;
-    setError('');
-    setBusy(true);
-    setSimWallClockPaused(false);
-    setLogLines([]);
-    setRawBars([]);
-    setRawTrades([]);
-    setRawEquity([]);
-    setSourceScale('');
-    setDisplayTfMode(DISPLAY_TF_NATIVE);
-    setFineBars([]);
-    setFineBarsError('');
-    setChartLoadHoldsSim(false);
-    setFineRevealCount(0);
-    playbackAccumRef.current = 0;
-    prevFineBarsLoadingRef.current = false;
-    setIndicatorSeriesCatalog([]);
+  // ── Init session when start date / thread / epoch changes ─────────────
+  useEffect(() => {
+    setSessionReady(false);
+    setBusy(false);
+    setPaused(false);
     stopStream();
-    const bpsVal = selectedBps;
-    setLiveBps(bpsVal);
+  }, [threadId, stopStream]);
+
+  useEffect(() => {
+    const sd = startDate.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(sd)) {
+      setSessionReady(false);
+      setBusy(false);
+      setInitLoading(false);
+      stopStream();
+      return undefined;
+    }
+    const tid = String(threadId || '').trim();
+    if (!tid) return undefined;
+
+    let cancelled = false;
+    setError('');
+    setInitLoading(true);
+    setSessionReady(false);
+    setBusy(false);
+    setPaused(false);
+    setLogLines([]);
+    setTrades([]);
+    setEquityPts([]);
+    setStrategyTfFromInit('');
+    setIndicatorSeriesCatalog([]);
+    setDisplayTfMode(DISPLAY_TF_NATIVE);
+    setBars([]);
+    setBarsScale('');
+    setBarsError('');
+    setBarsLoading(false);
+    setRightBarUnix(0);
+    barsRef.current = [];
+    rightBarUnixRef.current = 0;
+    lastCursorEndUnixRef.current = 0;
+    playbackAccumRef.current = 0;
+    prefetchInFlightRef.current = false;
+    historyInFlightRef.current = false;
+    forwardExhaustedRef.current = false;
+    streamDoneRef.current = false;
+    prefetchEmptyStreakRef.current = 0;
+    stopStream();
+
+    void (async () => {
+      try {
+        const response = await authFetchRef.current(`${apiBaseUrl}/simulation/init`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            thread_id: tid,
+            start_date: sd,
+            initial_speed_bps: liveBpsRef.current,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!response.ok) {
+          throw new Error(typeof data.error === 'string' ? data.error : 'Failed to init simulation');
+        }
+        setSessionReady(true);
+        const rawSc =
+          (typeof data.strategy_scale === 'string' && data.strategy_scale) ||
+          (typeof data.strategyScale === 'string' && data.strategyScale) ||
+          '';
+        if (rawSc) {
+          const st = normalizeTimeframe(rawSc.trim());
+          if (st) setStrategyTfFromInit(st);
+        }
+        await openStreamRef.current();
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+          setSessionReady(false);
+        }
+      } finally {
+        if (!cancelled) setInitLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [threadId, startDate, initEpoch, apiBaseUrl, stopStream]);
+
+  // ── Controls ─────────────────────────────────────────────────────────
+  async function handlePlay() {
+    const tid = String(threadId || '').trim();
+    if (!tid || !sessionReady) return;
+    setError('');
     try {
-      const response = await authFetch(`${apiBaseUrl}/simulation/start`, {
+      if (!esRef.current) await openStreamRef.current();
+      forwardExhaustedRef.current = false;
+      streamDoneRef.current = false;
+      prefetchEmptyStreakRef.current = 0;
+      playbackAccumRef.current = 0;
+      setBusy(true);
+      const res = await authFetchRef.current(`${apiBaseUrl}/simulation/play`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          thread_id: tid,
-          start_date: startDate,
-          end_date: endDate,
-          initial_speed_bps: bpsVal,
-        }),
+        body: JSON.stringify({ thread_id: tid }),
       });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(typeof data.error === 'string' ? data.error : 'Failed to start simulation');
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(typeof data.error === 'string' ? data.error : 'Play failed');
       }
-      await openStream();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setBusy(false);
@@ -566,15 +775,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
   }
 
   async function handlePause() {
-    await authFetch(`${apiBaseUrl}/simulation/pause`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ thread_id: threadId }),
-    });
-  }
-
-  async function handleResume() {
-    await authFetch(`${apiBaseUrl}/simulation/resume`, {
+    await authFetchRef.current(`${apiBaseUrl}/simulation/pause`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ thread_id: threadId }),
@@ -583,9 +784,12 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
 
   async function handleStop() {
     setBusy(false);
+    setPaused(false);
+    setSessionReady(false);
+    setStrategyTfFromInit('');
     stopStream();
     try {
-      await authFetch(`${apiBaseUrl}/simulation/stop`, {
+      await authFetchRef.current(`${apiBaseUrl}/simulation/stop`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ thread_id: threadId }),
@@ -593,6 +797,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     } catch {
       /* ignore */
     }
+    if (String(startDate || '').trim()) setInitEpoch((n) => n + 1);
   }
 
   async function handleSpeedPresetChange(nextId) {
@@ -601,64 +806,129 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     const opt = SPEED_OPTIONS.find((o) => o.id === nextId);
     if (!opt) return;
     try {
-      const response = await authFetch(`${apiBaseUrl}/simulation/speed`, {
+      const res = await authFetchRef.current(`${apiBaseUrl}/simulation/speed`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ thread_id: threadId, bps: opt.bps }),
       });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
         throw new Error(typeof data.error === 'string' ? data.error : 'Speed change failed');
       }
-      setLiveBps(opt.bps);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   }
 
-  const hasSimThread = Boolean(String(threadId || '').trim());
-  /** Keep the chart block open on finer TF even when the OHLC request fails or returns [] (common for 1m + long ranges). */
-  const showChartArea =
-    chartCandles.length > 0 ||
-    chartEquity.length > 0 ||
-    (isFinerChart &&
-      (fineBarsLoading ||
-        fineBars.length > 0 ||
-        Boolean(fineBarsError) ||
-        rawBars.length > 0 ||
-        hasSimThread));
+  // ── Derived: candles from buffer start up to rightBarUnix (left side is open). ─────────
+  const candles = useMemo(() => {
+    if (!bars.length || normalizeTimeframe(barsScale) !== chartTf) return [];
+    const hi = rightBarUnix > 0 ? rightBarUnix : bars[bars.length - 1].unixtime;
+    return bars
+      .filter((b) => b.unixtime <= hi)
+      .map((b) => {
+        const c = {
+          time: b.unixtime,
+          open: b.ohlc.open,
+          high: b.ohlc.high,
+          low: b.ohlc.low,
+          close: b.ohlc.close,
+        };
+        if (typeof b.ohlc.volume === 'number' && Number.isFinite(b.ohlc.volume)) {
+          c.volume = b.ohlc.volume;
+        }
+        return c;
+      });
+  }, [bars, barsScale, chartTf, rightBarUnix]);
 
-  /** Stable chart instance across TF switches so history is not torn down; data updates in place. */
-  const chartInstanceKey = String(threadId || '').trim() || 'sim';
+  const equity = useMemo(() => {
+    if (!equityPts.length || candles.length === 0) return [];
+    return equityOnCandleCloseTimes(candles, equityPts);
+  }, [equityPts, candles]);
+
+  const markers = useMemo(() => {
+    if (!trades.length || !rightBarUnix) return [];
+    // Trades are emitted at the strategy's native timeframe. Only show their
+    // markers when the user is looking at *that* timeframe; otherwise the
+    // bucketing across TFs would visually shift each trade away from its real
+    // bar.
+    if (knownSourceTf && chartTf !== knownSourceTf) return [];
+    // Hide a marker until its *own* bucket is the right-most rendered bar — or
+    // earlier. Otherwise lightweight-charts would snap the marker to the
+    // nearest existing bar, which makes it visually appear one bar to the left
+    // and "jump" right when the next bar finally opens.
+    const visible = trades.filter(
+      (tr) => bucketStart(tr.unixtime, chartTf) <= rightBarUnix,
+    );
+    if (visible.length > 0) {
+      const first = visible[0];
+      const last = visible[visible.length - 1];
+      const isoFirst = new Date((first.unixtime || 0) * 1000).toISOString();
+      const isoLast = new Date((last.unixtime || 0) * 1000).toISOString();
+      appendLogRef.current?.(
+        `[markers] count=${visible.length} first=${first.unixtime}(${isoFirst}) last=${last.unixtime}(${isoLast}) right=${rightBarUnix}`,
+      );
+    }
+    return visible
+      .map((tr) => {
+        const buy = String(tr.direction || '').toLowerCase() === 'buy';
+        const dep =
+          typeof tr.deposit_ratio === 'number' && Number.isFinite(tr.deposit_ratio)
+            ? `${Math.round(tr.deposit_ratio * 100)}`
+            : '?';
+        const pr =
+          typeof tr.price === 'number' && Number.isFinite(tr.price) ? tr.price.toFixed(2) : '?';
+        return {
+          time: bucketStart(tr.unixtime, chartTf),
+          position: buy ? 'belowBar' : 'aboveBar',
+          color: buy ? '#26a69a' : '#ef5350',
+          shape: buy ? 'arrowUp' : 'arrowDown',
+          text: `${buy ? 'BUY' : 'SELL'} @ ${pr} (${dep}% dep.)`,
+        };
+      })
+      .sort((a, b) => a.time - b.time);
+  }, [trades, rightBarUnix, chartTf, knownSourceTf]);
+
+  const livePlayback = busy && !paused;
+  const showChartArea = sessionReady || initLoading || candles.length > 0 || barsLoading || Boolean(barsError);
+  const chartInstanceKey = `${String(threadId || 'sim')}:${chartTf}`;
 
   return (
     <div className="simulation-panel">
       <p className="simulation-intro muted">
-        The simulation engine and SSE stream always use the strategy timeframe from <code>params.json</code>.{' '}
-        <strong>Speed</strong> applies to <em>what you see on the chart</em>: on a finer chart TF (e.g. 4h) it is{' '}
-        &quot;N {chartTf} bars per second&quot;; on native or aggregated TF it matches the strategy bar stream. For the
-        chart you can stay <strong>native</strong>, load <strong>finer market OHLC</strong>, or <strong>aggregate</strong>{' '}
-        to a coarser TF.
+        Pick a <strong>Start</strong> date to prepare the session (backend <code>POST /simulation/init</code>); then press{' '}
+        <strong>Play</strong> to stream bars. Chart OHLC always comes from <code>GET /simulation/display_bars</code>.
+        Trades are streamed from <code>/simulation/stream</code>.
       </p>
       <div className="simulation-controls-row">
         <label className="simulation-field">
           <span>Start</span>
-          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} disabled={busy} />
+          <button
+            type="button"
+            className="simulation-date-trigger"
+            disabled={busy || initLoading}
+            onClick={() => setDatePickerOpen(true)}
+          >
+            {startDate.trim() ? startDate : 'Выберите дату'}
+          </button>
         </label>
-        <label className="simulation-field">
-          <span>End</span>
-          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} disabled={busy} />
-        </label>
+        <DateTimePickerModal
+          open={datePickerOpen}
+          value={startDate}
+          onClose={() => setDatePickerOpen(false)}
+          onConfirm={(iso) => {
+            setStartDate(iso);
+            setDatePickerOpen(false);
+          }}
+          disabled={busy || initLoading}
+          maxDate={isoDateLocal(new Date())}
+        />
         <label className="simulation-field">
           <span>Speed</span>
           <select
             value={speedPresetId}
             onChange={(e) => void handleSpeedPresetChange(e.target.value)}
-            title={
-              isFinerChart
-                ? `Chart: ${liveBps} ${chartTf} bars per second (strategy stream may be a different TF)`
-                : 'Strategy stream: bars per second (native / aggregated chart)'
-            }
+            title="Chart bar reveal rate (bars/second)"
           >
             {SPEED_OPTIONS.map((o) => (
               <option key={o.id} value={o.id}>
@@ -667,14 +937,16 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
             ))}
           </select>
         </label>
-        <button type="button" className="simulation-btn-primary" disabled={busy} onClick={() => void handleStart()}>
-          {busy ? 'Running…' : 'Run simulation'}
+        <button
+          type="button"
+          className="simulation-btn"
+          disabled={!sessionReady || (busy && !paused)}
+          onClick={() => void handlePlay()}
+        >
+          Play
         </button>
         <button type="button" className="simulation-btn" disabled={!busy} onClick={() => void handlePause()}>
           Pause
-        </button>
-        <button type="button" className="simulation-btn" disabled={!busy} onClick={() => void handleResume()}>
-          Resume
         </button>
         <button type="button" className="simulation-btn" onClick={() => void handleStop()}>
           Stop
@@ -682,104 +954,67 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
       </div>
       {error ? <p className="simulation-error">{error}</p> : null}
       {showChartArea ? (
-        <div className="simulation-chart-section" aria-busy={chartTfSwitching}>
+        <div className="simulation-chart-section">
           <div className="simulation-chart-toolbar">
             <label className="simulation-field simulation-field--inline">
               <span>Chart TF</span>
               <select
-                value={displayTfMode}
-                onChange={(e) => setDisplayTfMode(e.target.value)}
-                title="Native = strategy stream; finer = market OHLC for chart; coarser = aggregate buffered bars"
+                value={chartTf}
+                onChange={(e) => {
+                  const tf = normalizeTimeframe(e.target.value);
+                  if (!tf) return;
+                  if (knownSourceTf && knownSourceTf === tf) {
+                    setDisplayTfMode(DISPLAY_TF_NATIVE);
+                  } else {
+                    setDisplayTfMode(tf);
+                  }
+                }}
+                title="Timeframe of the candles on this chart."
               >
-                {chartTfOptions.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
+                {chartTfChoices.map((tf) => (
+                  <option key={tf} value={tf}>
+                    {tf}
+                    {knownSourceTf === tf ? ' (strategy timeframe)' : ''}
                   </option>
                 ))}
               </select>
             </label>
-            <span className="simulation-source-tf muted">
-              Strategy stream: <code>{knownSource || '…'}</code>
-              <span className="simulation-tf-mode">
-                {' '}
-                · chart:{' '}
-                {isNativeChart ? (
-                  'native'
-                ) : isFinerChart ? (
-                  <>
-                    {chartTf} <span className="simulation-tf-sub">(market)</span>
-                  </>
-                ) : (
-                  <>
-                    {chartTf} <span className="simulation-tf-sub">(aggregated)</span>
-                  </>
-                )}
-              </span>
-            </span>
-            {fineBarsError ? <span className="simulation-error simulation-error--inline">{fineBarsError}</span> : null}
-            {fineBarsLoading ? (
-              <span className="simulation-fine-loading muted">
-                {chartLoadHoldsSim
-                  ? 'Simulation paused — loading intraday OHLC, then resuming…'
-                  : 'Loading intraday OHLC…'}
-              </span>
+            {barsError ? (
+              <span className="simulation-error simulation-error--inline">{barsError}</span>
             ) : null}
-            {isFinerChart && fineBars.length > 0 && cursorUnix <= 0 ? (
-              <span className="simulation-tf-hint muted">
-                Intraday series loaded; candles appear as the simulation advances in time.
-              </span>
+            {barsLoading ? (
+              <span className="simulation-fine-loading muted">Loading chart OHLC…</span>
             ) : null}
           </div>
-          {chartCandles.length > 0 || chartEquity.length > 0 ? (
+          {candles.length > 0 ? (
             <SimulationCharts
               key={chartInstanceKey}
-              candles={chartCandles}
-              equity={chartEquity}
-              markers={chartMarkers}
+              candles={candles}
+              equity={equity}
+              markers={markers}
+              chartTf={chartTf}
               indicatorSeriesCatalog={indicatorSeriesCatalog}
+              lockedVisibleRange={null}
+              livePlayback={livePlayback}
+              viewportCapped={false}
+              onVisibleTimeRangeChange={handleVisibleTimeRange}
             />
-          ) : isFinerChart ? (
+          ) : (
             <p className="simulation-charts-placeholder muted">
-              {fineBarsLoading
-                ? 'Fetching OHLC for the selected chart timeframe…'
-                : fineBarsError
-                  ? fineBarsError
-                  : fineBars.length === 0
-                    ? `No ${chartTf} OHLC for this date range (empty response). Check the market data provider or try a shorter range if the request times out.`
-                    : 'No candles yet — run the simulation to reveal intraday bars up to the current strategy step.'}
+              {barsLoading ? 'Loading chart OHLC…' : barsError || 'Pick a Start date and press Play to stream bars.'}
             </p>
-          ) : null}
-          {chartTfSwitching ? (
-            <div
-              className="simulation-chart-tf-loader-overlay"
-              role="status"
-              aria-live="polite"
-              aria-label="Switching chart timeframe"
-            >
-              <div className="simulation-chart-tf-loader-spinner" aria-hidden />
-              <div className="simulation-chart-tf-loader-text">
-                <span className="simulation-chart-tf-loader-title">Switching timeframe…</span>
-                {isFinerChart ? (
-                  <span className="simulation-chart-tf-loader-sub muted">
-                    {chartLoadHoldsSim
-                      ? 'Simulation is paused while intraday OHLC loads, then it resumes.'
-                      : 'Loading market OHLC for this chart resolution.'}
-                  </span>
-                ) : (
-                  <span className="simulation-chart-tf-loader-sub muted">Rebuilding the chart from streamed bars.</span>
-                )}
-              </div>
-            </div>
-          ) : null}
+          )}
         </div>
       ) : (
-        <p className="simulation-charts-placeholder muted">Charts appear after the first streamed bars.</p>
+        <p className="simulation-charts-placeholder muted">
+          Pick a Start date to prepare the session, then Play to stream bars.
+        </p>
       )}
       <details className="simulation-log-details">
         <summary>Event log</summary>
         <div className="simulation-log" aria-label="Simulation event log">
           {logLines.length === 0 ? (
-            <p className="muted">No events yet. Choose dates and run.</p>
+            <p className="muted">No events yet. Choose Start, then Play.</p>
           ) : (
             logLines.map((line, i) => (
               <div key={`${i}-${line.slice(0, 24)}`} className="simulation-log-line">

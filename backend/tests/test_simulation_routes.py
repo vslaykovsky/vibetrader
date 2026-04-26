@@ -11,15 +11,14 @@ _spec.loader.exec_module(_flask)
 create_app = _flask.create_app
 
 
-def test_simulation_start_requires_auth():
+def test_simulation_init_requires_auth():
     app = create_app()
     client = app.test_client()
     response = client.post(
-        "/simulation/start",
+        "/simulation/init",
         json={
             "thread_id": "00000000-0000-4000-8000-000000000001",
             "start_date": "2024-01-01",
-            "end_date": "2024-01-05",
         },
     )
     assert response.status_code == 401

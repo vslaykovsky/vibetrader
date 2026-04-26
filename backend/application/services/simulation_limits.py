@@ -102,3 +102,29 @@ def simulation_start_validation_error(
     """Only calendar span; OHLC is loaded in chunks at the strategy timeframe (see ``HistoricalBarsQuery``)."""
     _ = (scale, params_path)  # API compatibility / future use
     return simulation_date_span_error(start, end)
+
+
+def min_calendar_end_covering_bar_count(
+    start: date, scale: str, min_bars: int, *, max_days: int = 365 * 20
+) -> date:
+    """Smallest ``end >= start`` with ``estimate_source_bar_count(start, end, scale) >= min_bars``."""
+    if min_bars <= 1:
+        return start
+    lo, hi = 0, int(max_days)
+    best = start + timedelta(days=hi)
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        end = start + timedelta(days=mid)
+        n = estimate_source_bar_count(start, end, scale)
+        if n >= min_bars:
+            best = end
+            hi = mid - 1
+        else:
+            lo = mid + 1
+    return best
+
+
+def simulation_init_validation_error(start: date) -> str | None:
+    """Optional checks for ``POST /simulation/init`` (no user-provided end date)."""
+    _ = start
+    return None

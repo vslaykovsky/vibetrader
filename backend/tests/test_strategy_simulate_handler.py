@@ -5,28 +5,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from application.schemas.simulation_dto import StartSimulationCommand
+from application.schemas.simulation_dto import InitSimulationCommand
 from application.services.simulation_registry import SimulationRegistry
 from application.use_cases.strategy_simulate import StrategySimulateCommandHandler
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
-
-
-class InstantPace:
-    def wait_next(self) -> None:
-        return
-
-    def pause(self) -> None:
-        return
-
-    def resume(self) -> None:
-        return
-
-    def stop(self) -> None:
-        return
-
-    def change_speed(self, bps: float) -> None:
-        return
 
 
 class FakeBarsQuery:
@@ -91,18 +74,17 @@ def test_simulation_handler_echo_emits_bars_in_date_range():
     handler = StrategySimulateCommandHandler(
         registry,
         FakeBarsQuery(df),
-        pacing_factory=lambda _bps: InstantPace(),
+        strategy_v2_workspace_parent=FIXTURES_DIR,
+        strategy_entry_script="echo_strategy.py",
     )
-    cmd = StartSimulationCommand(
+    cmd = InitSimulationCommand(
         user_id="user-1",
         thread_id="thread-1",
         start_date=date(2024, 1, 3),
-        end_date=date(2024, 1, 5),
         initial_speed_bps=10.0,
-        strategy_workspace=FIXTURES_DIR,
-        strategy_entry="echo_strategy.py",
     )
-    handler.start(cmd)
+    handler.init(cmd)
+    handler.play("user-1", "thread-1")
     sess = registry.get("user-1", "thread-1")
     assert sess is not None
     events = _collect_events(sess, timeout=15.0)
@@ -110,7 +92,7 @@ def test_simulation_handler_echo_emits_bars_in_date_range():
     cat_events = [e for e in events if e.get("kind") == "indicator_series_catalog"]
     assert len(cat_events) == 1
     assert cat_events[0]["series"][0]["name"] == "echo_sig"
-    assert kinds.count("bar") == 3
+    assert kinds.count("bar") == 8
     bar_events = [e for e in events if e.get("kind") == "bar"]
     assert bar_events[0]["ohlc"]["volume"] == 1_000.0
     assert "done" in [e.get("status") for e in events if e.get("kind") == "status"]

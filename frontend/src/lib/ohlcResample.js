@@ -8,12 +8,14 @@ const TF_RANK = {
   '1w': 5,
 };
 
-const TF_SECONDS = {
+/** Bar length in seconds (UTC) for spacing / windows; ``1w`` is 7× daily. */
+export const TF_SECONDS = {
   '1m': 60,
   '15m': 15 * 60,
   '1h': 3600,
   '4h': 4 * 3600,
   '1d': 86400,
+  '1w': 7 * 86400,
 };
 
 export const DISPLAY_TF_OPTIONS = ['1m', '15m', '1h', '4h', '1d', '1w'];

@@ -11,10 +11,10 @@ import pandas as pd
 from flask import Blueprint, Response, g, jsonify, request
 
 from application.queries.historical_bars import HistoricalBarsQuery, scale_to_timeframe
-from application.schemas.simulation_dto import StartSimulationCommand
+from application.schemas.simulation_dto import InitSimulationCommand
 from application.services.simulation_limits import (
     simulation_date_span_error,
-    simulation_start_validation_error,
+    simulation_init_validation_error,
 )
 from application.services.simulation_registry import SimulationRegistry
 from application.use_cases.strategy_simulate import StrategySimulateCommandHandler
@@ -45,7 +45,6 @@ def _parse_iso_date(label: str, raw: str) -> date | None:
 
 
 _STRATEGY_PARAMS_PATH = Path(__file__).resolve().parents[1] / "strategies_v2" / "params.json"
-_STRATEGIES_V2_ROOT = Path(__file__).resolve().parents[1] / "strategies_v2"
 
 
 def _read_strategy_ticker() -> str:
@@ -95,21 +94,18 @@ def _parse_bps(raw: object) -> float:
     return max(0.1, min(bps, 1e6))
 
 
-@simulation_blueprint.post("/simulation/start")
+@simulation_blueprint.post("/simulation/init")
 @require_auth
-def simulation_start() -> tuple:
+def simulation_init() -> tuple:
     uid = str(g.user_id)
     payload = request.get_json(silent=True) or {}
     thread_id = str(payload.get("thread_id", "")).strip()
     if not thread_id or not thread_id_allowed(thread_id):
         return _bad("invalid or missing thread_id")
     start_d = _parse_iso_date("start_date", str(payload.get("start_date", "")))
-    end_d = _parse_iso_date("end_date", str(payload.get("end_date", "")))
-    if start_d is None or end_d is None:
-        return _bad("start_date and end_date are required (YYYY-MM-DD)")
-    if start_d > end_d:
-        return _bad("start_date must be on or before end_date")
-    lim_err = simulation_start_validation_error(start_d, end_d)
+    if start_d is None:
+        return _bad("start_date is required (YYYY-MM-DD)")
+    lim_err = simulation_init_validation_error(start_d)
     if lim_err:
         return _bad(lim_err)
     deposit = payload.get("initial_deposit", 10_000.0)
@@ -120,31 +116,34 @@ def simulation_start() -> tuple:
     if initial_deposit <= 0:
         return _bad("initial_deposit must be positive")
     bps = _parse_bps(payload.get("initial_speed_bps", 1.0))
-    sim_scale_raw = payload.get("simulation_scale")
-    sim_scale: str | None = None
-    if isinstance(sim_scale_raw, str) and sim_scale_raw.strip():
+    scale_raw = payload.get("initial_scale")
+    initial_scale: str | None = None
+    if isinstance(scale_raw, str) and scale_raw.strip():
         try:
-            scale_to_timeframe(sim_scale_raw)
+            scale_to_timeframe(scale_raw)
         except ValueError:
-            return _bad(f"unsupported simulation_scale {sim_scale_raw!r}")
-        sim_scale = sim_scale_raw.strip().lower()
-    cmd = StartSimulationCommand(
+            return _bad(f"unsupported initial_scale {scale_raw!r}")
+        initial_scale = scale_raw.strip().lower()
+    cmd = InitSimulationCommand(
         user_id=uid,
         thread_id=thread_id,
         start_date=start_d,
-        end_date=end_d,
         initial_speed_bps=bps,
         initial_deposit=initial_deposit,
-        strategy_workspace=_STRATEGIES_V2_ROOT / thread_id,
-        strategy_entry="strategy.py",
-        simulation_scale=sim_scale,
+        initial_scale=initial_scale,
     )
     try:
-        _handler.start(cmd)
+        strategy_scale = _handler.init(cmd)
     except Exception as exc:
-        logger.exception("simulation start failed", extra={"thread_id": thread_id})
+        logger.exception("simulation init failed", extra={"thread_id": thread_id})
         return _bad(str(exc)[:512], 500)
-    return jsonify({"ok": True, "thread_id": thread_id}), 200
+    return jsonify(
+        {
+            "ok": True,
+            "thread_id": thread_id,
+            "strategy_scale": strategy_scale,
+        }
+    ), 200
 
 
 @simulation_blueprint.post("/simulation/pause")
@@ -159,15 +158,15 @@ def simulation_pause() -> tuple:
     return jsonify({"ok": True}), 200
 
 
-@simulation_blueprint.post("/simulation/resume")
+@simulation_blueprint.post("/simulation/play")
 @require_auth
-def simulation_resume() -> tuple:
+def simulation_play() -> tuple:
     uid = str(g.user_id)
     payload = request.get_json(silent=True) or {}
     thread_id = str(payload.get("thread_id", "")).strip()
     if not thread_id or not thread_id_allowed(thread_id):
         return _bad("invalid or missing thread_id")
-    _handler.resume(uid, thread_id)
+    _handler.play(uid, thread_id)
     return jsonify({"ok": True}), 200
 
 
@@ -190,13 +189,18 @@ def simulation_speed() -> tuple:
 @simulation_blueprint.get("/simulation/display_bars")
 @require_auth
 def simulation_display_bars() -> tuple:
-    """Historical OHLC at ``scale`` for chart when user wants a finer TF than the strategy stream.
+    """Historical OHLC at ``scale`` for the chart (independent of strategy stream OHLC).
+
+    Optional ``chart_last_bar_unixtime`` (Unix seconds, bar **open** time in the same ``scale``)
+    is forwarded to the active simulation session while the worker is running so the engine
+    stays 100 base-scale bars ahead of the chart cursor for ``/stream``.
 
     Uses the same ticker as ``strategies_v2/params.json``. The calendar span is capped (same as
     simulation). If the estimated bar count for the full range exceeds the per-fetch budget, the
     host loads **multiple contiguous date windows** (each within the bar cap) and merges the
     result so the client still receives one ``bars`` array.
     """
+    uid = str(g.user_id)
     thread_id = request.args.get("thread_id", "").strip()
     if not thread_id or not thread_id_allowed(thread_id):
         return _bad("invalid or missing thread_id")
@@ -222,10 +226,40 @@ def simulation_display_bars() -> tuple:
     except Exception as exc:
         logger.exception("display_bars fetch failed", extra={"ticker": ticker, "scale": scale})
         return _bad(str(exc)[:512], 500)
+    raw_anchor = (request.args.get("chart_last_bar_unixtime") or "").strip()
+    if raw_anchor:
+        try:
+            anchor_u = int(raw_anchor)
+            if anchor_u > 0:
+                _handler.notify_display_anchor(
+                    uid,
+                    thread_id,
+                    chart_last_bar_unixtime=anchor_u,
+                    chart_scale=scale,
+                )
+        except ValueError:
+            pass
+
     if merged.empty:
+        logger.info(
+            "display_bars empty ticker=%s scale=%s start=%s end=%s",
+            ticker, scale, start_d.isoformat(), end_d.isoformat(),
+        )
         return jsonify(
             {"ticker": ticker, "scale": scale, "bars": [], "chunks_fetched": chunks_n}
         ), 200
+    if scale not in ("1d", "1w") and not merged.empty:
+        try:
+            from collections import Counter
+            hours = Counter(int(t.hour) for t in merged.index)
+            logger.info(
+                "display_bars intraday ticker=%s scale=%s rows=%s first=%s last=%s hours=%s",
+                ticker, scale, len(merged.index),
+                merged.index[0].isoformat(), merged.index[-1].isoformat(),
+                dict(sorted(hours.items())),
+            )
+        except Exception:
+            pass
     return jsonify(
         {
             "ticker": ticker,

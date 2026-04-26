@@ -1,9 +1,12 @@
 import json
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal, Optional
+from typing import Annotated, Any, Callable, Literal, Optional
+
+logger = logging.getLogger(__name__)
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
@@ -259,6 +262,15 @@ def _drop_wide_spread_bars(df: pd.DataFrame) -> pd.DataFrame:
     keep &= spread <= 0.3 * hi
     keep &= spread <= 0.3 * lo
     keep &= body <= 0.3 * op
+    dropped = int((~keep).sum())
+    if dropped > 0:
+        logger.info(
+            "_drop_wide_spread_bars filtered %s of %s rows (kept=%s); first_dropped_idx=%s",
+            dropped,
+            len(out),
+            int(keep.sum()),
+            out.index[~keep][0] if dropped else None,
+        )
     return out.loc[keep]
 
 
@@ -269,6 +281,33 @@ def _end_datetime_capped_yesterday(end_test_date: str) -> datetime:
     if end.date() > cap_date:
         return datetime.combine(cap_date, end.time(), tzinfo=end.tzinfo)
     return end
+
+
+def _end_datetime_inclusive_eod(end_test_date: str) -> datetime:
+    """Treat ``end_test_date`` (ISO date) as the *inclusive end of that day*.
+
+    Most provider clients (Alpaca, MOEX) accept ``end`` as an exclusive
+    timestamp boundary; if we forward ``YYYY-MM-DD`` directly it parses to
+    ``00:00:00`` and the entire trading session of that calendar day is
+    excluded from the response. By bumping ``end`` to the *next* midnight
+    UTC (still capped at *yesterday*'s next-midnight to respect the
+    subscription) we correctly include intraday bars from the requested
+    end date — fixes the pan-history hole at the boundary between
+    ``oldest-1`` and ``oldest`` for 4h / 1h / 1m timeframes."""
+    capped = _end_datetime_capped_yesterday(end_test_date)
+    return capped + timedelta(days=1)
+
+
+def _clamp_request_window(
+    start_test_date: str, end_test_date: str
+) -> tuple[str, str] | None:
+    """Cap ``end`` at *yesterday* (provider subscription limit). Return ``None`` when
+    the resulting window has ``start > end`` and no provider call should be made."""
+    cap_end = _end_datetime_capped_yesterday(end_test_date)
+    start_dt = datetime.fromisoformat(start_test_date)
+    if start_dt.date() > cap_end.date():
+        return None
+    return start_test_date, cap_end.date().isoformat()
 
 
 def _market_data_provider_name(provider: Optional[str]) -> str:
@@ -345,7 +384,10 @@ def _fetch_alpaca_bars(
     api_key, secret_key = _alpaca_keys()
     client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
     start = datetime.fromisoformat(start_test_date) - timedelta(days=int(history_padding_days))
-    end = _end_datetime_capped_yesterday(end_test_date)
+    # ``end`` is *inclusive* end-of-day (next-midnight UTC, capped at
+    # subscription cap). Without this, intraday bars on the boundary day
+    # are silently dropped because ``2026-03-24`` parses to ``00:00:00``.
+    end = _end_datetime_inclusive_eod(end_test_date)
     request = StockBarsRequest(
         symbol_or_symbols=ticker,
         start=start,
@@ -363,6 +405,90 @@ def _fetch_alpaca_bars(
     return _drop_wide_spread_bars(_as_ohlcv_dataframe(df))
 
 
+_ProviderFetcher = Callable[[str, str, str, int, TimeFrame], pd.DataFrame]
+
+
+def _fetch_with_shrink_retry(
+    fetcher: _ProviderFetcher,
+    *,
+    ticker: str,
+    start_test_date: str,
+    end_test_date: str,
+    history_padding_days: int,
+    timeframe: TimeFrame,
+) -> pd.DataFrame:
+    """Call ``fetcher``; on failure, halve the request window from the *left* (move
+    ``start`` toward ``end``) and retry until the window collapses. Returns an empty
+    DataFrame instead of raising once the window is empty — symmetric with how
+    providers behave when there is simply no data available."""
+    clamped = _clamp_request_window(start_test_date, end_test_date)
+    if clamped is None:
+        return pd.DataFrame()
+    cur_start_s, cur_end_s = clamped
+    cur_start = datetime.fromisoformat(cur_start_s)
+    cur_end = datetime.fromisoformat(cur_end_s)
+    last_exc: Exception | None = None
+    while cur_start.date() <= cur_end.date():
+        try:
+            return fetcher(
+                ticker,
+                cur_start.date().isoformat(),
+                cur_end.date().isoformat(),
+                history_padding_days,
+                timeframe,
+            )
+        except Exception as exc:
+            last_exc = exc
+            span_days = (cur_end.date() - cur_start.date()).days
+            if span_days <= 0:
+                break
+            history_padding_days = 0
+            cur_start = cur_start + timedelta(days=max(1, span_days // 2))
+    if last_exc is not None:
+        logger.warning(
+            "fetch_with_shrink_retry exhausted ticker=%s start=%s end=%s last_error=%s",
+            ticker,
+            start_test_date,
+            end_test_date,
+            last_exc,
+        )
+    return pd.DataFrame()
+
+
+def _fetch_alpaca_with_retry(
+    ticker: str,
+    start_test_date: str,
+    end_test_date: str,
+    history_padding_days: int,
+    timeframe: TimeFrame,
+) -> pd.DataFrame:
+    return _fetch_with_shrink_retry(
+        _fetch_alpaca_bars,
+        ticker=ticker,
+        start_test_date=start_test_date,
+        end_test_date=end_test_date,
+        history_padding_days=history_padding_days,
+        timeframe=timeframe,
+    )
+
+
+def _fetch_moex_with_retry(
+    ticker: str,
+    start_test_date: str,
+    end_test_date: str,
+    history_padding_days: int,
+    timeframe: TimeFrame,
+) -> pd.DataFrame:
+    return _fetch_with_shrink_retry(
+        _fetch_moex_bars,
+        ticker=ticker,
+        start_test_date=start_test_date,
+        end_test_date=end_test_date,
+        history_padding_days=history_padding_days,
+        timeframe=timeframe,
+    )
+
+
 def fetch_stock_bars(
     ticker: str,
     start_test_date: str,
@@ -373,7 +499,7 @@ def fetch_stock_bars(
 ) -> pd.DataFrame:
     provider = _market_data_provider_name(provider=provider)
     if provider == "alpaca":
-        return _fetch_alpaca_bars(
+        return _fetch_alpaca_with_retry(
             ticker=ticker,
             start_test_date=start_test_date,
             end_test_date=end_test_date,
@@ -381,7 +507,7 @@ def fetch_stock_bars(
             timeframe=timeframe,
         )
     if provider == "moex":
-        return _fetch_moex_bars(
+        return _fetch_moex_with_retry(
             ticker=ticker,
             start_test_date=start_test_date,
             end_test_date=end_test_date,
@@ -389,32 +515,40 @@ def fetch_stock_bars(
             timeframe=timeframe,
         )
 
-    # auto mode: try Alpaca first for global symbols; fallback to MOEX.
+    # auto mode: try Alpaca first for global symbols; fallback to MOEX. Each provider
+    # already shrinks its own window on transient failures; we still surface a combined
+    # error if BOTH providers raise outright before any data could be retrieved.
     alpaca_exc: Exception | None = None
     try:
-        return _fetch_alpaca_bars(
+        df = _fetch_alpaca_with_retry(
             ticker=ticker,
             start_test_date=start_test_date,
             end_test_date=end_test_date,
             history_padding_days=history_padding_days,
             timeframe=timeframe,
         )
+        if not df.empty:
+            return df
     except Exception as exc:
         alpaca_exc = exc
 
     try:
-        return _fetch_moex_bars(
+        df = _fetch_moex_with_retry(
             ticker=ticker,
             start_test_date=start_test_date,
             end_test_date=end_test_date,
             history_padding_days=history_padding_days,
             timeframe=timeframe,
         )
+        if not df.empty:
+            return df
     except Exception as moex_exc:
         raise RuntimeError(
             "Unable to fetch market data with auto provider selection. "
             f"Alpaca error: {alpaca_exc}; MOEX error: {moex_exc}"
         ) from moex_exc
+
+    return pd.DataFrame()
 
 
 def fetch_crypto_bars(

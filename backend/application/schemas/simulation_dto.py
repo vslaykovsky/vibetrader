@@ -2,25 +2,38 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
 from typing import Any, Literal
 
 SimulationStatus = Literal["starting", "running", "paused", "done", "error", "stopped"]
 
 
-@dataclass(frozen=True)
-class StartSimulationCommand:
+@dataclass(init=False)
+class InitSimulationCommand:
+    """Start historical replay from ``start_date`` with a forward bar window sized by the host."""
+
     user_id: str
     thread_id: str
     start_date: date
-    end_date: date
-    initial_speed_bps: float = 1.0
-    initial_deposit: float = 10_000.0
-    """Override for tests (default: ``backend/strategies_v2``)."""
-    strategy_workspace: Path | None = None
-    strategy_entry: str = "strategy.py"
-    simulation_scale: str | None = None
-    """Driver bar resolution override (e.g. ``1h``). ``None`` → use ``params.json`` value or strategy ``scale``."""
+    initial_speed_bps: float
+    initial_deposit: float
+    initial_scale: str | None
+
+    def __init__(
+        self,
+        *,
+        user_id: str,
+        thread_id: str,
+        start_date: date,
+        initial_speed_bps: float = 1.0,
+        initial_deposit: float = 10_000.0,
+        initial_scale: str | None = None,
+    ) -> None:
+        self.user_id = user_id
+        self.thread_id = thread_id
+        self.start_date = start_date
+        self.initial_speed_bps = initial_speed_bps
+        self.initial_deposit = initial_deposit
+        self.initial_scale = initial_scale
 
 
 def simulation_event(kind: str, **fields: Any) -> dict[str, Any]:

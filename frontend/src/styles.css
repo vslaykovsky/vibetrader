@@ -3154,11 +3154,6 @@ html[data-theme='dark'] .simulation-btn-primary:hover:not(:disabled) {
   font-size: 0.78rem;
 }
 
-.simulation-tf-sub {
-  font-weight: 500;
-  opacity: 0.85;
-}
-
 .simulation-fine-loading {
   margin-left: 8px;
   font-size: 0.78rem;
@@ -3278,15 +3273,6 @@ html[data-theme='dark'] .simulation-btn-primary:hover:not(:disabled) {
   cursor: not-allowed;
 }
 
-.simulation-source-tf {
-  font-size: 0.78rem;
-}
-
-.simulation-tf-mode {
-  font-weight: 600;
-  color: var(--text);
-}
-
 .simulation-tf-hint {
   flex: 1 1 200px;
   font-size: 0.78rem;
@@ -3358,4 +3344,344 @@ html[data-theme='dark'] .simulation-btn-primary:hover:not(:disabled) {
 
 .simulation-log-details .simulation-log {
   margin-top: 4px;
+}
+
+/* --- TradingView-style date/time modal (simulation start, etc.) --- */
+.dt-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--sidebar-backdrop-bg);
+}
+
+.dt-modal {
+  width: 100%;
+  max-width: 320px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font-size: 0.9rem;
+}
+
+.dt-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dt-modal-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.dt-modal-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: -6px -8px -6px 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.35rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.dt-modal-close:hover {
+  background: var(--sidebar-hover-bg);
+  color: var(--text);
+}
+
+.dt-modal-inputs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 12px 16px;
+}
+
+.dt-modal-input-wrap {
+  position: relative;
+  display: block;
+}
+
+.dt-modal-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 32px 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.dt-modal-input:focus {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.dt-modal-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.dt-modal-input-icon {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  pointer-events: none;
+  display: flex;
+}
+
+.dt-modal-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 12px 8px;
+}
+
+.dt-modal-nav-btn {
+  flex: 0 0 36px;
+  height: 36px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.dt-modal-nav-btn:hover:not(:disabled) {
+  background: var(--sidebar-hover-bg);
+}
+
+.dt-modal-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.dt-modal-nav-title {
+  flex: 1;
+  text-align: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.95rem;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.dt-modal-nav-title:hover:not(:disabled) {
+  background: var(--sidebar-hover-bg);
+}
+
+.dt-modal-nav-title--static {
+  cursor: default;
+  font-weight: 600;
+}
+
+.dt-modal-nav-title--static:hover {
+  background: transparent;
+}
+
+.dt-modal-section-label {
+  margin: 0 12px 6px;
+  padding: 6px 0;
+  text-align: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--table-header-bg);
+  border-radius: 6px;
+}
+
+.dt-modal-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  padding: 0 12px 4px;
+  text-align: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.dt-modal-weekday {
+  padding: 4px 0;
+}
+
+.dt-modal-grid {
+  display: grid;
+  gap: 4px;
+  padding: 4px 12px 12px;
+}
+
+.dt-modal-grid--days {
+  grid-template-columns: repeat(7, 1fr);
+}
+
+.dt-modal-grid--months {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.dt-modal-grid--years {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.dt-modal-day {
+  aspect-ratio: 1;
+  max-height: 40px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.dt-modal-day--pad {
+  pointer-events: none;
+}
+
+.dt-modal-day:hover:not(:disabled):not(.dt-modal-day--pad) {
+  background: var(--sidebar-hover-bg);
+}
+
+.dt-modal-day--selected {
+  background: #0f172a;
+  color: #fff;
+}
+
+html[data-theme='dark'] .dt-modal-day--selected {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.dt-modal-day--disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.dt-modal-month,
+.dt-modal-year {
+  min-height: 40px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.dt-modal-month:hover:not(:disabled):not(.dt-modal-month--disabled),
+.dt-modal-year:hover:not(:disabled):not(.dt-modal-year--disabled) {
+  background: var(--sidebar-hover-bg);
+}
+
+.dt-modal-month--selected,
+.dt-modal-year--selected {
+  background: var(--reply-time-bg);
+  border: 1px solid var(--line);
+}
+
+.dt-modal-month--disabled,
+.dt-modal-year--disabled {
+  color: var(--muted);
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.dt-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 16px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.dt-modal-btn {
+  min-width: 88px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.dt-modal-btn--ghost {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.dt-modal-btn--ghost:hover {
+  background: var(--sidebar-hover-bg);
+}
+
+.dt-modal-btn--primary {
+  border: none;
+  background: #0f172a;
+  color: #fff;
+}
+
+html[data-theme='dark'] .dt-modal-btn--primary {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.dt-modal-btn--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.dt-modal-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.simulation-date-trigger {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.simulation-date-trigger:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.simulation-date-trigger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }

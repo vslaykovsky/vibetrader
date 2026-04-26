@@ -20,13 +20,20 @@ function nowMs() {
  * different range -> B emits event -> loop, we briefly suppress range-change
  * events on any chart we just wrote to programmatically.
  *
+ * ``mode: 'leader'`` — only ``charts[0]`` drives the visible range; followers
+ * never write back. Use when the bottom chart can be empty (equity): its time
+ * scale would otherwise overwrite the top chart's ``setVisibleRange``.
+ *
  * @param {import('lightweight-charts').IChartApi[]} charts
+ * @param {{ mode?: 'mirror' | 'leader' }} [options]
  * @returns {(() => void) | undefined}
  */
-export function attachSyncedTimeScales(charts) {
+export function attachSyncedTimeScales(charts, options = {}) {
   if (charts.length < 2) {
     return undefined;
   }
+
+  const mode = options.mode ?? 'mirror';
 
   const suppressUntil = new WeakMap();
 
@@ -38,6 +45,61 @@ export function attachSyncedTimeScales(charts) {
   const suppress = (chart) => {
     suppressUntil.set(chart, nowMs() + SYNC_SUPPRESS_MS);
   };
+
+  if (mode === 'leader') {
+    const leader = charts[0];
+    const timeScale = leader.timeScale();
+    const hasTimeRangeApi =
+      typeof timeScale.subscribeVisibleTimeRangeChange === 'function' &&
+      typeof timeScale.unsubscribeVisibleTimeRangeChange === 'function' &&
+      typeof timeScale.setVisibleRange === 'function';
+
+    if (hasTimeRangeApi) {
+      const handler = (timeRange) => {
+        if (timeRange === null) {
+          return;
+        }
+        if (isSuppressed(leader)) {
+          return;
+        }
+        for (const other of charts) {
+          if (other === leader) continue;
+          suppress(other);
+          try {
+            other.timeScale().setVisibleRange(timeRange);
+          } catch {
+            /* ignore */
+          }
+        }
+      };
+      timeScale.subscribeVisibleTimeRangeChange(handler);
+      return () => {
+        timeScale.unsubscribeVisibleTimeRangeChange(handler);
+      };
+    }
+
+    const handler = (logicalRange) => {
+      if (logicalRange === null) {
+        return;
+      }
+      if (isSuppressed(leader)) {
+        return;
+      }
+      for (const other of charts) {
+        if (other === leader) continue;
+        suppress(other);
+        try {
+          other.timeScale().setVisibleLogicalRange(logicalRange);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+    timeScale.subscribeVisibleLogicalRangeChange(handler);
+    return () => {
+      timeScale.unsubscribeVisibleLogicalRangeChange(handler);
+    };
+  }
 
   const subscriptions = charts.map((chart) => {
     const timeScale = chart.timeScale();

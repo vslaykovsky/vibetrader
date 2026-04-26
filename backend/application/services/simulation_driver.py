@@ -323,6 +323,8 @@ def iter_simulation_steps(
     indicator_subs: Sequence[SubscriptionSpec],
     indicator_engine: IndicatorEngine,
     renko_subs: Sequence[SubscriptionSpec] = (),
+    driver_df_holder: dict[str, pd.DataFrame] | None = None,
+    base_df_holder: dict[str, pd.DataFrame] | None = None,
 ) -> Iterator[SimulationStep]:
     """Yield one ``SimulationStep`` per driver bar, building the per-step input points.
 
@@ -332,43 +334,66 @@ def iter_simulation_steps(
     ``step.renko_points``. When bricks are produced, ``step.partial_snapshot`` is populated with
     the current running values of every ``partial=True`` ticker/indicator subscription, so a
     downstream caller can ride those alongside each brick on its own ``StrategyInput`` line.
+
+    Optional ``driver_df_holder`` / ``base_df_holder`` (single key ``"df"``) let the caller grow
+    OHLC mid-walk while this generator keeps the same subscription / renko state.
     """
-    if driver_df.empty:
+    def _cur_driver() -> pd.DataFrame:
+        return driver_df_holder["df"] if driver_df_holder is not None else driver_df
+
+    def _cur_base() -> pd.DataFrame:
+        return base_df_holder["df"] if base_df_holder is not None else base_df
+
+    if _cur_driver().empty:
         return
     base_scale = normalize_scale(base_scale)
     simulation_scale = normalize_scale(simulation_scale)
-    base_index = base_df.index
     bucket_to_row: dict[pd.Timestamp, int] = {}
-    for i in range(len(base_index)):
-        b = floor_ts_to_scale(pd.Timestamp(base_index[i]), base_scale)
-        bucket_to_row[b] = i
+
+    def _rebuild_bucket_to_row() -> None:
+        bucket_to_row.clear()
+        bdf = _cur_base()
+        for i in range(len(bdf.index)):
+            b = floor_ts_to_scale(pd.Timestamp(bdf.index[i]), base_scale)
+            bucket_to_row[b] = i
+
+    _rebuild_bucket_to_row()
+    cached_base_len = len(_cur_base().index)
     cur_base_idx: int | None = None
     running: RunningBar | None = None
     renko_states: list[RenkoState] = [RenkoState() for _ in renko_subs]
 
-    total = len(driver_df)
-    for j in range(total):
-        driver_ts = pd.Timestamp(driver_df.index[j])
+    j = 0
+    while True:
+        ddf = _cur_driver()
+        bdf = _cur_base()
+        if j >= len(ddf):
+            break
+        if len(bdf.index) != cached_base_len:
+            _rebuild_bucket_to_row()
+            cached_base_len = len(_cur_base().index)
+        driver_ts = pd.Timestamp(ddf.index[j])
         if getattr(driver_ts, "tzinfo", None) is None:
             driver_ts = driver_ts.tz_localize("UTC")
         next_ts = (
-            pd.Timestamp(driver_df.index[j + 1]) if j + 1 < total else None
+            pd.Timestamp(ddf.index[j + 1]) if j + 1 < len(ddf) else None
         )
         if next_ts is not None and getattr(next_ts, "tzinfo", None) is None:
             next_ts = next_ts.tz_localize("UTC")
         base_ts = floor_ts_to_scale(driver_ts, base_scale)
         base_row = bucket_to_row.get(base_ts)
         if base_row is None:
+            j += 1
             continue
 
-        row = driver_df.iloc[j]
+        row = ddf.iloc[j]
         o, h, l, c = (
             float(row["open"]),
             float(row["high"]),
             float(row["low"]),
             float(row["close"]),
         )
-        v = float(row["volume"]) if "volume" in driver_df.columns else 0.0
+        v = float(row["volume"]) if "volume" in ddf.columns else 0.0
         if cur_base_idx != base_row or running is None:
             running = RunningBar(open=o, high=h, low=l, close=c, volume=v)
             cur_base_idx = base_row
@@ -487,6 +512,7 @@ def iter_simulation_steps(
             step.ticker_points or step.indicator_points or step.renko_points
         )
         yield step
+        j += 1
 
 
 def _build_partial_snapshot(

@@ -15,6 +15,11 @@ export const CHART_THEME = {
     mode: 1,
     vertLine: { style: LineStyle.Dashed },
   },
-  timeScale: { borderColor: '#363a45', timeVisible: true },
+  timeScale: {
+    borderColor: '#363a45',
+    timeVisible: true,
+    /** Do not scroll the viewport when a new bar is appended (simulation / history merge). */
+    shiftVisibleRangeOnNewBar: false,
+  },
   rightPriceScale: { borderColor: '#363a45' },
 };
