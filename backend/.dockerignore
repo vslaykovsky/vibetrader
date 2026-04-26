@@ -5,6 +5,8 @@ __pycache__
 .mypy_cache
 .git
 .DS_Store
+.env
+.env.*
 
 # Exclude per-thread strategy workspaces from Docker build context
 strategies/*
