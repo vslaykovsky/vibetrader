@@ -1,6 +1,6 @@
 # strategies_v2 — agent instructions
 
-You implement **`strategy.py`** and keep **`params.json`** up to date. Do not embed tunable values (ticker, scale, periods, thresholds, sizing, renko brick size, etc.) as literals in `strategy.py` — define them in `params.json` and read them after load (see **`params.json`**). Author **`params-hyperopt.json`** as a static config whenever the strategy emits `market_order` outputs. Do not change **`utils.py`** (it defines the JSON shapes) or **`hyperopt.py`** (fixed platform hyperparameter driver, copied read-only into the workspace).
+You implement **`strategy.py`** and keep **`params.json`** up to date. Do not embed tunable values (ticker, scale, periods, thresholds, sizing, renko brick size, etc.) as literals in `strategy.py` — define them in `params.json` and read them after load (see **`params.json`**). Author **`params-hyperopt.json`** as a static config whenever the strategy emits `market_order` outputs. Do not replace or hand-edit **`utils.py`** or **`hyperopt.py`** in the workspace — they are copied from **`backend/strategies_v2/`** and define the JSON contracts; the platform updates those templates when output shapes change.
 Always import everything from utils with: `from utils import *`
 
 Two workspace flavours are supported:
@@ -29,7 +29,7 @@ Order sizing for buys: use a top-level tunable (for example `deposit_fraction` i
 ## I/O
 
 - **stdin:** one JSON object per line. Each line is a `StrategyInput`: top-level `unixtime` and a `points` list of `ohlc`, `indicator`, `portfolio`, and/or `renko` items. `unixtime` is strictly monotonic across lines. Most lines correspond to a driver bar at its natural clock; a driver bar that produces sub-bar events (e.g. renko bricks) fans out into multiple lines, each with its own nudged `unixtime` so the stream stays strictly increasing.
-- **stdout:** one JSON object per line. Each line is a `StrategyOutput`: a list of outputs (subscriptions, indicator values, market orders, time acks). Match the discriminated models in `utils.py`.
+- **stdout:** one JSON object per line. Each line is a `StrategyOutput`: a list of outputs (subscriptions, optional **`indicator_series_catalog`**, indicator values, market orders, charts, time acks). Match the discriminated models in `utils.py`.
 - **`time_ack` (required):** The host applies strict backpressure: **it will not write the next stdin line until your process prints a stdout line that includes an `OutputTimeAck` (`"kind": "time_ack"`) for the current input line's `unixtime`.** Emitting that ack is what unblocks the next `read` / next `for raw in sys.stdin` iteration. If you buffer many stdin lines before printing any ack, or omit the ack while still reading, you deadlock: the host waits for stdout while you wait for more stdin.
   **Unconditional rule:** For **every** `StrategyInput` line you read from stdin (any mixture of `portfolio`, `ohlc`, `indicator`, `renko` in `points`), print **exactly one** stdout line for that line that includes **exactly one** `time_ack` with `unixtime` equal to that input's top-level `unixtime`. No exceptions by point kind: portfolio-only lines, warm-up bars with no indicator values, partial vs closed, and lines where you emit no trades or charts all use the same rule. If you have nothing else to send, use a one-item `StrategyOutput` containing only the `time_ack`. Put `time_ack` on that stdout line with any other outputs for the step (typically last in the list). Omitting `time_ack` for any read line causes the host to time out waiting for stdout.
 
@@ -79,6 +79,17 @@ for raw in sys.stdin:
     print(StrategyOutput(out).model_dump_json(), flush=True)
 ```
 
+## Output indicator series catalog (`indicator_series_catalog`)
+
+If you emit **`OutputIndicatorDataPoint`** for charting, you may include **one** **`OutputIndicatorSeriesCatalog`** on the **same first stdout line** as your subscription batch (the `StrategyOutput` you print **before** reading stdin). Put it **after** every `ticker_subscription` and `indicator_subscription` item in that list.
+
+- **`kind`:** `"indicator_series_catalog"`.
+- **`series`:** list of `{ "name", "description" }`. Each **`name`** must be **identical** (same string) to the **`name`** on every `OutputIndicatorDataPoint` you emit for that series so the UI can attach help text without repeating prose on every bar. **`name`** values in the catalog must be **unique**. Do not put long text on each `OutputIndicatorDataPoint` — use this catalog once per series instead.
+- **Optional:** omit the catalog if you do not chart `OutputIndicatorDataPoint` values or do not need per-series explanations.
+- **Do not** emit a second catalog later in the run; the host treats startup stdout as the subscription and catalog snapshot.
+- **Live simulation:** after startup, the HTTP simulation host forwards the catalog on the SSE stream as `kind: "indicator_series_catalog"` with the same `series` array (descriptions are not merged into bar payloads).
+- **Offline `backtest.json`:** when you run `scripts/simulate_strategy_v2.py`, the written `backtest.json` may include a top-level **`indicator_series_catalog`** copy of that array. The strategy canvas matches catalog entries to lightweight-charts series whose **`label`** is `output:{name}` and shows a **?** next to the chart title; hovering it shows the descriptions in a lightweight tooltip (not a separate window).
+
 ## Intermediate bar updates (`closed` flag)
 
 Each `ohlc` and `indicator` input carries a `closed` boolean.
@@ -90,7 +101,7 @@ Consequences your `strategy.py` must respect:
 
 1. **Your code will see multiple updates of the same base bar.** Do not append the running close to your history buffer on every update — only commit it when `closed: true`. A typical shape: cache the last partial values in local variables, and push them into long-lived series (for rolling windows, previous-close comparisons, etc.) only on the closed update.
 2. Orders emitted on a non-closed update fill at the running close of that update (mid-bar fills improve simulation accuracy). If your signal logic is only meaningful at bar close, guard trades with `if point.closed:`.
-3. If you emit `OutputIndicatorDataPoint` for charting, stamp it with the step's `unixtime` as always; the UI does not care about `closed` for those outputs.
+3. If you emit `OutputIndicatorDataPoint` for charting, stamp it with the step's `unixtime` as always; the UI does not care about `closed` for those outputs. Pair charted names with **`OutputIndicatorSeriesCatalog`** (see above) when you want per-series descriptions on hover of the chart **?** control.
 
 ## Subscribing to intermediate updates (`partial`, `update_scale`)
 
@@ -147,7 +158,7 @@ The fill price is the running close at the time of the update that triggered the
 
 ## What the strategy should do
 
-1. **Start:** emit subscription outputs first — `ticker_subscription` for prices you need (set `partial=True` and optionally `update_scale` if you want intra-bar prices), `indicator_subscription` for built-ins (sma, ema, macd, rsi, atr, bb, stochastic, renko) with ticker, scale, parameters, and optional `partial` / `update_scale`. **Set a readable `id` on every subscription** (see **Subscription `id`**) — each input point will carry that id so you can dispatch by role. Read subscription parameters from `params.json` where applicable. Print that startup `StrategyOutput` before you read stdin so an initial **`portfolio`** line the host buffered is handled in the main loop with the same **`time_ack`** rule as every other line (**I/O**).
+1. **Start:** emit subscription outputs first — `ticker_subscription` for prices you need (set `partial=True` and optionally `update_scale` if you want intra-bar prices), `indicator_subscription` for built-ins (sma, ema, macd, rsi, atr, bb, stochastic, renko) with ticker, scale, parameters, and optional `partial` / `update_scale`. **Set a readable `id` on every subscription** (see **Subscription `id`**) — each input point will carry that id so you can dispatch by role. Read subscription parameters from `params.json` where applicable. Optionally append **`OutputIndicatorSeriesCatalog`** after those subscriptions (see **Output indicator series catalog**). Print that startup `StrategyOutput` before you read stdin so an initial **`portfolio`** line the host buffered is handled in the main loop with the same **`time_ack`** rule as every other line (**I/O**).
    You must emit all subscriptions **before** reading or acting on any `ohlc` / `indicator` / `renko` points from stdin.
 2. **Loop:** read each `StrategyInput` line; if it contains `portfolio`, refresh position state from `positions` before or together with processing `ohlc` / `indicator` for that step. **Match each `ohlc` / `indicator` / `renko` point to your subscription via `point.id`.** Distinguish closed vs partial points using the `closed` flag and update durable state (history lists, previous-close memory) only on closed points. On partial updates use the running values for live signal checks. When you trade emit `market_order` items per **Market orders**. On **every** stdin line, print stdout with the **`time_ack`** for that line's `unixtime` (see **I/O**); the host will not send the next stdin line until that line is printed.
 3. **Each step:** Only emit OutputIndicatorDataPoint for a few key debug or plot values if helpful. Do not output raw input prices or indicators, and skip this output if there's nothing useful to show.
@@ -160,7 +171,7 @@ An EDA strategy (or a trading strategy that wants extra analytics alongside the 
 
 Pattern for pure EDA:
 
-1. In startup, emit subscription outputs for every input you need (`ticker_subscription`, `indicator_subscription`). Same as a trading strategy.
+1. In startup, emit subscription outputs for every input you need (`ticker_subscription`, `indicator_subscription`), and optionally `OutputIndicatorSeriesCatalog` after them. Same as a trading strategy.
 2. Only after you have emitted subscriptions, read stdin with `for raw in sys.stdin:` — when the host closes stdin, the loop exits.
 3. On each step, if `point.closed`, push the values you need into long-lived lists (returns, indicator series, labels, etc.). On partial points do nothing unless you specifically need intra-bar stats. On every stdin line, emit the required `time_ack` (same rule as trading strategies; see **I/O**).
 4. After the loop, run your analysis, build a list of `OutputChart` items, print `StrategyOutput(items).model_dump_json()` on a single line, flush, and exit.

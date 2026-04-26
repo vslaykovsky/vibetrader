@@ -107,6 +107,9 @@ def test_simulation_handler_echo_emits_bars_in_date_range():
     assert sess is not None
     events = _collect_events(sess, timeout=15.0)
     kinds = [e.get("kind") for e in events]
+    cat_events = [e for e in events if e.get("kind") == "indicator_series_catalog"]
+    assert len(cat_events) == 1
+    assert cat_events[0]["series"][0]["name"] == "echo_sig"
     assert kinds.count("bar") == 3
     bar_events = [e for e in events if e.get("kind") == "bar"]
     assert bar_events[0]["ohlc"]["volume"] == 1_000.0

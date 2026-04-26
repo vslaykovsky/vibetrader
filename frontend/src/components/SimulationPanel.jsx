@@ -70,6 +70,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
   const [fineBars, setFineBars] = useState([]);
   const [fineBarsLoading, setFineBarsLoading] = useState(false);
   const [fineBarsError, setFineBarsError] = useState('');
+  const [indicatorSeriesCatalog, setIndicatorSeriesCatalog] = useState([]);
   /** True while we paused the backend to load finer OHLC (user switched chart TF during a run). */
   const [chartLoadHoldsSim, setChartLoadHoldsSim] = useState(false);
   /** Backend simulation clock paused (user Pause / chart load); finer-chart rAF playback freezes with it. */
@@ -477,6 +478,15 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
             const next = [...prev, row];
             return next.length > MAX_SIM_BARS ? next.slice(-MAX_SIM_BARS) : next;
           });
+        } else if (payload?.kind === 'indicator_series_catalog' && Array.isArray(payload.series)) {
+          setIndicatorSeriesCatalog(
+            payload.series
+              .filter((row) => row && typeof row.name === 'string')
+              .map((row) => ({
+                name: row.name,
+                description: typeof row.description === 'string' ? row.description : '',
+              }))
+          );
         }
         if (payload?.kind === 'status' && typeof payload.status === 'string') {
           if (payload.status === 'paused') {
@@ -529,6 +539,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     setFineRevealCount(0);
     playbackAccumRef.current = 0;
     prevFineBarsLoadingRef.current = false;
+    setIndicatorSeriesCatalog([]);
     stopStream();
     const bpsVal = selectedBps;
     setLiveBps(bpsVal);
@@ -725,6 +736,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
               candles={chartCandles}
               equity={chartEquity}
               markers={chartMarkers}
+              indicatorSeriesCatalog={indicatorSeriesCatalog}
             />
           ) : isFinerChart ? (
             <p className="simulation-charts-placeholder muted">

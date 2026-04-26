@@ -1329,6 +1329,50 @@ def _stored_messages_to_lc(messages: list[dict[str, Any]]) -> list[BaseMessage]:
     return out
 
 
+def _strategy_help_for_workspace(workspace: Path) -> str:
+    params_path = workspace / "params.json"
+    strategy_parameters = ""
+    if params_path.is_file():
+        try:
+            strategy_parameters = params_path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            strategy_parameters = ""
+    hyperopt_path = workspace / "params-hyperopt.json"
+    hyperopt_parameters = ""
+    if hyperopt_path.is_file():
+        try:
+            hyperopt_parameters = hyperopt_path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            hyperopt_parameters = ""
+    metrics_path = workspace / "metrics.json"
+    metrics_text = ""
+    if metrics_path.is_file():
+        try:
+            metrics_text = metrics_path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            metrics_text = ""
+    hyperopt_section = (
+        f"\nThe current strategy supports hyperparameter optimization. The params-hyperopt.json file contains the optimization configuration:\n{hyperopt_parameters}\n"
+        if hyperopt_parameters
+        else ""
+    )
+    metrics_section = (
+        f"\nLatest metrics from metrics.json:\n{metrics_text}\n"
+        if metrics_text
+        else ""
+    )
+    if params_path.is_file():
+        return f"""Strategy inputs are read from params.json (overrides: pass parameters_json on run_backtest or run_hyperopt to merge into this file). On run_hyperopt, optional parameters_hyperopt_json merges into params-hyperopt.json (which params are optimised, ranges, regimes, study budget—not ticker/dates from params.json).
+{strategy_parameters}
+{hyperopt_section}{metrics_section}"""
+    return f"""Note: params.json hasn't been created yet. Need to run update_strategy first.
+
+Current params.json (may be empty or missing):
+{strategy_parameters}
+On run_hyperopt, optional parameters_hyperopt_json merges into params-hyperopt.json (study definition: optimised params, ranges, regimes—not params.json backtest inputs).
+{hyperopt_section}{metrics_section}"""
+
+
 def _aimessage_plain_text(msg: AIMessage) -> str:
     c = msg.content
     if c is None:
@@ -1395,48 +1439,7 @@ def build_agent_reply(
         }
 
     workspace = strategy_root_for_thread(thread_id)
-    params_path = workspace / "params.json"
-    strategy_parameters = ""
-    if params_path.is_file():
-        try:
-            strategy_parameters = params_path.read_text(encoding="utf-8", errors="replace").strip()
-        except OSError:
-            strategy_parameters = ""
-    hyperopt_path = workspace / "params-hyperopt.json"
-    hyperopt_parameters = ""
-    if hyperopt_path.is_file():
-        try:
-            hyperopt_parameters = hyperopt_path.read_text(encoding="utf-8", errors="replace").strip()
-        except OSError:
-            hyperopt_parameters = ""
-    metrics_path = workspace / "metrics.json"
-    metrics_text = ""
-    if metrics_path.is_file():
-        try:
-            metrics_text = metrics_path.read_text(encoding="utf-8", errors="replace").strip()
-        except OSError:
-            metrics_text = ""
-    hyperopt_section = (
-        f"\nThe current strategy supports hyperparameter optimization. The params-hyperopt.json file contains the optimization configuration:\n{hyperopt_parameters}\n"
-        if hyperopt_parameters
-        else ""
-    )
-    metrics_section = (
-        f"\nLatest metrics from metrics.json:\n{metrics_text}\n"
-        if metrics_text
-        else ""
-    )
-    if params_path.is_file():
-        strategy_help = f"""Strategy inputs are read from params.json (overrides: pass parameters_json on run_backtest or run_hyperopt to merge into this file). On run_hyperopt, optional parameters_hyperopt_json merges into params-hyperopt.json (which params are optimised, ranges, regimes, study budget—not ticker/dates from params.json).
-{strategy_parameters}
-{hyperopt_section}{metrics_section}"""
-    else:
-        strategy_help = f"""Note: params.json hasn't been created yet. Need to run update_strategy first.
-
-Current params.json (may be empty or missing):
-{strategy_parameters}
-On run_hyperopt, optional parameters_hyperopt_json merges into params-hyperopt.json (study definition: optimised params, ranges, regimes—not params.json backtest inputs).
-{hyperopt_section}{metrics_section}"""
+    strategy_help = _strategy_help_for_workspace(workspace)
     chat_messages: list[BaseMessage] = [
         SystemMessage(content=SYSTEM_PROMPT.format(strategy_help=strategy_help)),
         *_stored_messages_to_lc(messages),
@@ -1452,6 +1455,9 @@ On run_hyperopt, optional parameters_hyperopt_json merges into params-hyperopt.j
     )
 
     for _ in range(max_iterations):
+        chat_messages[0] = SystemMessage(
+            content=SYSTEM_PROMPT.format(strategy_help=_strategy_help_for_workspace(workspace))
+        )
         if on_progress:
             on_progress("Thinking…")
         assistant_msg = llm_tools.invoke(chat_messages)

@@ -52,6 +52,7 @@ from strategies_v2.utils import (
     Ohlc,
     OutputChart,
     OutputIndicatorDataPoint,
+    OutputIndicatorSeriesCatalog,
     OutputIndicatorSubscriptionOrder,
     OutputMarketTradeOrder,
     OutputTickerSubscription,
@@ -373,7 +374,7 @@ def simulate(
     provider: str | None,
     entry_script: str,
     simulation_scale: str | None = None,
-) -> backtest_utils.DataJson:
+) -> tuple[backtest_utils.DataJson, list[dict[str, str]] | None]:
     cache_dir = workspace / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     bars_query = HistoricalBarsQuery(cache_dir=cache_dir)
@@ -891,6 +892,15 @@ def simulate(
         renko_bricks=renko_bricks,
     )
 
+    catalog_json_for_backtest: list[dict[str, str]] | None = None
+    for p in startup.root:
+        if isinstance(p, OutputIndicatorSeriesCatalog):
+            if p.series:
+                catalog_json_for_backtest = [
+                    e.model_dump(mode="json") for e in p.series
+                ]
+            break
+
     if is_eda:
         logger.info(
             "done eda strategy_name=%s strategy_charts=%s subscription_charts=%s",
@@ -898,10 +908,13 @@ def simulate(
             len(strategy_charts),
             len(subscription_charts),
         )
-        return backtest_utils.DataJson(
-            strategy_name=strategy_name,
-            charts=[*subscription_charts, *strategy_charts],
-            metrics=None,
+        return (
+            backtest_utils.DataJson(
+                strategy_name=strategy_name,
+                charts=[*subscription_charts, *strategy_charts],
+                metrics=None,
+            ),
+            catalog_json_for_backtest,
         )
 
     equity_chart = backtest_utils.LightweightChartsChart(
@@ -941,22 +954,30 @@ def simulate(
         len(strategy_charts),
         len(subscription_charts),
     )
-    return backtest_utils.DataJson(
-        strategy_name=strategy_name,
-        charts=[
-            *subscription_charts,
-            *strategy_charts,
-            equity_chart,
-            trades_chart,
-        ],
-        metrics=metrics,
+    return (
+        backtest_utils.DataJson(
+            strategy_name=strategy_name,
+            charts=[
+                *subscription_charts,
+                *strategy_charts,
+                equity_chart,
+                trades_chart,
+            ],
+            metrics=metrics,
+        ),
+        catalog_json_for_backtest,
     )
 
 
 def _write_workspace_outputs(
-    doc: backtest_utils.DataJson, workspace: Path
+    doc: backtest_utils.DataJson,
+    workspace: Path,
+    *,
+    indicator_series_catalog: list[dict[str, str]] | None = None,
 ) -> tuple[Path, Path | None]:
     serialized = doc.model_dump(mode="json", exclude_none=True)
+    if indicator_series_catalog:
+        serialized["indicator_series_catalog"] = indicator_series_catalog
     metrics = serialized.pop("metrics", None)
     backtest_path = workspace / "backtest.json"
     metrics_path = workspace / "metrics.json"
@@ -1034,7 +1055,7 @@ def main(argv: list[str]) -> int:
         simulation_scale,
     )
 
-    doc = simulate(
+    doc, indicator_catalog = simulate(
         workspace=workspace,
         start_d=start_d,
         end_d=end_d,
@@ -1043,7 +1064,11 @@ def main(argv: list[str]) -> int:
         entry_script=entry_script,
         simulation_scale=simulation_scale,
     )
-    backtest_path, metrics_path = _write_workspace_outputs(doc, workspace)
+    backtest_path, metrics_path = _write_workspace_outputs(
+        doc,
+        workspace,
+        indicator_series_catalog=indicator_catalog,
+    )
     print(f"wrote {backtest_path}", file=sys.stderr)
     if metrics_path is not None:
         print(f"wrote {metrics_path}", file=sys.stderr)

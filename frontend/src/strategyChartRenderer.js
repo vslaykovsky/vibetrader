@@ -239,14 +239,74 @@ function normalizeLwcItems(items, normalizeTime) {
   return changed ? out : items;
 }
 
-function makeSection(container, titleText, openStore, panelKey) {
+function catalogMapFromDataJson(dataJson) {
+  const map = new Map();
+  const raw = dataJson?.indicator_series_catalog;
+  if (!Array.isArray(raw)) return map;
+  for (const row of raw) {
+    if (row && typeof row.name === 'string') {
+      map.set(row.name, typeof row.description === 'string' ? row.description : '');
+    }
+  }
+  return map;
+}
+
+function helpTextForLightweightChart(spec, catalogMap) {
+  if (!spec || spec.type !== 'lightweight-charts' || catalogMap.size === 0) return null;
+  const names = new Set();
+  for (const s of spec.series || []) {
+    const lab = typeof s.label === 'string' ? s.label.trim() : '';
+    const m = /^output:(.+)$/.exec(lab);
+    if (m) names.add(m[1]);
+  }
+  if (names.size === 0) return null;
+  const parts = [];
+  for (const name of names) {
+    const d = catalogMap.get(name);
+    if (d) parts.push(`${name}\n${d}`);
+  }
+  if (parts.length === 0) return null;
+  return parts.join('\n\n');
+}
+
+function makeSection(container, titleText, openStore, panelKey, helpText) {
   const details = document.createElement('details');
   details.className = 'strategy-chart-details';
 
   const summary = document.createElement('summary');
   summary.className = 'strategy-chart-summary';
-  summary.textContent = titleText || 'Chart';
-  details.appendChild(summary);
+
+  const titleEl = document.createElement('span');
+  titleEl.className = 'strategy-chart-summary-title';
+  titleEl.textContent = titleText || 'Chart';
+  summary.appendChild(titleEl);
+
+  const trimmedHelp = typeof helpText === 'string' ? helpText.trim() : '';
+  if (trimmedHelp) {
+    const wrap = document.createElement('span');
+    wrap.className = 'strategy-chart-help-wrap';
+    const helpBtn = document.createElement('button');
+    helpBtn.type = 'button';
+    helpBtn.className = 'strategy-chart-help-btn';
+    helpBtn.setAttribute('aria-label', 'Chart description');
+    helpBtn.textContent = '?';
+    const stopToggle = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    helpBtn.addEventListener('mousedown', stopToggle);
+    helpBtn.addEventListener('click', stopToggle);
+    const tooltip = document.createElement('div');
+    tooltip.className = 'strategy-chart-help-tooltip';
+    tooltip.setAttribute('role', 'tooltip');
+    tooltip.textContent = trimmedHelp;
+    wrap.appendChild(helpBtn);
+    wrap.appendChild(tooltip);
+    summary.appendChild(wrap);
+    details.appendChild(summary);
+  } else {
+    details.appendChild(summary);
+  }
 
   const chartEl = document.createElement('div');
   chartEl.className = 'strategy-chart-body';
@@ -263,12 +323,13 @@ function makeSection(container, titleText, openStore, panelKey) {
   return { details, chartEl };
 }
 
-function renderLightweightChart(container, chartSpec, openStore, panelKey) {
+function renderLightweightChart(container, chartSpec, openStore, panelKey, helpText) {
   const { details, chartEl: el } = makeSection(
     container,
     chartSpec.title || '',
     openStore,
     panelKey,
+    helpText,
   );
   el.style.height = '350px';
 
@@ -316,12 +377,13 @@ function renderLightweightChart(container, chartSpec, openStore, panelKey) {
 
 export { attachSyncedCrosshair } from './lib/lwcSync.js';
 
-function renderPlotlyChart(container, chartSpec, openStore, panelKey) {
+function renderPlotlyChart(container, chartSpec, openStore, panelKey, helpText) {
   const { details, chartEl: el } = makeSection(
     container,
     chartSpec.title || '',
     openStore,
     panelKey,
+    helpText,
   );
   el.style.minHeight = '300px';
 
@@ -628,13 +690,14 @@ function renderMetricsPanel(container, metrics, openStore) {
   container.appendChild(details);
 }
 
-function renderOneChartPanel(panelHost, spec, openStore, srcIdx) {
+function renderOneChartPanel(panelHost, spec, openStore, srcIdx, catalogMap) {
   const panelKey = `c${srcIdx}`;
   if (spec.type === 'lightweight-charts') {
-    return renderLightweightChart(panelHost, spec, openStore, panelKey);
+    const helpText = helpTextForLightweightChart(spec, catalogMap);
+    return renderLightweightChart(panelHost, spec, openStore, panelKey, helpText);
   }
   if (spec.type === 'plotly') {
-    renderPlotlyChart(panelHost, spec, openStore, panelKey);
+    renderPlotlyChart(panelHost, spec, openStore, panelKey, null);
     return { chart: null, primarySeries: null };
   }
   if (spec.type === 'table') {
@@ -653,6 +716,7 @@ export function renderCharts(container, dataJson, options) {
   const charts = dataJson?.charts;
   const base = options?.chartOrderStorageBase;
   const chartCount = Array.isArray(charts) ? charts.length : 0;
+  const catalogMap = catalogMapFromDataJson(dataJson);
   const includeMetrics = buildMetricsPanelItems(dataJson?.metrics ?? null).length > 0;
   const openBase = typeof base === 'string' && base.trim() !== '';
   const detailsSig = chartDetailsSignature(charts || [], dataJson?.metrics);
@@ -681,7 +745,13 @@ export function renderCharts(container, dataJson, options) {
         const row = createChartDndRow(srcIdx);
         list.appendChild(row);
         const inner = row.querySelector('.strategy-chart-dnd-inner');
-        const { chart, primarySeries } = renderOneChartPanel(inner, spec, openStore, srcIdx);
+        const { chart, primarySeries } = renderOneChartPanel(
+          inner,
+          spec,
+          openStore,
+          srcIdx,
+          catalogMap,
+        );
         if (chart) {
           lwCharts.push(chart);
           lwCrosshairBindings.push({ chart, series: primarySeries });
@@ -692,7 +762,13 @@ export function renderCharts(container, dataJson, options) {
     } else {
       for (let srcIdx = 0; srcIdx < charts.length; srcIdx++) {
         const spec = charts[srcIdx];
-        const { chart, primarySeries } = renderOneChartPanel(container, spec, openStore, srcIdx);
+        const { chart, primarySeries } = renderOneChartPanel(
+          container,
+          spec,
+          openStore,
+          srcIdx,
+          catalogMap,
+        );
         if (chart) {
           lwCharts.push(chart);
           lwCrosshairBindings.push({ chart, series: primarySeries });

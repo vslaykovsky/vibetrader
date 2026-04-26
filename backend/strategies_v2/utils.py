@@ -179,6 +179,28 @@ class OutputIndicatorDataPoint(BaseModel):
     value: float
 
 
+class OutputIndicatorSeriesCatalogEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1)
+    description: str
+
+
+class OutputIndicatorSeriesCatalog(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["indicator_series_catalog"] = "indicator_series_catalog"
+    series: list[OutputIndicatorSeriesCatalogEntry] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _unique_series_names(self) -> OutputIndicatorSeriesCatalog:
+        for e in self.series:
+            if not e.name.strip():
+                raise ValueError("indicator_series_catalog entries require non-empty name")
+        names = [e.name for e in self.series]
+        if len(names) != len(set(names)):
+            raise ValueError("indicator_series_catalog series names must be unique")
+        return self
+
+
 class OutputMarketTradeOrder(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["market_order"] = "market_order"
@@ -385,6 +407,7 @@ class OutputChart(BaseModel):
 
 OutputDataPoint = Annotated[
     OutputIndicatorDataPoint
+    | OutputIndicatorSeriesCatalog
     | OutputMarketTradeOrder
     | OutputTickerSubscription
     | OutputIndicatorSubscriptionOrder

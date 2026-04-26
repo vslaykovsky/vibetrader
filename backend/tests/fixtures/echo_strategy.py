@@ -11,6 +11,8 @@ if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
 from strategies_v2.utils import (  # noqa: E402
+    OutputIndicatorSeriesCatalog,
+    OutputIndicatorSeriesCatalogEntry,
     OutputTickerSubscription,
     OutputTimeAck,
     StrategyInput,
@@ -20,6 +22,14 @@ from strategies_v2.utils import (  # noqa: E402
 _startup = StrategyOutput(
     [
         OutputTickerSubscription(ticker="TEST", scale="1d"),
+        OutputIndicatorSeriesCatalog(
+            series=[
+                OutputIndicatorSeriesCatalogEntry(
+                    name="echo_sig",
+                    description="Echo fixture catalog entry",
+                )
+            ]
+        ),
     ]
 )
 print(_startup.model_dump_json(), flush=True)

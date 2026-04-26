@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { createChart, CandlestickSeries, LineSeries, createSeriesMarkers } from 'lightweight-charts';
 import { CHART_THEME } from '../lib/chartTheme.js';
 import { attachSyncedCrosshair, attachSyncedTimeScales } from '../lib/lwcSync.js';
@@ -8,9 +8,10 @@ import { attachSyncedCrosshair, attachSyncedTimeScales } from '../lib/lwcSync.js
  *   candles: { time: number; open: number; high: number; low: number; close: number }[];
  *   equity: { time: number; value: number }[];
  *   markers: { time: number; position?: string; color?: string; shape?: string; text?: string }[];
+ *   indicatorSeriesCatalog?: { name: string; description: string }[];
  * }} props
  */
-export function SimulationCharts({ candles, equity, markers }) {
+export function SimulationCharts({ candles, equity, markers, indicatorSeriesCatalog = [] }) {
   const priceHostRef = useRef(null);
   const equityHostRef = useRef(null);
   const chartsRef = useRef(null);
@@ -21,6 +22,13 @@ export function SimulationCharts({ candles, equity, markers }) {
   const prevEqLenRef = useRef(0);
   const lastCandleSigRef = useRef('');
   const lastEqSigRef = useRef('');
+
+  const catalogHelpText = useMemo(() => {
+    if (!indicatorSeriesCatalog.length) return '';
+    return indicatorSeriesCatalog
+      .map((r) => `${r.name}\n${typeof r.description === 'string' ? r.description : ''}`)
+      .join('\n\n');
+  }, [indicatorSeriesCatalog]);
 
   useEffect(() => {
     const topEl = priceHostRef.current;
@@ -168,8 +176,40 @@ export function SimulationCharts({ candles, equity, markers }) {
 
   return (
     <div className="simulation-charts-stack" aria-label="Simulation price and equity charts">
-      <div className="simulation-chart-host simulation-chart-host--price" ref={priceHostRef} />
-      <div className="simulation-chart-host simulation-chart-host--equity" ref={equityHostRef} />
+      <div className="simulation-chart-pane">
+        <div className="simulation-chart-pane-caption">
+          <span className="simulation-chart-pane-caption-text">Price</span>
+          {catalogHelpText ? (
+            <span className="strategy-chart-help-wrap">
+              <button
+                type="button"
+                className="strategy-chart-help-btn"
+                aria-label="Output series descriptions"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+              >
+                ?
+              </button>
+              <div className="strategy-chart-help-tooltip" role="tooltip">
+                {catalogHelpText}
+              </div>
+            </span>
+          ) : null}
+        </div>
+        <div className="simulation-chart-host simulation-chart-host--price" ref={priceHostRef} />
+      </div>
+      <div className="simulation-chart-pane">
+        <div className="simulation-chart-pane-caption">
+          <span className="simulation-chart-pane-caption-text">Equity</span>
+        </div>
+        <div className="simulation-chart-host simulation-chart-host--equity" ref={equityHostRef} />
+      </div>
     </div>
   );
 }

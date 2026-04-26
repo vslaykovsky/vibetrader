@@ -30,6 +30,7 @@ from application.services.speed_clock import ClockStopped, SpeedClock
 from application.services.strategy_runtime import StrategyRuntime, StrategyRuntimeError
 from strategies_v2.utils import (
     InputPortfolioDataPoint,
+    OutputIndicatorSeriesCatalog,
     OutputIndicatorSubscriptionOrder,
     OutputMarketTradeOrder,
     OutputTickerSubscription,
@@ -116,6 +117,15 @@ def _simulation_row_range(df: pd.DataFrame, start: date, end: date) -> tuple[int
     if start_idx < 0 or end_idx < 0 or end_idx < start_idx:
         raise ValueError("No bars in requested simulation date range (after padding)")
     return start_idx, end_idx
+
+
+def _indicator_series_catalog_payload(
+    startup: StrategyOutput,
+) -> list[dict[str, str]] | None:
+    for p in startup.root:
+        if isinstance(p, OutputIndicatorSeriesCatalog):
+            return [e.model_dump(mode="json") for e in p.series]
+    return None
 
 
 def _read_simulation_scale(workspace: Path, base_scale: str) -> str:
@@ -247,6 +257,14 @@ class StrategySimulateCommandHandler:
                 portfolio = Portfolio(initial_deposit=cmd.initial_deposit, ticker=ticker)
                 sess.emit(simulation_event("status", status="running"))
                 sess.emit(simulation_event("speed", bps=float(cmd.initial_speed_bps)))
+                catalog_rows = _indicator_series_catalog_payload(startup)
+                if catalog_rows:
+                    sess.emit(
+                        simulation_event(
+                            "indicator_series_catalog",
+                            series=catalog_rows,
+                        )
+                    )
 
                 for step in iter_simulation_steps(
                     driver_df=driver_df,
