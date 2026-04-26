@@ -1,6 +1,13 @@
+from __future__ import annotations
+
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
+
+
+MacdOutputKey = Literal["macd", "signal", "histogram"]
+BbOutputKey = Literal["bb_lower", "bb_middle", "bb_upper"]
+StochasticOutputKey = Literal["stoch_k", "stoch_d"]
 
 
 class LwcMarker(BaseModel):
@@ -103,7 +110,6 @@ class InputIndicatorDataPoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["indicator"] = "indicator"
     id: str = ""
-    ticker: str | None = None
     name: str
     value: float
     closed: bool = True
@@ -207,8 +213,19 @@ class MacdIndicatorSubscription(BaseModel):
     fast_period: int
     slow_period: int
     signal_period: int
+    outputs: list[MacdOutputKey] = Field(
+        default_factory=lambda: ["macd", "signal", "histogram"]
+    )
     update_scale: str | None = None
     partial: bool = False
+
+    @model_validator(mode="after")
+    def _macd_outputs(self) -> MacdIndicatorSubscription:
+        if not self.outputs:
+            raise ValueError("outputs must be non-empty")
+        if len(self.outputs) != len(set(self.outputs)):
+            raise ValueError("outputs must not contain duplicates")
+        return self
 
 
 class RsiIndicatorSubscription(BaseModel):
@@ -241,8 +258,19 @@ class BollingerBandsIndicatorSubscription(BaseModel):
     scale: str
     period: int = Field(default=20, ge=1)
     std_dev: float = Field(default=2.0, gt=0)
+    outputs: list[BbOutputKey] = Field(
+        default_factory=lambda: ["bb_middle", "bb_upper", "bb_lower"]
+    )
     update_scale: str | None = None
     partial: bool = False
+
+    @model_validator(mode="after")
+    def _bb_outputs(self) -> BollingerBandsIndicatorSubscription:
+        if not self.outputs:
+            raise ValueError("outputs must be non-empty")
+        if len(self.outputs) != len(set(self.outputs)):
+            raise ValueError("outputs must not contain duplicates")
+        return self
 
 
 class StochasticIndicatorSubscription(BaseModel):
@@ -254,8 +282,19 @@ class StochasticIndicatorSubscription(BaseModel):
     k_period: int = Field(default=14, ge=1)
     k_slowing: int = Field(default=3, ge=1)
     d_period: int = Field(default=3, ge=1)
+    outputs: list[StochasticOutputKey] = Field(
+        default_factory=lambda: ["stoch_k", "stoch_d"]
+    )
     update_scale: str | None = None
     partial: bool = False
+
+    @model_validator(mode="after")
+    def _stoch_outputs(self) -> StochasticIndicatorSubscription:
+        if not self.outputs:
+            raise ValueError("outputs must be non-empty")
+        if len(self.outputs) != len(set(self.outputs)):
+            raise ValueError("outputs must not contain duplicates")
+        return self
 
 
 class FibonacciIndicatorSubscription(BaseModel):

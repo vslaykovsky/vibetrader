@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import random
 import subprocess
@@ -19,6 +20,50 @@ PARAMS_HYPEROPT_PATH = Path("params-hyperopt.json")
 METRICS_PATH = Path("metrics.json")
 
 logger = logging.getLogger(__name__)
+
+
+class _HyperoptJsonlFormatter(logging.Formatter):
+    _SEVERITY = {
+        logging.DEBUG: "DEBUG",
+        logging.INFO: "INFO",
+        logging.WARNING: "WARNING",
+        logging.ERROR: "ERROR",
+        logging.CRITICAL: "CRITICAL",
+    }
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "severity": self._SEVERITY.get(record.levelno, "DEFAULT"),
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        return json.dumps(payload, default=str)
+
+
+def configure_logging(log_level: str | None = None) -> None:
+    lvl_name = (log_level or os.environ.get("HYPEROPT_LOG_LEVEL", "INFO")).upper()
+    numeric = getattr(logging, lvl_name, logging.INFO)
+    root = logging.getLogger()
+    root.handlers.clear()
+    h = logging.StreamHandler(sys.stderr)
+    h.setFormatter(_HyperoptJsonlFormatter())
+    root.addHandler(h)
+    root.setLevel(numeric)
+    logger.setLevel(numeric)
+
+
+def _emit_ui(payload: dict) -> None:
+    line = json.dumps({"hyperopt_ui": True, **payload}, default=str)
+    sys.stderr.write(line + "\n")
+    sys.stderr.flush()
+
+
+def _best_value_for_ui(best_params: dict | None, best_value: float) -> float | None:
+    if best_params is None:
+        return None
+    if isinstance(best_value, float) and (math.isinf(best_value) or math.isnan(best_value)):
+        return None
+    return float(best_value)
 
 
 def _load_json(path: Path) -> dict:
@@ -77,10 +122,7 @@ def _merge_flat(base: dict, overlay: dict) -> dict:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=os.environ.get("HYPEROPT_LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
     try:
         cfg = _load_params_hyperopt(PARAMS_HYPEROPT_PATH)
     except ValidationError as exc:
@@ -117,9 +159,28 @@ def main() -> None:
         trial_timeout,
         seed,
     )
+    _emit_ui(
+        {
+            "event": "start",
+            "objective_metric": metric_key,
+            "maximize": maximize,
+            "n_trials": n_trials,
+        }
+    )
     for i in range(n_trials):
         if time.perf_counter() - t0 >= wall:
             logger.info("stopping early due to wall timeout after %s trials", i)
+            _emit_ui(
+                {
+                    "event": "stopped",
+                    "reason": "wall_timeout",
+                    "trial": i,
+                    "n_trials": n_trials,
+                    "objective_metric": metric_key,
+                    "best_value": _best_value_for_ui(best_params, best_value),
+                    "completed_trials": completed,
+                }
+            )
             break
         sampled = _sample_from_space(rng, cfg.search_space)
         trial_params = _merge_flat(base, sampled)
@@ -140,14 +201,47 @@ def main() -> None:
                 proc.returncode,
                 (proc.stderr or "")[-500:],
             )
+            _emit_ui(
+                {
+                    "event": "trial",
+                    "trial": i + 1,
+                    "n_trials": n_trials,
+                    "objective_metric": metric_key,
+                    "outcome": "sim_failed",
+                    "best_value": _best_value_for_ui(best_params, best_value),
+                    "completed_trials": completed,
+                }
+            )
             continue
         metrics = _load_json(METRICS_PATH)
         if not metrics:
             logger.debug("trial %s/%s missing or empty metrics.json", i + 1, n_trials)
+            _emit_ui(
+                {
+                    "event": "trial",
+                    "trial": i + 1,
+                    "n_trials": n_trials,
+                    "objective_metric": metric_key,
+                    "outcome": "no_metrics",
+                    "best_value": _best_value_for_ui(best_params, best_value),
+                    "completed_trials": completed,
+                }
+            )
             continue
         value = _nested_get(metrics, metric_key)
         if value is None:
             logger.debug("trial %s/%s objective metric missing: %s", i + 1, n_trials, metric_key)
+            _emit_ui(
+                {
+                    "event": "trial",
+                    "trial": i + 1,
+                    "n_trials": n_trials,
+                    "objective_metric": metric_key,
+                    "outcome": "missing_objective",
+                    "best_value": _best_value_for_ui(best_params, best_value),
+                    "completed_trials": completed,
+                }
+            )
             continue
         try:
             fv = float(value)
@@ -158,6 +252,17 @@ def main() -> None:
                 n_trials,
                 metric_key,
                 value,
+            )
+            _emit_ui(
+                {
+                    "event": "trial",
+                    "trial": i + 1,
+                    "n_trials": n_trials,
+                    "objective_metric": metric_key,
+                    "outcome": "bad_objective",
+                    "best_value": _best_value_for_ui(best_params, best_value),
+                    "completed_trials": completed,
+                }
             )
             continue
         completed += 1
@@ -173,6 +278,19 @@ def main() -> None:
                 fv,
                 sampled,
             )
+        _emit_ui(
+            {
+                "event": "trial",
+                "trial": i + 1,
+                "n_trials": n_trials,
+                "objective_metric": metric_key,
+                "outcome": "completed",
+                "trial_value": fv,
+                "new_best": bool(better),
+                "best_value": _best_value_for_ui(best_params, best_value),
+                "completed_trials": completed,
+            }
+        )
     if best_params is None:
         _save_json(PARAMS_PATH, base)
         print("no successful trials; restored params.json to pre-study values", file=sys.stderr)
@@ -198,6 +316,15 @@ def main() -> None:
         best_value,
         completed,
         time.perf_counter() - t0,
+    )
+    _emit_ui(
+        {
+            "event": "done",
+            "objective_metric": metric_key,
+            "best_value": _best_value_for_ui(best_params, best_value),
+            "completed_trials": completed,
+            "n_trials": n_trials,
+        }
     )
 
 

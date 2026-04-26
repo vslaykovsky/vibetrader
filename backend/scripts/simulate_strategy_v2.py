@@ -784,9 +784,7 @@ def simulate(
                         continue
                     for pt in eng.values_at_row_for_subscription(local_idx, row):
                         step_points.append(
-                            pt.model_copy(
-                                update={"id": str(ind_sub.id), "ticker": str(t_ind)}
-                            )
+                            pt.model_copy(update={"id": str(ind_sub.id)})
                         )
                 fired = bool(step_points)
                 primary_row = primary_row_map.get(ts)
@@ -926,10 +924,10 @@ def simulate(
     trades_chart = backtest_utils.TableChart(title="Trades", rows=table_rows)
 
     metrics = backtest_utils.Metrics(
-        total_return=float(total_return),
+        total_return=float(total_return) * 100.0,
         sharpe_ratio=(float(sharpe) if sharpe is not None else None),
-        max_drawdown=float(max_dd),
-        win_rate=(float(win_rate) if win_rate is not None else None),
+        max_drawdown=float(max_dd) * 100.0,
+        win_rate=(float(win_rate) * 100.0 if win_rate is not None else None),
         num_trades=len(portfolio.trades),
         final_equity=float(final_equity),
     )

@@ -38,9 +38,9 @@ SYSTEM_PROMPT = f"""You help users design trading strategies in chat.
 
 Workflow
 
-* Before the first update_strategy, request any missing details needed to build the strategy (e.g., ticker, candlestick scale, backtest window (start/end dates), indicators, entry/exit rules, order sizing, other parameters). The user may want to come up with good default values for these parameters, proceed with good defaults then. 
+* Before the first update_strategy, request any missing details needed to build the strategy (e.g., ticker, candlestick scale, backtest window (start/end dates), indicators, entry/exit rules, order sizing, other parameters). The user may want to come up with good default values for these parameters, proceed with good defaults then. If the user already supplied a long or exhaustive specification (e.g., a pasted design doc), do not re-ask for basics; implement from what they gave.
 * Do not add hyperparameter search loops inside strategy.py by default; optimization is driven by the fixed workspace script hyperopt.py when the user asks for it.
-* To modify code call update_strategy with a brief task describing only the changes. Use english for the task description.
+* To modify code, call update_strategy with the task string the coding agent will execute. Write it in English. The coding agent does not see the chat—only this task—so preserve the user's requirements in full: when they paste a detailed strategy (rules, indicators, parameters, entry/exit logic, sizing, constraints, edge cases, instruments, dates), include all of it in the task; do not compress it into a short summary. For small follow-up edits, a concise change list is enough.
 * If the user only tweaks existing parameters (different ticker, dates, thresholds, deposit, etc.), call run_backtest instead of update_strategy; pass parameters_json as a JSON string so the tool recursively merges into params.json before the run (do not use a --params CLI flag or teach strategies to accept one).
 * If the user asks for exploratory data analysis, market research, or charts **without** defining a tradable strategy (no signals, no rules backtest), use `update_strategy` for the analysis path, then run_backtest. That path must not write metrics.json or params-hyperopt.json.
 * If the user asks for training/hyperparameter optimization, ensure via update_strategy that the strategy workspace writes params-hyperopt.json (authored as a static file per the workspace AGENTS.md), then run_hyperopt (not run_backtest). To adjust the study without editing files—how many strategy parameters are tuned, their optimisation ranges and bounds, regimes or other study-only config—pass parameters_hyperopt_json on run_hyperopt to merge into params-hyperopt.json before the run.
@@ -118,6 +118,203 @@ def _run_logged_subprocess(
             _tail(proc.stderr or ""),
         )
     return proc
+
+
+def _kill_subprocess_tree(proc: subprocess.Popen[str]) -> None:
+    try:
+        pgid = os.getpgid(proc.pid)
+    except Exception:
+        pgid = None
+    try:
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    except Exception:
+        pass
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return
+        time.sleep(0.05)
+    try:
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except Exception:
+        pass
+
+
+@traceable(name="run_logged_subprocess_stream")
+def _run_logged_subprocess_stream(
+    label: str,
+    cmd: list[str],
+    cwd: str,
+    *,
+    timeout: int,
+    on_stderr_line: Callable[[str], None] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    out_chunks: list[str] = []
+    err_chunks: list[str] = []
+    max_capture_chars = 200_000
+
+    def _append(chunks: list[str], s: str) -> None:
+        if not s:
+            return
+        chunks.append(s)
+        total = sum(len(x) for x in chunks)
+        while total > max_capture_chars and chunks:
+            dropped = chunks.pop(0)
+            total -= len(dropped)
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+            start_new_session=True,
+        )
+    except OSError as e:
+        logger.error("%s failed to start: %s", label, e)
+        raise
+
+    sel = selectors.DefaultSelector()
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    sel.register(proc.stdout, selectors.EVENT_READ, data="stdout")
+    sel.register(proc.stderr, selectors.EVENT_READ, data="stderr")
+    t0 = time.monotonic()
+    try:
+        while True:
+            rc = proc.poll()
+            if rc is not None:
+                try:
+                    remaining_out, remaining_err = proc.communicate(timeout=0.2)
+                except Exception:
+                    remaining_out, remaining_err = "", ""
+                _append(out_chunks, remaining_out or "")
+                _append(err_chunks, remaining_err or "")
+                if on_stderr_line and remaining_err:
+                    for seg in remaining_err.splitlines(keepends=True):
+                        if seg:
+                            on_stderr_line(seg if seg.endswith("\n") else seg + "\n")
+                break
+
+            now = time.monotonic()
+            if timeout > 0 and (now - t0) > timeout:
+                _kill_subprocess_tree(proc)
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+            events = sel.select(timeout=0.25)
+            if not events:
+                continue
+
+            for key, _mask in events:
+                stream_name = key.data
+                try:
+                    line = key.fileobj.readline()
+                except Exception:
+                    line = ""
+                if not line:
+                    continue
+                if stream_name == "stdout":
+                    _append(out_chunks, line)
+                else:
+                    _append(err_chunks, line)
+                    if on_stderr_line:
+                        on_stderr_line(line)
+    finally:
+        try:
+            sel.close()
+        except Exception:
+            pass
+
+    stdout = "".join(out_chunks)
+    stderr = "".join(err_chunks)
+    completed = subprocess.CompletedProcess(
+        args=cmd, returncode=proc.returncode or 0, stdout=stdout, stderr=stderr
+    )
+    if completed.returncode != 0:
+        logger.error(
+            "%s failed: returncode=%s\nstdout:\n%s\nstderr:\n%s",
+            label,
+            completed.returncode,
+            _tail(completed.stdout or ""),
+            _tail(completed.stderr or ""),
+        )
+    return completed
+
+
+def _hyperopt_status_float_str(v: float) -> str:
+    t = f"{v:.3f}"
+    if "." in t:
+        t = t.rstrip("0").rstrip(".")
+    return t
+
+
+def _hyperopt_ui_line_to_status_text(raw_line: str) -> str | None:
+    s = raw_line.strip()
+    if not s.startswith("{") or "hyperopt_ui" not in s:
+        return None
+    try:
+        d = json.loads(s)
+    except json.JSONDecodeError:
+        return None
+    if d.get("hyperopt_ui") is not True:
+        return None
+    ev = d.get("event")
+    mk = str(d.get("objective_metric") or "objective")
+    nt = d.get("n_trials")
+    if ev == "start":
+        return f"Hyperopt · {nt} trials · {mk}"[:512]
+    if ev == "trial":
+        t = d.get("trial")
+        n = d.get("n_trials", nt)
+        best = d.get("best_value")
+        out = str(d.get("outcome") or "")
+        parts: list[str] = [f"Hyperopt · trial {t}/{n}"]
+        if out == "completed" and d.get("trial_value") is not None:
+            try:
+                tv = float(d["trial_value"])
+                parts.append(f"{mk}={_hyperopt_status_float_str(tv)}")
+            except (TypeError, ValueError):
+                parts.append(f"{mk}={d.get('trial_value')}")
+        if best is not None:
+            try:
+                bv = float(best)
+                parts.append(f"best {mk}={_hyperopt_status_float_str(bv)}")
+            except (TypeError, ValueError):
+                parts.append(f"best {mk}={best}")
+        if out and out != "completed":
+            parts.append(out)
+        return " · ".join(parts)[:512]
+    if ev == "stopped":
+        t = d.get("trial")
+        n = d.get("n_trials", nt)
+        best = d.get("best_value")
+        parts = [f"Hyperopt · stopped at trial {t}/{n}"]
+        if best is not None:
+            try:
+                parts.append(f"best {mk}={_hyperopt_status_float_str(float(best))}")
+            except (TypeError, ValueError):
+                parts.append(f"best {mk}={best}")
+        return " · ".join(parts)[:512]
+    if ev == "done":
+        best = d.get("best_value")
+        c = d.get("completed_trials")
+        if best is not None:
+            try:
+                return f"Hyperopt · done · best {mk}={_hyperopt_status_float_str(float(best))} ({c} ok trials)"[:512]
+            except (TypeError, ValueError):
+                return f"Hyperopt · done · best {mk}={best} ({c} ok trials)"[:512]
+        return f"Hyperopt · done ({c} ok trials)"[:512]
+    return None
 
 
 def thread_id_allowed(thread_id: str) -> bool:
@@ -240,8 +437,11 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                     "task": {
                         "type": "string",
                         "description": (
-                            "High-level goal and required behavior or code changes only; use english for the task description."
-                            "Do not specify any file paths or filenames, the tool already known them"
+                            "Full instructions for the coding agent in English. Include every requirement the user stated "
+                            "(especially for long or pasted strategy specs: indicators, thresholds, entry/exit, sizing, "
+                            "constraints, instruments, dates, edge cases). The agent does not see chat history—omitted "
+                            "detail is lost. For tiny follow-ups, a short delta-style description is acceptable. "
+                            "Do not include file paths or filenames; workspace layout is fixed."
                         ),
                     }
                 },
@@ -703,11 +903,21 @@ def _run_logged_subprocess_with_freeze_watchdog(
 def _run_workspace_command(
     command: str,
     cwd: Path,
+    *,
+    on_stderr_line: Callable[[str], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     parts = shlex.split(command)
     if parts and parts[0] == "python":
         parts[0] = sys.executable
     timeout_s = int(os.getenv("STRATEGY_BACKTEST_TIMEOUT_S", "1800"))
+    if on_stderr_line is not None:
+        return _run_logged_subprocess_stream(
+            "workspace command",
+            parts,
+            str(cwd),
+            timeout=timeout_s,
+            on_stderr_line=on_stderr_line,
+        )
     return _run_logged_subprocess("workspace command", parts, str(cwd), timeout=timeout_s)
 
 
@@ -1032,7 +1242,19 @@ def run_backtest(
     else:
         if on_progress:
             on_progress("Optimizing strategy parameters…")
-        bt = _run_workspace_command(command, root)
+
+        def _on_hyperopt_stderr_line(line: str) -> None:
+            if not on_progress:
+                return
+            msg = _hyperopt_ui_line_to_status_text(line)
+            if msg:
+                on_progress(msg)
+
+        bt = _run_workspace_command(
+            command,
+            root,
+            on_stderr_line=_on_hyperopt_stderr_line if on_progress else None,
+        )
         extras = {}
         failure_message = "hyperopt failed"
 

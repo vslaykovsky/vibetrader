@@ -75,12 +75,15 @@ class IndicatorEngine:
         if isinstance(sub, EmaIndicatorSubscription):
             return [("ema", ind.ema_series(close, sub.period))]
         if isinstance(sub, MacdIndicatorSubscription):
-            return [
-                (
-                    "macd",
-                    ind.macd_line_series(close, sub.fast_period, sub.slow_period),
-                )
-            ]
+            line = ind.macd_line_series(close, sub.fast_period, sub.slow_period)
+            sig = ind.macd_signal_series(
+                close, sub.fast_period, sub.slow_period, sub.signal_period
+            )
+            hist = ind.macd_histogram_series(
+                close, sub.fast_period, sub.slow_period, sub.signal_period
+            )
+            all_s = {"macd": line, "signal": sig, "histogram": hist}
+            return [(k, all_s[k]) for k in sub.outputs]
         if isinstance(sub, RsiIndicatorSubscription):
             return [("rsi", ind.rsi_series(close, sub.period))]
         if isinstance(sub, AtrIndicatorSubscription):
@@ -89,11 +92,8 @@ class IndicatorEngine:
             mid, up, lo = ind.bollinger_bands_series(
                 close, sub.period, float(sub.std_dev)
             )
-            return [
-                ("bb_middle", mid),
-                ("bb_upper", up),
-                ("bb_lower", lo),
-            ]
+            all_s = {"bb_middle": mid, "bb_upper": up, "bb_lower": lo}
+            return [(k, all_s[k]) for k in sub.outputs]
         if isinstance(sub, StochasticIndicatorSubscription):
             k_s, d_s = ind.stochastic_k_d_series(
                 high,
@@ -103,7 +103,8 @@ class IndicatorEngine:
                 sub.k_slowing,
                 sub.d_period,
             )
-            return [("stoch_k", k_s), ("stoch_d", d_s)]
+            all_s = {"stoch_k": k_s, "stoch_d": d_s}
+            return [(k, all_s[k]) for k in sub.outputs]
         if isinstance(sub, FibonacciIndicatorSubscription):
             out: list[tuple[str, pd.Series]] = []
             for lv in sub.levels:
@@ -123,6 +124,7 @@ class IndicatorEngine:
         out: list[InputIndicatorDataPoint] = []
         for idx, group in enumerate(self._series_groups):
             sid = self._sub_ids[idx]
+            sub = self._subs[idx]
             for name, s in group:
                 if row < 0 or row >= len(s):
                     continue
@@ -131,7 +133,10 @@ class IndicatorEngine:
                     continue
                 out.append(
                     InputIndicatorDataPoint(
-                        id=sid, name=name, value=float(v), closed=True
+                        id=sid,
+                        name=name,
+                        value=float(v),
+                        closed=True,
                     )
                 )
         return out
@@ -142,6 +147,7 @@ class IndicatorEngine:
         if subscription_index < 0 or subscription_index >= len(self._series_groups):
             return []
         sid = self._sub_ids[subscription_index]
+        sub = self._subs[subscription_index]
         out: list[InputIndicatorDataPoint] = []
         for name, s in self._series_groups[subscription_index]:
             if row < 0 or row >= len(s):
@@ -150,7 +156,12 @@ class IndicatorEngine:
             if pd.isna(v):
                 continue
             out.append(
-                InputIndicatorDataPoint(id=sid, name=name, value=float(v), closed=True)
+                InputIndicatorDataPoint(
+                    id=sid,
+                    name=name,
+                    value=float(v),
+                    closed=True,
+                )
             )
         return out
 
@@ -181,7 +192,10 @@ class IndicatorEngine:
                     continue
                 out.append(
                     InputIndicatorDataPoint(
-                        id=sid, name=name, value=float(v), closed=False
+                        id=sid,
+                        name=name,
+                        value=float(v),
+                        closed=False,
                     )
                 )
         return out
@@ -215,7 +229,12 @@ class IndicatorEngine:
             if pd.isna(v):
                 continue
             out.append(
-                InputIndicatorDataPoint(id=sid, name=name, value=float(v), closed=False)
+                InputIndicatorDataPoint(
+                    id=sid,
+                    name=name,
+                    value=float(v),
+                    closed=False,
+                )
             )
         return out
 

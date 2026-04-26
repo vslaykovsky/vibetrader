@@ -420,9 +420,7 @@ def iter_simulation_steps(
                     sub_index, base_row
                 ):
                     step.indicator_points.append(
-                        pt.model_copy(
-                            update={"id": ind_spec.id, "ticker": ind_spec.ticker}
-                        )
+                        pt.model_copy(update={"id": ind_spec.id})
                     )
             else:
                 for pt in indicator_engine.partial_values_at_row_for_subscription(
@@ -433,9 +431,7 @@ def iter_simulation_steps(
                     partial_low=running.low,
                 ):
                     step.indicator_points.append(
-                        pt.model_copy(
-                            update={"id": ind_spec.id, "ticker": ind_spec.ticker}
-                        )
+                        pt.model_copy(update={"id": ind_spec.id})
                     )
 
         for ri, rspec in enumerate(renko_subs):
@@ -536,7 +532,7 @@ def _build_partial_snapshot(
             partial_high=running.high,
             partial_low=running.low,
         ):
-            out.append(pt.model_copy(update={"id": sub.id, "ticker": sub.ticker}))
+            out.append(pt.model_copy(update={"id": sub.id}))
     return out
 
 

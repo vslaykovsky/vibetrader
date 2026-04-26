@@ -38,8 +38,11 @@ Every `OutputTickerSubscription` and every `*IndicatorSubscription` accepts an o
 **Every input data point the host produces echoes the originating subscription's id**:
 
 - `InputOhlcDataPoint.id` — id of the `OutputTickerSubscription` that produced this bar.
-- `InputIndicatorDataPoint.id` — id of the indicator subscription that produced this value (the `name` field still distinguishes columns within a multi-output indicator, e.g. `bb_lower` vs `bb_upper` vs `bb_middle`).
+- `InputIndicatorDataPoint.id` — id of the indicator subscription that produced this value.
+- `InputIndicatorDataPoint.name` — which output column for that subscription (e.g. `bb_lower` vs `bb_upper` vs `bb_middle`, or `macd` / `signal` / `histogram` for MACD). Allowed names depend on the subscription type and on your `outputs` list (see below). Indicator points do **not** repeat `ticker` or subscription `kind` on stdin: after you print subscriptions at startup, keep a map `id →` your subscription object (or ticker + `kind` + `outputs`) and branch in the stdin loop on **`id` + `name`** only.
 - `InputRenkoDataPoint.id` — id of the `RenkoIndicatorSubscription` that produced this brick.
+
+**`outputs` on multi-line subscriptions (`utils.py`):** `MacdIndicatorSubscription`, `BollingerBandsIndicatorSubscription`, and `StochasticIndicatorSubscription` each include an `outputs` field listing which series the host computes and streams (defaults: all lines). Request only what you need (e.g. MACD `signal` alone). `FibonacciIndicatorSubscription` uses `levels` instead (same idea: which retracement ratios you want).
 
 Match input points to subscriptions by `point.id` rather than by `(ticker, name)` heuristics or by the order of items in `points`. This keeps your code obviously correct when you have **two of the same kind** (two SMAs, two tickers, fast/slow EMAs, etc.):
 

@@ -14,6 +14,7 @@ from strategies_v2.utils import (
     SmaIndicatorSubscription,
     StochasticIndicatorSubscription,
 )
+from pydantic import ValidationError
 
 
 def _sample_ohlc(n: int = 60, seed: int = 0) -> pd.DataFrame:
@@ -82,7 +83,13 @@ def test_indicator_engine_matches_reference_series(factory, ref_name):
 def test_indicator_engine_macd_line():
     df = _sample_ohlc(50)
     sub = MacdIndicatorSubscription(
-        kind="macd", ticker="X", scale="1d", fast_period=8, slow_period=21, signal_period=5
+        kind="macd",
+        ticker="X",
+        scale="1d",
+        fast_period=8,
+        slow_period=21,
+        signal_period=5,
+        outputs=["macd"],
     )
     eng = IndicatorEngine([sub])
     eng.fit(df)
@@ -215,3 +222,70 @@ def test_indicator_engine_fibonacci_levels():
                 assert name not in by_n
             else:
                 assert by_n[name] == pytest.approx(float(rv))
+
+
+def test_macd_indicator_subscription_rejects_empty_outputs():
+    with pytest.raises(ValidationError):
+        MacdIndicatorSubscription(
+            kind="macd",
+            ticker="X",
+            scale="1d",
+            fast_period=8,
+            slow_period=21,
+            signal_period=5,
+            outputs=[],
+        )
+
+
+def test_indicator_engine_macd_outputs_signal_only():
+    df = _sample_ohlc(50)
+    sub = MacdIndicatorSubscription(
+        kind="macd",
+        ticker="X",
+        scale="1d",
+        fast_period=8,
+        slow_period=21,
+        signal_period=5,
+        outputs=["signal"],
+    )
+    eng = IndicatorEngine([sub])
+    eng.fit(df)
+    ref = ind.macd_signal_series(
+        df["close"], sub.fast_period, sub.slow_period, sub.signal_period
+    )
+    i = 30
+    pts = eng.values_at_row_for_subscription(0, i)
+    assert [p.name for p in pts] == ["signal"]
+    assert pts[0].value == pytest.approx(float(ref.iloc[i]))
+
+
+def test_indicator_engine_bollinger_respects_outputs():
+    df = _sample_ohlc(40)
+    sub = BollingerBandsIndicatorSubscription(
+        kind="bb", ticker="X", scale="1d", period=5, std_dev=2.0, outputs=["bb_lower"]
+    )
+    eng = IndicatorEngine([sub])
+    eng.fit(df)
+    i = 20
+    pts = eng.values_at_row_for_subscription(0, i)
+    assert [p.name for p in pts] == ["bb_lower"]
+    _, _, lo = ind.bollinger_bands_series(df["close"], 5, 2.0)
+    assert pts[0].value == pytest.approx(float(lo.iloc[i]))
+
+
+def test_macd_signal_series():
+    df = _sample_ohlc(30)
+    line = ind.macd_line_series(df["close"], 5, 13)
+    sig = ind.macd_signal_series(df["close"], 5, 13, 3)
+    ref = line.ewm(span=3, adjust=False, min_periods=3).mean()
+    i = 20
+    assert float(sig.iloc[i]) == pytest.approx(float(ref.iloc[i]))
+
+
+def test_macd_histogram_series():
+    df = _sample_ohlc(30)
+    line = ind.macd_line_series(df["close"], 5, 13)
+    sig = ind.macd_signal_series(df["close"], 5, 13, 3)
+    hist = ind.macd_histogram_series(df["close"], 5, 13, 3)
+    i = 20
+    assert float(hist.iloc[i]) == pytest.approx(float(line.iloc[i] - sig.iloc[i]))

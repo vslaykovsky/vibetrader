@@ -14,11 +14,27 @@ def ema_series(close: pd.Series, period: int) -> pd.Series:
 
 
 def macd_line_series(close: pd.Series, fast_period: int, slow_period: int) -> pd.Series:
-    """MACD line (fast EMA − slow EMA). Signal/histogram not emitted to the strategy host in MVP."""
     c = close.astype(float)
     fast = c.ewm(span=fast_period, adjust=False).mean()
     slow = c.ewm(span=slow_period, adjust=False).mean()
     return fast - slow
+
+
+def macd_signal_series(
+    close: pd.Series, fast_period: int, slow_period: int, signal_period: int
+) -> pd.Series:
+    line = macd_line_series(close, fast_period, slow_period)
+    return line.ewm(
+        span=signal_period, adjust=False, min_periods=signal_period
+    ).mean()
+
+
+def macd_histogram_series(
+    close: pd.Series, fast_period: int, slow_period: int, signal_period: int
+) -> pd.Series:
+    line = macd_line_series(close, fast_period, slow_period)
+    sig = macd_signal_series(close, fast_period, slow_period, signal_period)
+    return line - sig
 
 
 def rsi_series(close: pd.Series, period: int) -> pd.Series:
