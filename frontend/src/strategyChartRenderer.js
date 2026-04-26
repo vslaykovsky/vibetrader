@@ -10,6 +10,13 @@ import {
 } from 'lightweight-charts';
 import Plotly from 'plotly.js-dist-min';
 import { CHART_THEME } from './lib/chartTheme.js';
+import {
+  chartDetailsSignature,
+  chartsOrderSignature,
+  reorderChartPanels,
+  sanitizeDetailsOpenState,
+  validateChartOrder,
+} from './lib/chartOrder.js';
 
 const SERIES_TYPE_MAP = {
   Candlestick: CandlestickSeries,
@@ -37,6 +44,142 @@ const PLOTLY_CONFIG = {
 
 const INTRADAY_TIME_RE = /[T ]\d{2}:\d{2}/;
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+const CHART_ORDER_LS_PREFIX = 'vibetrader:chartPanelOrder:';
+const DETAILS_OPEN_LS_PREFIX = 'vibetrader:chartDetailsOpen:';
+
+function createDetailsOpenStore(storageKey, chartCount, includeMetrics) {
+  let state = {};
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      state = sanitizeDetailsOpenState(parsed, chartCount, includeMetrics);
+    }
+  } catch {
+    state = {};
+  }
+
+  function persist() {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(state));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return {
+    initialOpen(panelKey) {
+      const v = state[panelKey];
+      return typeof v === 'boolean' ? v : true;
+    },
+    bind(details, panelKey) {
+      details.open = this.initialOpen(panelKey);
+      details.addEventListener('toggle', () => {
+        state = { ...state, [panelKey]: details.open };
+        persist();
+      });
+    },
+  };
+}
+
+function loadChartOrder(storageKey, n) {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return null;
+    const arr = JSON.parse(raw);
+    return validateChartOrder(arr, n) ? arr : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveChartOrder(storageKey, order) {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(order));
+  } catch {
+    /* ignore */
+  }
+}
+
+function createChartDndRow(srcIdx) {
+  const row = document.createElement('div');
+  row.className = 'strategy-chart-dnd-row';
+  row.dataset.srcIdx = String(srcIdx);
+
+  const handle = document.createElement('div');
+  handle.className = 'strategy-chart-dnd-handle';
+  handle.draggable = true;
+  handle.title = 'Drag to reorder charts';
+  handle.setAttribute('aria-label', 'Drag to reorder charts');
+
+  const inner = document.createElement('div');
+  inner.className = 'strategy-chart-dnd-inner';
+
+  row.appendChild(handle);
+  row.appendChild(inner);
+  return row;
+}
+
+function setupChartPanelDnD(dndRoot, storageKey, n, signal) {
+  const rows = () => [...dndRoot.querySelectorAll('.strategy-chart-dnd-row')];
+
+  const applyOrderToDom = (order) => {
+    for (const srcIdx of order) {
+      const row = dndRoot.querySelector(`.strategy-chart-dnd-row[data-src-idx="${srcIdx}"]`);
+      if (row) dndRoot.appendChild(row);
+    }
+  };
+
+  let draggedSrc = null;
+
+  const onDragStart = (e) => {
+    const handle = e.target;
+    if (!handle?.classList?.contains?.('strategy-chart-dnd-handle')) return;
+    const row = handle.closest('.strategy-chart-dnd-row');
+    if (!row) return;
+    draggedSrc = Number(row.dataset.srcIdx);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(draggedSrc));
+    row.classList.add('strategy-chart-dnd-row--dragging');
+  };
+
+  const onDragEnd = () => {
+    draggedSrc = null;
+    for (const r of rows()) {
+      r.classList.remove('strategy-chart-dnd-row--dragging');
+    }
+  };
+
+  const onDragOver = (e) => {
+    if (!dndRoot.contains(e.target)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const onDrop = (e) => {
+    if (!dndRoot.contains(e.target)) return;
+    e.preventDefault();
+    const dropRow = e.target.closest?.('.strategy-chart-dnd-row');
+    if (!dropRow || !dndRoot.contains(dropRow)) return;
+    const dropSrc = Number(dropRow.dataset.srcIdx);
+    let dragSrc = Number(e.dataTransfer.getData('text/plain'));
+    if (!Number.isFinite(dragSrc)) dragSrc = draggedSrc;
+    if (!Number.isFinite(dragSrc) || !Number.isFinite(dropSrc) || dragSrc === dropSrc) return;
+    let order = rows().map((r) => Number(r.dataset.srcIdx));
+    order = reorderChartPanels(order, dragSrc, dropSrc);
+    if (!validateChartOrder(order, n)) return;
+    applyOrderToDom(order);
+    saveChartOrder(storageKey, order);
+  };
+
+  dndRoot.addEventListener('dragstart', onDragStart, { signal });
+  dndRoot.addEventListener('dragend', onDragEnd, { signal });
+  dndRoot.addEventListener('dragover', onDragOver, { signal });
+  dndRoot.addEventListener('drop', onDrop, { signal });
+}
 
 function toBusinessDay(value) {
   if (typeof value !== 'string') return value;
@@ -96,10 +239,9 @@ function normalizeLwcItems(items, normalizeTime) {
   return changed ? out : items;
 }
 
-function makeSection(container, titleText) {
+function makeSection(container, titleText, openStore, panelKey) {
   const details = document.createElement('details');
   details.className = 'strategy-chart-details';
-  details.open = true;
 
   const summary = document.createElement('summary');
   summary.className = 'strategy-chart-summary';
@@ -111,12 +253,23 @@ function makeSection(container, titleText) {
   chartEl.style.cssText = 'width:100%;';
   details.appendChild(chartEl);
 
+  if (openStore && typeof panelKey === 'string' && panelKey !== '') {
+    openStore.bind(details, panelKey);
+  } else {
+    details.open = true;
+  }
+
   container.appendChild(details);
   return { details, chartEl };
 }
 
-function renderLightweightChart(container, chartSpec) {
-  const { details, chartEl: el } = makeSection(container, chartSpec.title || '');
+function renderLightweightChart(container, chartSpec, openStore, panelKey) {
+  const { details, chartEl: el } = makeSection(
+    container,
+    chartSpec.title || '',
+    openStore,
+    panelKey,
+  );
   el.style.height = '350px';
 
   const chart = createChart(el, { ...CHART_THEME, autoSize: true, height: 350 });
@@ -163,8 +316,13 @@ function renderLightweightChart(container, chartSpec) {
 
 export { attachSyncedCrosshair } from './lib/lwcSync.js';
 
-function renderPlotlyChart(container, chartSpec) {
-  const { details, chartEl: el } = makeSection(container, chartSpec.title || '');
+function renderPlotlyChart(container, chartSpec, openStore, panelKey) {
+  const { details, chartEl: el } = makeSection(
+    container,
+    chartSpec.title || '',
+    openStore,
+    panelKey,
+  );
   el.style.minHeight = '300px';
 
   const layout = {
@@ -227,7 +385,7 @@ function triggerCsvDownload(filename, csvText) {
   URL.revokeObjectURL(url);
 }
 
-function renderTablePanel(container, table, title) {
+function renderTablePanel(container, table, title, openStore, panelKey) {
   if (!Array.isArray(table) || table.length === 0) return;
   const first = table[0];
   if (!first || typeof first !== 'object') return;
@@ -267,11 +425,16 @@ function renderTablePanel(container, table, title) {
 
   const details = document.createElement('details');
   details.className = 'strategy-chart-details';
-  details.open = true;
   const summary = document.createElement('summary');
   summary.className = 'strategy-chart-summary';
   summary.textContent = typeof title === 'string' && title.trim() ? title : 'Table';
   details.appendChild(summary);
+
+  if (openStore && typeof panelKey === 'string' && panelKey !== '') {
+    openStore.bind(details, panelKey);
+  } else {
+    details.open = true;
+  }
 
   const wrap = document.createElement('div');
   wrap.style.cssText = 'padding:14px 4px 4px;';
@@ -391,8 +554,8 @@ function renderTablePanel(container, table, title) {
   container.appendChild(details);
 }
 
-function renderMetricsPanel(container, metrics) {
-  if (!metrics || typeof metrics !== 'object') return;
+function buildMetricsPanelItems(metrics) {
+  if (!metrics || typeof metrics !== 'object') return [];
 
   const fmtNumber0 = (v) =>
     typeof v === 'number' && Number.isFinite(v)
@@ -427,15 +590,25 @@ function renderMetricsPanel(container, metrics) {
     { label: 'Final Equity', value: `$${fmtNumber3(metrics.final_equity)}`, color: '#d1d4dc' },
   ].filter((item) => item.value != null && item.value !== 'undefined%' && item.value !== '$undefined');
 
+  return items;
+}
+
+function renderMetricsPanel(container, metrics, openStore) {
+  const items = buildMetricsPanelItems(metrics);
   if (items.length === 0) return;
 
   const details = document.createElement('details');
   details.className = 'strategy-chart-details';
-  details.open = true;
   const summary = document.createElement('summary');
   summary.className = 'strategy-chart-summary';
   summary.textContent = 'Metrics';
   details.appendChild(summary);
+
+  if (openStore) {
+    openStore.bind(details, 'metrics');
+  } else {
+    details.open = true;
+  }
 
   const el = document.createElement('div');
   el.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;padding:14px 4px 4px;';
@@ -455,27 +628,86 @@ function renderMetricsPanel(container, metrics) {
   container.appendChild(details);
 }
 
-export function renderCharts(container, dataJson) {
+function renderOneChartPanel(panelHost, spec, openStore, srcIdx) {
+  const panelKey = `c${srcIdx}`;
+  if (spec.type === 'lightweight-charts') {
+    return renderLightweightChart(panelHost, spec, openStore, panelKey);
+  }
+  if (spec.type === 'plotly') {
+    renderPlotlyChart(panelHost, spec, openStore, panelKey);
+    return { chart: null, primarySeries: null };
+  }
+  if (spec.type === 'table') {
+    renderTablePanel(panelHost, spec.rows, spec.title, openStore, panelKey);
+    return { chart: null, primarySeries: null };
+  }
+  return { chart: null, primarySeries: null };
+}
+
+export function renderCharts(container, dataJson, options) {
   container.innerHTML = '';
 
   const lwCharts = [];
   const lwCrosshairBindings = [];
+  let dndSignal = null;
   const charts = dataJson?.charts;
-  if (Array.isArray(charts)) {
-    for (const spec of charts) {
-      if (spec.type === 'lightweight-charts') {
-        const { chart, primarySeries } = renderLightweightChart(container, spec);
-        lwCharts.push(chart);
-        lwCrosshairBindings.push({ chart, series: primarySeries });
-      } else if (spec.type === 'plotly') {
-        renderPlotlyChart(container, spec);
-      } else if (spec.type === 'table') {
-        renderTablePanel(container, spec.rows, spec.title);
+  const base = options?.chartOrderStorageBase;
+  const chartCount = Array.isArray(charts) ? charts.length : 0;
+  const includeMetrics = buildMetricsPanelItems(dataJson?.metrics ?? null).length > 0;
+  const openBase = typeof base === 'string' && base.trim() !== '';
+  const detailsSig = chartDetailsSignature(charts || [], dataJson?.metrics);
+  const openStore =
+    openBase && (chartCount > 0 || includeMetrics)
+      ? createDetailsOpenStore(
+          `${DETAILS_OPEN_LS_PREFIX}${base}:${detailsSig}`,
+          chartCount,
+          includeMetrics,
+        )
+      : null;
+
+  if (Array.isArray(charts) && charts.length > 0) {
+    const n = charts.length;
+    const useDnd = typeof base === 'string' && base.trim() !== '' && n > 1;
+    if (useDnd) {
+      const sig = chartsOrderSignature(charts);
+      const storageKey = `${CHART_ORDER_LS_PREFIX}${base}:${sig}`;
+      const order = loadChartOrder(storageKey, n) ?? [...Array(n).keys()];
+      const list = document.createElement('div');
+      list.className = 'strategy-charts-dnd-list';
+      container.appendChild(list);
+      for (const srcIdx of order) {
+        const spec = charts[srcIdx];
+        if (!spec) continue;
+        const row = createChartDndRow(srcIdx);
+        list.appendChild(row);
+        const inner = row.querySelector('.strategy-chart-dnd-inner');
+        const { chart, primarySeries } = renderOneChartPanel(inner, spec, openStore, srcIdx);
+        if (chart) {
+          lwCharts.push(chart);
+          lwCrosshairBindings.push({ chart, series: primarySeries });
+        }
+      }
+      dndSignal = new AbortController();
+      setupChartPanelDnD(list, storageKey, n, dndSignal.signal);
+    } else {
+      for (let srcIdx = 0; srcIdx < charts.length; srcIdx++) {
+        const spec = charts[srcIdx];
+        const { chart, primarySeries } = renderOneChartPanel(container, spec, openStore, srcIdx);
+        if (chart) {
+          lwCharts.push(chart);
+          lwCrosshairBindings.push({ chart, series: primarySeries });
+        }
       }
     }
   }
 
-  renderMetricsPanel(container, dataJson?.metrics);
+  renderMetricsPanel(container, dataJson?.metrics, openStore);
 
-  return { lwCharts, lwCrosshairBindings };
+  return {
+    lwCharts,
+    lwCrosshairBindings,
+    detachChartDnD: () => {
+      dndSignal?.abort();
+    },
+  };
 }
