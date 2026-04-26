@@ -17,11 +17,11 @@ describe('ohlcResample', () => {
     const bars = [
       {
         unixtime: wed,
-        ohlc: { open: 10, high: 12, low: 9, close: 11 },
+        ohlc: { open: 10, high: 12, low: 9, close: 11, volume: 100 },
       },
       {
         unixtime: wed + 86400,
-        ohlc: { open: 11, high: 13, low: 10, close: 12 },
+        ohlc: { open: 11, high: 13, low: 10, close: 12, volume: 200 },
       },
     ];
     const out = resampleOhlc(bars, '1w');
@@ -31,10 +31,11 @@ describe('ohlcResample', () => {
     expect(out[0].close).toBe(12);
     expect(out[0].high).toBe(13);
     expect(out[0].low).toBe(9);
+    expect(out[0].volume).toBe(300);
   });
 
   it('resamples equity to last value in bucket', () => {
-    const t0 = 1_700_000_000;
+    const t0 = 1_700_006_400;
     const pts = [
       { unixtime: t0, equity: 100 },
       { unixtime: t0 + 3600, equity: 101 },

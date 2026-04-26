@@ -12,16 +12,24 @@ Do not run `strategy.py` or `hyperopt.py` here — the platform runs them throug
 
 ## `params.json`
 
-Single source of truth next to `strategy.py`: ticker, bar `scale` (strategy's native timeframe), indicator knobs (nested objects per indicator, for example `sma.period`), order sizing (`orders.deposit_fraction` in `[0, 1]`, default **`1`** — use on **buys** only unless you mean partial sells; see **Market orders**), a human-readable `strategy_name` (no ticker in the name), and a short `description` for the UI.
+Single source of truth next to `strategy.py`: ticker, bar `scale` (strategy's native timeframe), a human-readable `strategy_name` (no ticker in the name), and a short `description` for the UI.
+
 Also include simulator inputs consumed by the host (not read by `strategy.py`): `start_date` / `end_date` (ISO `YYYY-MM-DD`) defining the historical backtest window, `initial_deposit` (positive number), an optional `provider` (`alpaca`, `moex`, or `auto`), and an optional `simulation_scale` (`1m` / `15m` / `1h` / `4h` / `1d` / `1w`, default = `scale`) — see **Simulation scale** below.
-Update this file accordingly when updating `strategy.py`.
-Read the strategy-relevant values at startup; do not duplicate them as top-level constants in `strategy.py`. The host may merge run-time overrides into `params.json` before the process starts; do not add a `--params` CLI flag.
+
+**Tunable parameters (strategy knobs, sizing, thresholds, indicator periods, etc.):** define every such value as a **top-level key** in `params.json` (flat JSON). `strategy.py` must read each tunable with `params["<key>"]` (or `params.get("<key>", default)`), using **the same key string** you will use in `params-hyperopt.json` `search_space`. Do not tuck tunables only under nested objects (for example `rsi.period` as the sole path while hyperopt writes a sibling key `rsi.period` at the root): `hyperopt.py` shallow-merges sampled values onto the **root** object only, so nested fields are never updated by a study. Nested objects are fine only for **fixed** blobs the host or strategy reads as a whole when those inner fields are not individually tuned or overridden.
+
+**Consistency with `params-hyperopt.json`:** every `search_space` key must already exist as a top-level entry in `params.json` with a valid default. Do not list a key in `search_space` that the strategy does not read from the root of `params.json`. Do not read a tunable from nesting if that tunable is listed in `search_space` — the study will not change nested copies.
+
+Update this file accordingly when updating `strategy.py`. Read the strategy-relevant values at startup; do not duplicate them as unrelated constants in `strategy.py`. The host may merge run-time overrides into `params.json` before the process starts; do not add a `--params` CLI flag.
+
+Order sizing for buys: use a top-level tunable (for example `deposit_fraction` in `[0, 1]`, default **`1`**) and pass it as `deposit_ratio` on buy `market_order` outputs; see **Market orders**.
 
 ## I/O
 
 - **stdin:** one JSON object per line. Each line is a `StrategyInput`: top-level `unixtime` and a `points` list of `ohlc`, `indicator`, `portfolio`, and/or `renko` items. `unixtime` is strictly monotonic across lines. Most lines correspond to a driver bar at its natural clock; a driver bar that produces sub-bar events (e.g. renko bricks) fans out into multiple lines, each with its own nudged `unixtime` so the stream stays strictly increasing.
 - **stdout:** one JSON object per line. Each line is a `StrategyOutput`: a list of outputs (subscriptions, indicator values, market orders, time acks). Match the discriminated models in `utils.py`.
-- **`time_ack` (required):** The host applies strict backpressure: **it will not write the next stdin line until your process prints a stdout line that includes an `OutputTimeAck` (`"kind": "time_ack"`) for the current input line's `unixtime`.** Emitting that ack is what unblocks the next `read` / next `for raw in sys.stdin` iteration. If you buffer many stdin lines before printing any ack, or omit the ack while still reading, you deadlock: the host waits for stdout while you wait for more stdin. After you read any `StrategyInput` line carrying `ohlc`, `indicator`, or `renko` points, emit exactly one `{ "kind": "time_ack", "unixtime": <same value as on the input line> }`. Include it in the same stdout JSON line as the rest of the outputs for that step (typically last in the list). If a line has only `portfolio` points, emit no `time_ack`. You must still emit `time_ack` when you skip trading logic (for example missing data): the host is waiting on the clock, not on your orders.
+- **`time_ack` (required):** The host applies strict backpressure: **it will not write the next stdin line until your process prints a stdout line that includes an `OutputTimeAck` (`"kind": "time_ack"`) for the current input line's `unixtime`.** Emitting that ack is what unblocks the next `read` / next `for raw in sys.stdin` iteration. If you buffer many stdin lines before printing any ack, or omit the ack while still reading, you deadlock: the host waits for stdout while you wait for more stdin.
+  **Unconditional rule:** For **every** `StrategyInput` line you read from stdin (any mixture of `portfolio`, `ohlc`, `indicator`, `renko` in `points`), print **exactly one** stdout line for that line that includes **exactly one** `time_ack` with `unixtime` equal to that input's top-level `unixtime`. No exceptions by point kind: portfolio-only lines, warm-up bars with no indicator values, partial vs closed, and lines where you emit no trades or charts all use the same rule. If you have nothing else to send, use a one-item `StrategyOutput` containing only the `time_ack`. Put `time_ack` on that stdout line with any other outputs for the step (typically last in the list). Omitting `time_ack` for any read line causes the host to time out waiting for stdout.
 
 ## Subscription `id` (preferred dispatch key)
 
@@ -58,6 +66,8 @@ for raw in sys.stdin:
             last_slow = pt.value
         elif pt.kind == "ohlc" and pt.id == "price" and pt.closed:
             ...
+    out.append(OutputTimeAck(unixtime=inp.unixtime))
+    print(StrategyOutput(out).model_dump_json(), flush=True)
 ```
 
 ## Intermediate bar updates (`closed` flag)
@@ -121,16 +131,16 @@ Renko subscriptions are not supported in multi-ticker simulations yet — use a 
 ## Market orders (`kind: "market_order"`)
 
 - **`deposit_ratio`** defaults to **`1.0`** when omitted (matches `utils.py`).
-- **`deposit_ratio` on `buy`** — fraction of **cash** spent (e.g. `orders.deposit_fraction`, default **`1`**).
-- **`deposit_ratio` on `sell`** — fraction of **open size** closed, not cash; use **`1.0`** for a full exit. Reusing `orders.deposit_fraction` on sells is a partial exit; keep “in position” in sync with **`portfolio`** if you do that.
+- **`deposit_ratio` on `buy`** — fraction of **cash** spent (read the fraction from your top-level buy-size key in `params.json`, default **`1`**).
+- **`deposit_ratio` on `sell`** — fraction of **open size** closed, not cash; use **`1.0`** for a full exit. Reusing the same buy-fraction top-level tunable on sells is a partial exit; keep “in position” in sync with **`portfolio`** if you do that.
 
 The fill price is the running close at the time of the update that triggered the order (intraday mid-bar price when `closed: false`, closed-bar close when `closed: true`).
 
 ## What the strategy should do
 
-1. **Start:** handle an initial **`portfolio`** line if present, then emit subscription outputs — `ticker_subscription` for prices you need (set `partial=True` and optionally `update_scale` if you want intra-bar prices), `indicator_subscription` for built-ins (sma, ema, macd, rsi, atr, bb, stochastic, renko) with ticker, scale, parameters, and optional `partial` / `update_scale`. **Set a readable `id` on every subscription** (see **Subscription `id`**) — each input point will carry that id so you can dispatch by role. Read subscription parameters from `params.json` where applicable.
-   You must emit all subscriptions at startup **before** reading/processing any market-data stdin lines (`ohlc` / `indicator` / `renko`). The only allowed stdin read before subscriptions is an optional initial `portfolio` snapshot (the host may send it first so the strategy can recover position state).
-2. **Loop:** read each `StrategyInput` line; if it contains `portfolio`, refresh position state from `positions` before or together with processing `ohlc` / `indicator` for that step. **Match each `ohlc` / `indicator` / `renko` point to your subscription via `point.id`.** Distinguish closed vs partial points using the `closed` flag and update durable state (history lists, previous-close memory) only on closed points. On partial updates use the running values for live signal checks. When you trade emit `market_order` items per **Market orders**. Finish each stdin line that carries market data with the required **`OutputTimeAck`** / **`time_ack`** on stdout; the host will not send the next stdin line until that line is printed.
+1. **Start:** emit subscription outputs first — `ticker_subscription` for prices you need (set `partial=True` and optionally `update_scale` if you want intra-bar prices), `indicator_subscription` for built-ins (sma, ema, macd, rsi, atr, bb, stochastic, renko) with ticker, scale, parameters, and optional `partial` / `update_scale`. **Set a readable `id` on every subscription** (see **Subscription `id`**) — each input point will carry that id so you can dispatch by role. Read subscription parameters from `params.json` where applicable. Print that startup `StrategyOutput` before you read stdin so an initial **`portfolio`** line the host buffered is handled in the main loop with the same **`time_ack`** rule as every other line (**I/O**).
+   You must emit all subscriptions **before** reading or acting on any `ohlc` / `indicator` / `renko` points from stdin.
+2. **Loop:** read each `StrategyInput` line; if it contains `portfolio`, refresh position state from `positions` before or together with processing `ohlc` / `indicator` for that step. **Match each `ohlc` / `indicator` / `renko` point to your subscription via `point.id`.** Distinguish closed vs partial points using the `closed` flag and update durable state (history lists, previous-close memory) only on closed points. On partial updates use the running values for live signal checks. When you trade emit `market_order` items per **Market orders**. On **every** stdin line, print stdout with the **`time_ack`** for that line's `unixtime` (see **I/O**); the host will not send the next stdin line until that line is printed.
 3. **Each step:** Only emit OutputIndicatorDataPoint for a few key debug or plot values if helpful. Do not output raw input prices or indicators, and skip this output if there's nothing useful to show.
 
 Keep logic clear and small; put all subscription and signal rules in `strategy.py`. Prefer shorter code over readability. Do not create functions or classes unless absolutely necessary for reusability.
@@ -143,7 +153,7 @@ Pattern for pure EDA:
 
 1. In startup, emit subscription outputs for every input you need (`ticker_subscription`, `indicator_subscription`). Same as a trading strategy.
 2. Only after you have emitted subscriptions, read stdin with `for raw in sys.stdin:` — when the host closes stdin, the loop exits.
-3. On each step, if `point.closed`, push the values you need into long-lived lists (returns, indicator series, labels, etc.). On partial points do nothing unless you specifically need intra-bar stats. Always emit the required `time_ack` for every step with `ohlc` or `indicator` points.
+3. On each step, if `point.closed`, push the values you need into long-lived lists (returns, indicator series, labels, etc.). On partial points do nothing unless you specifically need intra-bar stats. On every stdin line, emit the required `time_ack` (same rule as trading strategies; see **I/O**).
 4. After the loop, run your analysis, build a list of `OutputChart` items, print `StrategyOutput(items).model_dump_json()` on a single line, flush, and exit.
 
 A trading strategy can emit `OutputChart` items in the same line as `market_order` / `time_ack`, at any step. All collected `OutputChart` items are rendered before the host's price / equity / trades charts.
@@ -163,8 +173,10 @@ If your `strategy.py` emits `market_order` outputs (a tradable strategy, not pur
 
 The file must match the **`ParamsHyperopt`** model in **`utils.py`** (field names, types, defaults, and `search_space` entries as **`HyperoptIntSpec`**, **`HyperoptFloatSpec`**, or **`HyperoptCategoricalSpec`** per the `type` discriminator). Treat those Pydantic models as the single source of truth; do not restate their shape here.
 
+**Contract with `params.json`:** `search_space` keys are **top-level** names. Each key must match a **top-level** tunable in `params.json` (same string, same type after coercion) that `strategy.py` reads from the merged root object. Dotted names in examples (e.g. `rsi.period`) are only a naming convention for flat keys — they are still a single JSON property name at the root, not a path into a nested `rsi` object unless you also defined nested merging (the platform does not). Keep `params.json` and `search_space` in lockstep: add or rename a tunable in both files together.
+
 Constraints:
 
-- Tune only parameters that affect trading behavior (indicator knobs such as `sma.period`, thresholds, `orders.deposit_fraction`, etc.). Do not put `ticker`, `scale`, `simulation_scale`, `start_date`, `end_date`, `initial_deposit`, `provider`, `strategy_name`, or `description` in the search space.
-- Keep keys flat; `hyperopt.py` merges sampled values into `params.json` at the top level. If you need to tune a nested knob, either promote it to a top-level key in `params.json` or change `strategy.py` to read it from the top level.
+- Tune only parameters that affect trading behavior (indicator periods, thresholds, buy fractions, etc.). Do not put `ticker`, `scale`, `simulation_scale`, `start_date`, `end_date`, `initial_deposit`, `provider`, `strategy_name`, or `description` in the search space.
+- `hyperopt.py` shallow-merges sampled values onto the root of `params.json`; all optimized knobs must therefore live as top-level keys there and be read as such in `strategy.py` (see **`params.json`**).
 - Do not write or update `params.json` or `params-hyperopt.json` from `strategy.py`. `hyperopt.py` rewrites `params.json` after a study.

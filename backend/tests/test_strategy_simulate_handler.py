@@ -108,4 +108,6 @@ def test_simulation_handler_echo_emits_bars_in_date_range():
     events = _collect_events(sess, timeout=15.0)
     kinds = [e.get("kind") for e in events]
     assert kinds.count("bar") == 3
+    bar_events = [e for e in events if e.get("kind") == "bar"]
+    assert bar_events[0]["ohlc"]["volume"] == 1_000.0
     assert "done" in [e.get("status") for e in events if e.get("kind") == "status"]

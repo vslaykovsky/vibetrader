@@ -100,9 +100,9 @@ export function bucketStart(unix, tf) {
 }
 
 /**
- * @param {{ unixtime: number; ohlc: { open: number; high: number; low: number; close: number } }[]} bars
+ * @param {{ unixtime: number; ohlc: { open: number; high: number; low: number; close: number; volume?: number } }[]} bars
  * @param {string} targetTf
- * @returns {{ time: number; open: number; high: number; low: number; close: number }[]}
+ * @returns {{ time: number; open: number; high: number; low: number; close: number; volume?: number }[]}
  */
 export function resampleOhlc(bars, targetTf) {
   if (!Array.isArray(bars) || bars.length === 0) return [];
@@ -112,6 +112,8 @@ export function resampleOhlc(bars, targetTf) {
   for (const b of bars) {
     const t = bucketStart(b.unixtime, tf);
     let row = map.get(t);
+    const v =
+      typeof b.ohlc.volume === 'number' && Number.isFinite(b.ohlc.volume) ? b.ohlc.volume : null;
     if (!row) {
       row = {
         time: t,
@@ -120,11 +122,15 @@ export function resampleOhlc(bars, targetTf) {
         low: b.ohlc.low,
         close: b.ohlc.close,
       };
+      if (v != null) row.volume = v;
       map.set(t, row);
     } else {
       row.high = Math.max(row.high, b.ohlc.high);
       row.low = Math.min(row.low, b.ohlc.low);
       row.close = b.ohlc.close;
+      if (v != null) {
+        row.volume = (typeof row.volume === 'number' && Number.isFinite(row.volume) ? row.volume : 0) + v;
+      }
     }
   }
   return [...map.values()].sort((a, b) => a.time - b.time);

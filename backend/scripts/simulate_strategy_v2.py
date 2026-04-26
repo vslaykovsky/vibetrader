@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
@@ -377,12 +378,23 @@ def simulate(
     cache_dir.mkdir(parents=True, exist_ok=True)
     bars_query = HistoricalBarsQuery(cache_dir=cache_dir)
     rt = StrategyRuntime(workspace, entry_script=entry_script)
+    strategy_subprocess_secs = 0.0
+
+    def _call_strategy(fn, *args, **kwargs):
+        nonlocal strategy_subprocess_secs
+        t0 = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            strategy_subprocess_secs += time.perf_counter() - t0
+
     try:
-        startup = rt.start(
+        startup = _call_strategy(
+            rt.start,
             initial_input=StrategyInput(
                 unixtime=0,
                 points=[InputPortfolioDataPoint(positions=[])],
-            )
+            ),
         )
         startup = assign_subscription_ids(startup)
         logger.info(
@@ -445,6 +457,8 @@ def simulate(
         per_base_df: dict[str, pd.DataFrame] = {}
         per_engine: dict[str, IndicatorEngine] = {}
         per_engine_ind_subs: dict[str, list] = {}
+        subscription_input_download_secs = 0.0
+        dl_t0 = time.perf_counter()
         for t in tickers:
             logger.info(
                 "fetch bars ticker=%s sim_scale=%s start=%s end=%s padding_days=%s provider=%s",
@@ -490,6 +504,12 @@ def simulate(
                 len(base_df_t),
                 list(driver_df_t.columns),
             )
+        subscription_input_download_secs = time.perf_counter() - dl_t0
+        logger.info(
+            "subscription_input_download_seconds=%.3f tickers=%s",
+            subscription_input_download_secs,
+            tickers,
+        )
 
         if not per_driver_df:
             raise ValueError("No OHLC rows returned for simulation")
@@ -637,7 +657,7 @@ def simulate(
                                         str(pt.direction),
                                     )
                                 )
-                        out = rt.send(line)
+                        out = _call_strategy(rt.send, line)
                         _apply_outputs(
                             out,
                             step_unixtime=line.unixtime,
@@ -730,11 +750,16 @@ def simulate(
                     h = float(df.iloc[row]["high"])
                     l = float(df.iloc[row]["low"])
                     c = float(df.iloc[row]["close"])
+                    v = (
+                        float(df.iloc[row]["volume"])
+                        if "volume" in df.columns
+                        else 0.0
+                    )
                     step_points.append(
                         InputOhlcDataPoint(
                             id=str(sub.id),
                             ticker=sub.ticker,
-                            ohlc=Ohlc(open=o, high=h, low=l, close=c),
+                            ohlc=Ohlc(open=o, high=h, low=l, close=c, volume=v),
                             closed=True,
                         )
                     )
@@ -770,7 +795,7 @@ def simulate(
                 if fired:
                     points_all: list = [portfolio.to_portfolio_datapoint()] + step_points
                     step_input = StrategyInput(unixtime=base_unix, points=points_all)
-                    out = rt.send(step_input)
+                    out = _call_strategy(rt.send, step_input)
                     _apply_outputs(out, step_unixtime=base_unix, fills=fills)
 
                 primary_close = fills.get(primary_ticker)
@@ -818,11 +843,12 @@ def simulate(
                             }
                         )
         try:
-            final_output = rt.finalize()
+            final_output = _call_strategy(rt.finalize)
         except StrategyRuntimeError as exc:
             logger.warning("strategy finalize failed: %s", exc)
             final_output = StrategyOutput([])
         _collect_strategy_charts(final_output)
+        logger.info("strategy_subprocess_seconds=%.3f", strategy_subprocess_secs)
     finally:
         try:
             rt.write_io_files()

@@ -41,17 +41,17 @@ Workflow
 * Before the first update_strategy, request any missing details needed to build the strategy (e.g., ticker, candlestick scale, backtest window (start/end dates), indicators, entry/exit rules, order sizing, other parameters). The user may want to come up with good default values for these parameters, proceed with good defaults then. 
 * Do not add hyperparameter search loops inside strategy.py by default; optimization is driven by the fixed workspace script hyperopt.py when the user asks for it.
 * To modify code call update_strategy with a brief task describing only the changes. Use english for the task description.
-* If the user only tweaks existing parameters (different ticker, dates, thresholds, deposit, etc.), call run_strategy with `python strategy.py` instead of update_strategy; pass parameters_json as a JSON string so the tool recursively merges into params.json before the run (do not use a --params CLI flag or teach strategies to accept one).
-* If the user asks for exploratory data analysis, market research, or charts **without** defining a tradable strategy (no signals, no rules backtest), use `update_strategy` for the analysis path, then run_strategy with `python strategy.py`. That path must not write metrics.json or params-hyperopt.json.
-* If the user asks for training/hyperparameter optimization, ensure via update_strategy that the strategy workspace writes params-hyperopt.json (authored as a static file per the workspace AGENTS.md), then run_strategy with `python hyperopt.py` (not strategy.py).
+* If the user only tweaks existing parameters (different ticker, dates, thresholds, deposit, etc.), call run_backtest instead of update_strategy; pass parameters_json as a JSON string so the tool recursively merges into params.json before the run (do not use a --params CLI flag or teach strategies to accept one).
+* If the user asks for exploratory data analysis, market research, or charts **without** defining a tradable strategy (no signals, no rules backtest), use `update_strategy` for the analysis path, then run_backtest. That path must not write metrics.json or params-hyperopt.json.
+* If the user asks for training/hyperparameter optimization, ensure via update_strategy that the strategy workspace writes params-hyperopt.json (authored as a static file per the workspace AGENTS.md), then run_hyperopt (not run_backtest). To adjust the study without editing files—how many strategy parameters are tuned, their optimisation ranges and bounds, regimes or other study-only config—pass parameters_hyperopt_json on run_hyperopt to merge into params-hyperopt.json before the run.
 * Always respond in the user's language.
-* After each successful update_strategy, call run_strategy so results match the change (`python strategy.py` or `python hyperopt.py` as appropriate). Only briefly summarize strategy performance based on the output of the run_strategy call, don't make up numbers. The user already sees all the charts and metrics.
+* After each successful update_strategy, call run_backtest or run_hyperopt so results match the change. Only briefly summarize strategy performance based on the output of that tool call, don't make up numbers. The user already sees all the charts and metrics.
 
 Notes
 * The workspace follows strategies_v2 conventions (see AGENTS.md there): strategy.py is a streaming process that reads params.json, emits ticker_subscription and indicator_subscription on startup, then processes StrategyInput lines from stdin and emits market_order / indicator / time_ack outputs on stdout. utils.py and hyperopt.py are fixed and must not be edited.
 * update_strategy edits strategy.py, params.json, and (for trading strategies) params-hyperopt.json via the coding agent; layout and run contract follow AGENTS.md in that workspace.
-* `python strategy.py` in run_strategy is dispatched to the historical simulator (scripts/simulate_strategy_v2.py): it fetches OHLC bars for the ticker/scale across start_date..end_date from params.json, streams them to strategy.py, and refreshes backtest.json (charts) and metrics.json (scalar metrics).
-* `python hyperopt.py` runs the random-search hyperparameter study in the workspace, which invokes the same simulator per trial and rewrites params.json with the best trial before a final simulator run.
+* run_backtest runs the historical simulator (scripts/simulate_strategy_v2.py): it fetches OHLC bars for the ticker/scale across start_date..end_date from params.json, streams them to strategy.py, and refreshes backtest.json (charts) and metrics.json (scalar metrics).
+* run_hyperopt runs the random-search hyperparameter study in the workspace, which invokes the same simulator per trial and rewrites params.json with the best trial before a final simulator run.
 * Market data providers: use Alpaca for all non-Russian markets; use MOEX (moexalgo/Algopack) for Russian instruments/markets.
 * Alpaca historical market data starts in 2016; there is no data before 2016.
 * Auto provider selection is allowed and preferred when uncertain: try Alpaca first, then MOEX.
@@ -73,9 +73,10 @@ STRATEGY_HYPEROPT_TEMPLATE = STRATEGIES_DIR / "hyperopt.py"
 SIMULATE_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "simulate_strategy_v2.py"
 STRATEGY_CODE_AGENT_PREFIX = ""
 UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
-RUN_STRATEGY_TOOL_NAME = "run_strategy"
+RUN_BACKTEST_TOOL_NAME = "run_backtest"
+RUN_HYPEROPT_TOOL_NAME = "run_hyperopt"
 UPDATE_STRATEGY_TOOL_MESSAGE_MAX_JSON = 1024
-RUN_STRATEGY_TOOL_MESSAGE_MAX_JSON = 4096
+RUN_EXECUTION_TOOL_MESSAGE_MAX_JSON = 4096
 ANALYSE_CODE_TOOL_NAME = "analyse_code"
 
 ProgressCallback = Callable[[str], None] | None
@@ -231,7 +232,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             "name": UPDATE_STRATEGY_TOOL_NAME,
             "description": (
                 "Implement strategy or analysis changes in this thread's strategy workspace using the configured coding agent. "
-                "Workspace conventions are in AGENTS.md there. After it succeeds, call run_strategy to refresh outputs."
+                "Workspace conventions are in AGENTS.md there. After it succeeds, call run_backtest or run_hyperopt to refresh outputs."
             ),
             "parameters": {
                 "type": "object",
@@ -251,26 +252,16 @@ AGENT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": RUN_STRATEGY_TOOL_NAME,
+            "name": RUN_BACKTEST_TOOL_NAME,
             "description": (
-                "Run a strategy command in this thread's workspace (no coding agent, no code edits). "
-                "Use `python strategy.py` for normal runs: the host dispatches to scripts/simulate_strategy_v2.py, "
-                "fetches OHLC bars for the ticker/scale across start_date..end_date from params.json, streams them "
-                "to strategy.py, and refreshes backtest.json and metrics.json. "
-                "Use `python hyperopt.py` when the user asked for hyperparameter optimization and the workspace has a valid params-hyperopt.json; "
-                "hyperopt invokes the same simulator per trial and rewrites params.json with the best trial before a final simulator run. "
-                "Optional parameters_json (a JSON string) is recursively merged into params.json before the command runs."
+                "Run a single backtest in this thread's workspace (no coding agent, no code edits). "
+                "Dispatches to scripts/simulate_strategy_v2.py: fetches OHLC bars for the ticker/scale across "
+                "start_date..end_date from params.json, streams them to strategy.py, and refreshes backtest.json and metrics.json. "
+                "Optional parameters_json (a JSON string) is recursively merged into params.json before the run."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": (
-                            "Shell command, either `python strategy.py` or `python hyperopt.py`. "
-                            "Pass ticker, dates, deposit, or other overrides in parameters_json (merged into params.json), not on the command line."
-                        ),
-                    },
                     "parameters_json": {
                         "type": "string",
                         "description": (
@@ -280,7 +271,41 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                         ),
                     },
                 },
-                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": RUN_HYPEROPT_TOOL_NAME,
+            "description": (
+                "Run hyperparameter optimization in this thread's workspace (no coding agent, no code edits). "
+                "Requires a valid params-hyperopt.json. Invokes the same simulator per trial and rewrites params.json "
+                "with the best trial before a final simulator run. "
+                "Optional parameters_json (a JSON string) is merged into params.json before the study. "
+                "Optional parameters_hyperopt_json (a JSON string) is merged into params-hyperopt.json before the study "
+                "(study definition: which params are optimised, their ranges, regimes, trial budget, etc.—not base backtest inputs like ticker or dates; use parameters_json for those)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "parameters_json": {
+                        "type": "string",
+                        "description": (
+                            "If provided, must be valid JSON. Object values are merged recursively into existing params.json "
+                            "before hyperopt starts, using the same merge rules as run_backtest."
+                        ),
+                    },
+                    "parameters_hyperopt_json": {
+                        "type": "string",
+                        "description": (
+                            "If provided, must be valid JSON. Merged recursively into existing params-hyperopt.json (same merge rules as "
+                            "parameters_json into params.json). Use this to change the optimisation study: which strategy parameters are "
+                            "in the search space, their ranges or bounds, regimes, trial count or timeouts, and other study-only settings—not "
+                            "base simulation inputs in params.json (ticker, dates, deposit, etc.); pass those via parameters_json."
+                        ),
+                    },
+                },
             },
         },
     },
@@ -821,6 +846,37 @@ def _merge_parameters_json_into_params_file(root: Path, parameters_json: Any) ->
     )
 
 
+def _merge_parameters_hyperopt_json_into_params_hyperopt_file(
+    root: Path, parameters_hyperopt_json: Any
+) -> None:
+    if parameters_hyperopt_json is None:
+        return
+
+    parsed: Any
+    if isinstance(parameters_hyperopt_json, str):
+        raw = parameters_hyperopt_json.strip()
+        if not raw:
+            return
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            raise ValueError("parameters_hyperopt_json is not valid JSON")
+    else:
+        parsed = parameters_hyperopt_json
+
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "params-hyperopt.json"
+    if isinstance(parsed, dict):
+        existing = _read_params_json_object(path)
+        to_write = _deep_merge_json_values(existing, parsed)
+    else:
+        to_write = parsed
+    path.write_text(
+        json.dumps(to_write, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
 _REDACT_JSON_KEYS_FOR_USER = frozenset(
     {
         "openrouter_api_key",
@@ -892,12 +948,22 @@ def _is_simulator_command(command: str) -> bool:
     return len(parts) == 1 or parts[0] in ("python", "python3") or parts[0] == sys.executable
 
 
+def _is_hyperopt_command(command: str) -> bool:
+    parts = shlex.split(command or "")
+    if not parts:
+        return False
+    if parts[-1] != "hyperopt.py":
+        return False
+    return len(parts) == 1 or parts[0] in ("python", "python3") or parts[0] == sys.executable
+
+
 @traceable(name="run_backtest")
 def run_backtest(
     thread_id: str,
     command: str,
     on_progress: ProgressCallback = None,
     parameters_json: Any = None,
+    parameters_hyperopt_json: Any = None,
 ) -> dict[str, Any]:
     if not thread_id_allowed(thread_id):
         return {"ok": False, "error": "invalid thread_id"}
@@ -908,6 +974,14 @@ def run_backtest(
     if parameters_json is not None:
         try:
             _merge_parameters_json_into_params_file(root, parameters_json)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+
+    if parameters_hyperopt_json is not None and _is_hyperopt_command(command):
+        try:
+            _merge_parameters_hyperopt_json_into_params_hyperopt_file(
+                root, parameters_hyperopt_json
+            )
         except ValueError as e:
             return {"ok": False, "error": str(e)}
 
@@ -957,7 +1031,7 @@ def run_backtest(
         failure_message = "simulation failed"
     else:
         if on_progress:
-            on_progress("Running hyperopt…")
+            on_progress("Optimizing strategy parameters…")
         bt = _run_workspace_command(command, root)
         extras = {}
         failure_message = "hyperopt failed"
@@ -983,12 +1057,22 @@ def _tool_handlers_for_thread(
     def _update(args: dict[str, Any]) -> dict[str, Any]:
         return run_update_strategy(thread_id, str(args.get("task", "")), on_progress=on_progress)
 
-    def _rerun(args: dict[str, Any]) -> dict[str, Any]:
-        command = str(args.get("command", ""))
-        raw_params = args.get("parameters_json")
-        parameters_json = raw_params
+    def _run_backtest_tool(args: dict[str, Any]) -> dict[str, Any]:
         return run_backtest(
-            thread_id, command, on_progress=on_progress, parameters_json=parameters_json
+            thread_id,
+            "python strategy.py",
+            on_progress=on_progress,
+            parameters_json=args.get("parameters_json"),
+            parameters_hyperopt_json=None,
+        )
+
+    def _run_hyperopt_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return run_backtest(
+            thread_id,
+            "python hyperopt.py",
+            on_progress=on_progress,
+            parameters_json=args.get("parameters_json"),
+            parameters_hyperopt_json=args.get("parameters_hyperopt_json"),
         )
 
     def _analyse(args: dict[str, Any]) -> dict[str, Any]:
@@ -999,7 +1083,8 @@ def _tool_handlers_for_thread(
 
     return {
         UPDATE_STRATEGY_TOOL_NAME: _update,
-        RUN_STRATEGY_TOOL_NAME: _rerun,
+        RUN_BACKTEST_TOOL_NAME: _run_backtest_tool,
+        RUN_HYPEROPT_TOOL_NAME: _run_hyperopt_tool,
         ANALYSE_CODE_TOOL_NAME: _analyse,
     }
 
@@ -1120,7 +1205,7 @@ def build_agent_reply(
         else ""
     )
     if params_path.is_file():
-        strategy_help = f"""Strategy inputs are read from params.json (overrides: pass parameters_json on run_strategy to merge into this file):
+        strategy_help = f"""Strategy inputs are read from params.json (overrides: pass parameters_json on run_backtest or run_hyperopt to merge into this file). On run_hyperopt, optional parameters_hyperopt_json merges into params-hyperopt.json (which params are optimised, ranges, regimes, study budget—not ticker/dates from params.json).
 {strategy_parameters}
 {hyperopt_section}{metrics_section}"""
     else:
@@ -1128,6 +1213,7 @@ def build_agent_reply(
 
 Current params.json (may be empty or missing):
 {strategy_parameters}
+On run_hyperopt, optional parameters_hyperopt_json merges into params-hyperopt.json (study definition: optimised params, ranges, regimes—not params.json backtest inputs).
 {hyperopt_section}{metrics_section}"""
     chat_messages: list[BaseMessage] = [
         SystemMessage(content=SYSTEM_PROMPT.format(strategy_help=strategy_help)),
@@ -1197,10 +1283,10 @@ Current params.json (may be empty or missing):
                     "codex_stdout",
                     "codex_stderr",
                 )
-            elif name == RUN_STRATEGY_TOOL_NAME:
+            elif name in (RUN_BACKTEST_TOOL_NAME, RUN_HYPEROPT_TOOL_NAME):
                 limited = _trim_tool_payload_streams(
                     tool_payload,
-                    RUN_STRATEGY_TOOL_MESSAGE_MAX_JSON,
+                    RUN_EXECUTION_TOOL_MESSAGE_MAX_JSON,
                     "backtest_stdout",
                     "backtest_stderr",
                 )

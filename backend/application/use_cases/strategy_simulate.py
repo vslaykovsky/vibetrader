@@ -309,6 +309,7 @@ class StrategySimulateCommandHandler:
                                     "high": float(step.running.high),
                                     "low": float(step.running.low),
                                     "close": float(step.running.close),
+                                    "volume": float(step.running.volume),
                                 },
                                 closed=True,
                             )

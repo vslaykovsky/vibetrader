@@ -360,24 +360,36 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
   const chartCandles = useMemo(() => {
     if (isNativeChart) {
       if (!rawBars.length) return [];
-      return rawBars.map((b) => ({
-        time: b.unixtime,
-        open: b.ohlc.open,
-        high: b.ohlc.high,
-        low: b.ohlc.low,
-        close: b.ohlc.close,
-      }));
+      return rawBars.map((b) => {
+        const c = {
+          time: b.unixtime,
+          open: b.ohlc.open,
+          high: b.ohlc.high,
+          low: b.ohlc.low,
+          close: b.ohlc.close,
+        };
+        if (typeof b.ohlc.volume === 'number' && Number.isFinite(b.ohlc.volume)) {
+          c.volume = b.ohlc.volume;
+        }
+        return c;
+      });
     }
     if (isFinerChart) {
       if (!finePool.length) return [];
       const n = Math.min(fineRevealCount, finePool.length);
-      return finePool.slice(0, n).map((b) => ({
-        time: b.unixtime,
-        open: b.ohlc.open,
-        high: b.ohlc.high,
-        low: b.ohlc.low,
-        close: b.ohlc.close,
-      }));
+      return finePool.slice(0, n).map((b) => {
+        const c = {
+          time: b.unixtime,
+          open: b.ohlc.open,
+          high: b.ohlc.high,
+          low: b.ohlc.low,
+          close: b.ohlc.close,
+        };
+        if (typeof b.ohlc.volume === 'number' && Number.isFinite(b.ohlc.volume)) {
+          c.volume = b.ohlc.volume;
+        }
+        return c;
+      });
     }
     if (!rawBars.length) return [];
     return resampleOhlc(rawBars, chartTf);

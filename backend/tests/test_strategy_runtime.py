@@ -27,7 +27,7 @@ def test_strategy_runtime_echo_startup_and_time_ack():
             points=[
                 InputOhlcDataPoint(
                     ticker="TEST",
-                    ohlc=Ohlc(open=1.0, high=2.0, low=0.5, close=1.5),
+                    ohlc=Ohlc(open=1.0, high=2.0, low=0.5, close=1.5, volume=0.0),
                 ),
             ],
         )
@@ -54,7 +54,7 @@ def test_strategy_runtime_finalize_collects_eda_chart_after_eof():
             points=[
                 InputOhlcDataPoint(
                     ticker="TEST",
-                    ohlc=Ohlc(open=1.0, high=2.0, low=0.5, close=1.5),
+                    ohlc=Ohlc(open=1.0, high=2.0, low=0.5, close=1.5, volume=0.0),
                 ),
             ],
         )

@@ -31,6 +31,7 @@ def test_iter_simulation_steps_emits_partial_and_closed_updates():
             "high": [float(i) + 0.5 for i in range(48)],
             "low": [float(i) - 0.5 for i in range(48)],
             "close": [float(i) + 0.25 for i in range(48)],
+            "volume": [1.0] * 48,
         },
         index=idx,
     )
@@ -74,6 +75,8 @@ def test_iter_simulation_steps_emits_partial_and_closed_updates():
     assert all(p.closed for s in indicator_fired for p in s.indicator_points)
     day1_close = closed_ticker[0].ticker_points[0].ohlc.close
     assert day1_close == driver.iloc[23]["close"]
+    assert closed_ticker[0].ticker_points[0].ohlc.volume == 24.0
+    assert partial_ticker[0].ticker_points[0].ohlc.volume == 4.0
 
 
 def test_iter_simulation_steps_partial_flag_controls_emission():
@@ -318,7 +321,7 @@ def test_expand_step_to_lines_raises_when_bricks_overflow_next_bar():
         unixtime=1_700_000_000,
         base_row=0,
         base_ts=pd.Timestamp("2024-01-01 00:00", tz="UTC"),
-        running=RunningBar(open=100.0, high=108.0, low=100.0, close=108.0),
+            running=RunningBar(open=100.0, high=108.0, low=100.0, close=108.0, volume=0.0),
         is_base_close=False,
         next_driver_unixtime=1_700_000_002,
         fired=True,

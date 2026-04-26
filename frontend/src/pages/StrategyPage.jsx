@@ -656,6 +656,8 @@ export function StrategyPage() {
   useEffect(() => {
     setViewingRunId(null);
     setHistoricalCanvas(null);
+    setCanvas({});
+    setChartError('');
     setLiveStrategyRunId('');
     setLiveStrategyAlgorithm('');
     setHistoricalStrategyAlgorithm('');

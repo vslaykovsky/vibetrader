@@ -136,6 +136,7 @@ class RunningBar:
     high: float
     low: float
     close: float
+    volume: float
 
 
 @dataclass
@@ -367,8 +368,9 @@ def iter_simulation_steps(
             float(row["low"]),
             float(row["close"]),
         )
+        v = float(row["volume"]) if "volume" in driver_df.columns else 0.0
         if cur_base_idx != base_row or running is None:
-            running = RunningBar(open=o, high=h, low=l, close=c)
+            running = RunningBar(open=o, high=h, low=l, close=c, volume=v)
             cur_base_idx = base_row
         else:
             if h > running.high:
@@ -376,6 +378,7 @@ def iter_simulation_steps(
             if l < running.low:
                 running.low = l
             running.close = c
+            running.volume += v
 
         is_base_close = _fires_on(driver_ts, next_ts, base_scale)
         next_unix = int(next_ts.timestamp()) if next_ts is not None else None
@@ -402,6 +405,7 @@ def iter_simulation_steps(
                             high=running.high,
                             low=running.low,
                             close=running.close,
+                            volume=running.volume,
                         ),
                         closed=is_base_close,
                     )
@@ -516,6 +520,7 @@ def _build_partial_snapshot(
                         high=running.high,
                         low=running.low,
                         close=running.close,
+                        volume=running.volume,
                     ),
                     closed=False,
                 )

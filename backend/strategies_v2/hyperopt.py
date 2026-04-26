@@ -150,36 +150,43 @@ def main() -> None:
         sampled = _sample_from_space(rng, cfg.search_space)
         trial_params = _merge_flat(base, sampled)
         _save_json(PARAMS_PATH, trial_params)
-        logger.debug("trial %s/%s sampled=%s", i + 1, n_trials, sampled)
         try:
             proc = _run_simulation(trial_timeout)
         except subprocess.TimeoutExpired:
-            logger.debug("trial %s/%s simulation timed out", i + 1, n_trials)
+            logger.info("trial %s/%s sampled=%s outcome=timeout", i + 1, n_trials, sampled)
             continue
         if proc.returncode != 0:
-            logger.debug(
-                "trial %s/%s failed (returncode=%s) stderr_tail=%r",
+            logger.info(
+                "trial %s/%s sampled=%s outcome=sim_failed returncode=%s stderr_tail=%r",
                 i + 1,
                 n_trials,
+                sampled,
                 proc.returncode,
                 (proc.stderr or "")[-500:],
             )
             continue
         metrics = _load_json(METRICS_PATH)
         if not metrics:
-            logger.debug("trial %s/%s missing or empty metrics.json", i + 1, n_trials)
+            logger.info("trial %s/%s sampled=%s outcome=no_metrics", i + 1, n_trials, sampled)
             continue
         value = _nested_get(metrics, metric_key)
         if value is None:
-            logger.debug("trial %s/%s objective metric missing: %s", i + 1, n_trials, metric_key)
+            logger.info(
+                "trial %s/%s sampled=%s outcome=missing_objective metric_key=%s",
+                i + 1,
+                n_trials,
+                sampled,
+                metric_key,
+            )
             continue
         try:
             fv = float(value)
         except (TypeError, ValueError):
-            logger.debug(
-                "trial %s/%s objective metric not a number: %s=%r",
+            logger.info(
+                "trial %s/%s sampled=%s outcome=bad_objective %s=%r",
                 i + 1,
                 n_trials,
+                sampled,
                 metric_key,
                 value,
             )
@@ -190,12 +197,22 @@ def main() -> None:
             best_value = fv
             best_params = trial_params
             logger.info(
-                "new best at trial %s/%s: %s=%s sampled=%s",
+                "trial %s/%s sampled=%s outcome=completed %s=%s new_best=yes",
                 i + 1,
                 n_trials,
+                sampled,
                 metric_key,
                 fv,
+            )
+        else:
+            logger.info(
+                "trial %s/%s sampled=%s outcome=completed %s=%s new_best=no best_so_far=%s",
+                i + 1,
+                n_trials,
                 sampled,
+                metric_key,
+                fv,
+                best_value,
             )
     if best_params is None:
         _save_json(PARAMS_PATH, base)

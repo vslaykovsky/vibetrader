@@ -70,19 +70,18 @@ def _row_unixtime(ts: object) -> int:
 
 def _bars_df_to_json_rows(df: pd.DataFrame) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
+    has_vol = "volume" in df.columns
     for idx, row in df.iterrows():
         ut = _row_unixtime(idx)
-        rows.append(
-            {
-                "unixtime": ut,
-                "ohlc": {
-                    "open": float(row["open"]),
-                    "high": float(row["high"]),
-                    "low": float(row["low"]),
-                    "close": float(row["close"]),
-                },
-            }
-        )
+        ohlc: dict[str, object] = {
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+        }
+        if has_vol:
+            ohlc["volume"] = float(row["volume"])
+        rows.append({"unixtime": ut, "ohlc": ohlc})
     return rows
 
 

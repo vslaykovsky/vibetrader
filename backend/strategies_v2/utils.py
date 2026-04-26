@@ -87,6 +87,7 @@ class Ohlc(BaseModel):
     high: float
     low: float
     close: float
+    volume: float
 
 
 class InputOhlcDataPoint(BaseModel):
