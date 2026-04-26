@@ -31,6 +31,7 @@ from application.services.scale_utils import (
 )
 from application.services.simulation_driver import (
     aggregate_to_base,
+    assign_subscription_ids,
     compile_subscriptions,
     expand_step_to_lines,
     iter_simulation_steps,
@@ -137,7 +138,7 @@ def _periods_per_year(scale: str) -> float:
 
 
 def _subscription_kind_is_price_overlay(kind: str) -> bool:
-    return kind in ("sma", "ema", "bb")
+    return kind in ("sma", "ema", "bb", "fibonacci")
 
 
 def _output_indicator_name_is_price_overlay(name: str) -> bool:
@@ -145,6 +146,8 @@ def _output_indicator_name_is_price_overlay(name: str) -> bool:
     if n in ("sma", "ema"):
         return True
     if n.startswith("bb_") or n in ("bb_middle", "bb_upper", "bb_lower", "bb_mid"):
+        return True
+    if n.startswith("fib_"):
         return True
     return False
 
@@ -381,6 +384,7 @@ def simulate(
                 points=[InputPortfolioDataPoint(positions=[])],
             )
         )
+        startup = assign_subscription_ids(startup)
         logger.info(
             "subscriptions_from_strategy %s",
             json.dumps(startup.model_dump(mode="json")),
@@ -728,6 +732,7 @@ def simulate(
                     c = float(df.iloc[row]["close"])
                     step_points.append(
                         InputOhlcDataPoint(
+                            id=str(sub.id),
                             ticker=sub.ticker,
                             ohlc=Ohlc(open=o, high=h, low=l, close=c),
                             closed=True,
@@ -754,7 +759,9 @@ def simulate(
                         continue
                     for pt in eng.values_at_row_for_subscription(local_idx, row):
                         step_points.append(
-                            pt.model_copy(update={"ticker": str(t_ind)})
+                            pt.model_copy(
+                                update={"id": str(ind_sub.id), "ticker": str(t_ind)}
+                            )
                         )
                 fired = bool(step_points)
                 primary_row = primary_row_map.get(ts)

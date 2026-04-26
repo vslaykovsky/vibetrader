@@ -6,11 +6,13 @@ from application.services.simulation_driver import (
     RunningBar,
     SimulationStep,
     aggregate_to_base,
+    assign_subscription_ids,
     compile_subscriptions,
     expand_step_to_lines,
     iter_simulation_steps,
 )
 from strategies_v2.utils import (
+    EmaIndicatorSubscription,
     InputPortfolioDataPoint,
     InputRenkoDataPoint,
     OutputIndicatorSubscriptionOrder,
@@ -272,6 +274,41 @@ def test_expand_step_to_lines_splits_renko_bricks_into_monotonic_lines():
     assert len(steady_lines) == 1
     assert steady_lines[0].unixtime == steady_step.unixtime
     assert [p.kind for p in steady_lines[0].points] == ["portfolio", "ohlc"]
+
+
+def test_assign_subscription_ids_fills_missing_and_rejects_duplicates():
+    startup = StrategyOutput(
+        [
+            OutputTickerSubscription(id="price", ticker="X", scale="1d"),
+            OutputIndicatorSubscriptionOrder(
+                indicator=EmaIndicatorSubscription(ticker="X", scale="1d", period=12)
+            ),
+            OutputIndicatorSubscriptionOrder(
+                indicator=EmaIndicatorSubscription(
+                    id="slow", ticker="X", scale="1d", period=26
+                )
+            ),
+        ]
+    )
+    out = assign_subscription_ids(startup)
+    ids = [
+        p.id if isinstance(p, OutputTickerSubscription) else p.indicator.id
+        for p in out.root
+    ]
+    assert ids == ["price", "ema_0", "slow"]
+
+    bad = StrategyOutput(
+        [
+            OutputTickerSubscription(id="dup", ticker="X", scale="1d"),
+            OutputIndicatorSubscriptionOrder(
+                indicator=EmaIndicatorSubscription(
+                    id="dup", ticker="X", scale="1d", period=12
+                )
+            ),
+        ]
+    )
+    with pytest.raises(ValueError, match="duplicate subscription id"):
+        assign_subscription_ids(bad)
 
 
 def test_expand_step_to_lines_raises_when_bricks_overflow_next_bar():

@@ -23,6 +23,43 @@ Read the strategy-relevant values at startup; do not duplicate them as top-level
 - **stdout:** one JSON object per line. Each line is a `StrategyOutput`: a list of outputs (subscriptions, indicator values, market orders, time acks). Match the discriminated models in `utils.py`.
 - **`time_ack` (required):** The host applies strict backpressure: **it will not write the next stdin line until your process prints a stdout line that includes an `OutputTimeAck` (`"kind": "time_ack"`) for the current input line's `unixtime`.** Emitting that ack is what unblocks the next `read` / next `for raw in sys.stdin` iteration. If you buffer many stdin lines before printing any ack, or omit the ack while still reading, you deadlock: the host waits for stdout while you wait for more stdin. After you read any `StrategyInput` line carrying `ohlc`, `indicator`, or `renko` points, emit exactly one `{ "kind": "time_ack", "unixtime": <same value as on the input line> }`. Include it in the same stdout JSON line as the rest of the outputs for that step (typically last in the list). If a line has only `portfolio` points, emit no `time_ack`. You must still emit `time_ack` when you skip trading logic (for example missing data): the host is waiting on the clock, not on your orders.
 
+## Subscription `id` (preferred dispatch key)
+
+Every `OutputTickerSubscription` and every `*IndicatorSubscription` accepts an optional `id: str`. Set it to a short, readable, stable handle that describes the **role** of the subscription in your strategy (e.g. `"price"`, `"fast_ema"`, `"slow_ema"`, `"trend_rsi"`, `"renko_2"`). Ids must be unique across all subscriptions in the same startup batch — if you do not provide one, the host auto-assigns a deterministic `f"{kind}_{n}"` (e.g. `"ema_0"`, `"ema_1"`), but explicit ids make the strategy code self-documenting.
+
+**Every input data point the host produces echoes the originating subscription's id**:
+
+- `InputOhlcDataPoint.id` — id of the `OutputTickerSubscription` that produced this bar.
+- `InputIndicatorDataPoint.id` — id of the indicator subscription that produced this value (the `name` field still distinguishes columns within a multi-output indicator, e.g. `bb_lower` vs `bb_upper` vs `bb_middle`).
+- `InputRenkoDataPoint.id` — id of the `RenkoIndicatorSubscription` that produced this brick.
+
+Match input points to subscriptions by `point.id` rather than by `(ticker, name)` heuristics or by the order of items in `points`. This keeps your code obviously correct when you have **two of the same kind** (two SMAs, two tickers, fast/slow EMAs, etc.):
+
+```python
+outs = [
+    OutputTickerSubscription(id="price", ticker=ticker, scale=scale),
+    OutputIndicatorSubscriptionOrder(
+        indicator=EmaIndicatorSubscription(id="fast_ema", ticker=ticker, scale=scale, period=12)
+    ),
+    OutputIndicatorSubscriptionOrder(
+        indicator=EmaIndicatorSubscription(id="slow_ema", ticker=ticker, scale=scale, period=26)
+    ),
+]
+print(StrategyOutput(outs).model_dump_json(), flush=True)
+
+last_fast = last_slow = None
+for raw in sys.stdin:
+    inp = StrategyInput.model_validate_json(raw)
+    out = []
+    for pt in inp.points:
+        if pt.kind == "indicator" and pt.id == "fast_ema":
+            last_fast = pt.value
+        elif pt.kind == "indicator" and pt.id == "slow_ema":
+            last_slow = pt.value
+        elif pt.kind == "ohlc" and pt.id == "price" and pt.closed:
+            ...
+```
+
 ## Intermediate bar updates (`closed` flag)
 
 Each `ohlc` and `indicator` input carries a `closed` boolean.
@@ -91,9 +128,9 @@ The fill price is the running close at the time of the update that triggered the
 
 ## What the strategy should do
 
-1. **Start:** handle an initial **`portfolio`** line if present, then emit subscription outputs — `ticker_subscription` for prices you need (set `partial=True` and optionally `update_scale` if you want intra-bar prices), `indicator_subscription` for built-ins (sma, ema, macd, rsi, atr, bb, stochastic, renko) with ticker, scale, parameters, and optional `partial` / `update_scale`. Read subscription parameters from `params.json` where applicable. Input items in the StrategyInput `points` list come in the same exact order as requested in subscriptions for bar-aligned batches; renko bricks arrive on their own dedicated lines (see **Renko subscriptions**).
+1. **Start:** handle an initial **`portfolio`** line if present, then emit subscription outputs — `ticker_subscription` for prices you need (set `partial=True` and optionally `update_scale` if you want intra-bar prices), `indicator_subscription` for built-ins (sma, ema, macd, rsi, atr, bb, stochastic, renko) with ticker, scale, parameters, and optional `partial` / `update_scale`. **Set a readable `id` on every subscription** (see **Subscription `id`**) — each input point will carry that id so you can dispatch by role. Read subscription parameters from `params.json` where applicable.
    You must emit all subscriptions at startup **before** reading/processing any market-data stdin lines (`ohlc` / `indicator` / `renko`). The only allowed stdin read before subscriptions is an optional initial `portfolio` snapshot (the host may send it first so the strategy can recover position state).
-2. **Loop:** read each `StrategyInput` line; if it contains `portfolio`, refresh position state from `positions` before or together with processing `ohlc` / `indicator` for that step. Distinguish closed vs partial points using the `closed` flag and update durable state (history lists, previous-close memory) only on closed points. On partial updates use the running values for live signal checks. When you trade emit `market_order` items per **Market orders**. Finish each stdin line that carries market data with the required **`OutputTimeAck`** / **`time_ack`** on stdout; the host will not send the next stdin line until that line is printed.
+2. **Loop:** read each `StrategyInput` line; if it contains `portfolio`, refresh position state from `positions` before or together with processing `ohlc` / `indicator` for that step. **Match each `ohlc` / `indicator` / `renko` point to your subscription via `point.id`.** Distinguish closed vs partial points using the `closed` flag and update durable state (history lists, previous-close memory) only on closed points. On partial updates use the running values for live signal checks. When you trade emit `market_order` items per **Market orders**. Finish each stdin line that carries market data with the required **`OutputTimeAck`** / **`time_ack`** on stdout; the host will not send the next stdin line until that line is printed.
 3. **Each step:** Only emit OutputIndicatorDataPoint for a few key debug or plot values if helpful. Do not output raw input prices or indicators, and skip this output if there's nothing useful to show.
 
 Keep logic clear and small; put all subscription and signal rules in `strategy.py`. Prefer shorter code over readability. Do not create functions or classes unless absolutely necessary for reusability.

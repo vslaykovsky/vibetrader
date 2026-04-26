@@ -1370,6 +1370,14 @@ export function StrategyPage() {
     showHyperoptParamsPanel ||
     showMetricsPanel ||
     hasRenderableChartOutput(output);
+  const showSimulationTab = hasRenderableChartOutput(output);
+
+  useEffect(() => {
+    if (!showSimulationTab && canvasTab === 'simulation') {
+      setCanvasTab('strategy');
+    }
+  }, [showSimulationTab, canvasTab]);
+
   const currentThreadMeta = useMemo(
     () => threads.find((t) => t?.thread_id && t.thread_id === threadId) || null,
     [threads, threadId],
@@ -1582,23 +1590,25 @@ export function StrategyPage() {
       ) : null}
 
       <section className="canvas-panel canvas-panel-charts" style={canvasPanelStyle}>
-        <nav className="canvas-tabs" aria-label="Canvas view">
-          <button
-            type="button"
-            className={`canvas-tab${canvasTab === 'strategy' ? ' is-active' : ''}`}
-            onClick={() => setCanvasTab('strategy')}
-          >
-            Strategy
-          </button>
-          <button
-            type="button"
-            className={`canvas-tab${canvasTab === 'simulation' ? ' is-active' : ''}`}
-            onClick={() => setCanvasTab('simulation')}
-          >
-            Simulation
-          </button>
-        </nav>
-        {canvasTab === 'simulation' ? (
+        {showSimulationTab ? (
+          <nav className="canvas-tabs" aria-label="Canvas view">
+            <button
+              type="button"
+              className={`canvas-tab${canvasTab === 'strategy' ? ' is-active' : ''}`}
+              onClick={() => setCanvasTab('strategy')}
+            >
+              Strategy
+            </button>
+            <button
+              type="button"
+              className={`canvas-tab${canvasTab === 'simulation' ? ' is-active' : ''}`}
+              onClick={() => setCanvasTab('simulation')}
+            >
+              Simulation
+            </button>
+          </nav>
+        ) : null}
+        {canvasTab === 'simulation' && showSimulationTab ? (
           <SimulationPanel
             threadId={threadId}
             apiBaseUrl={API_BASE_URL}
@@ -1606,7 +1616,7 @@ export function StrategyPage() {
             getAccessToken={getAccessToken}
           />
         ) : null}
-        {canvasTab === 'strategy' ? (
+        {canvasTab === 'strategy' || !showSimulationTab ? (
         <>
         <header className="canvas-hero">
           <div className="canvas-hero-actions">

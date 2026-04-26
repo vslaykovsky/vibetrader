@@ -92,6 +92,7 @@ class Ohlc(BaseModel):
 class InputOhlcDataPoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["ohlc"] = "ohlc"
+    id: str = ""
     ticker: str
     ohlc: Ohlc
     closed: bool = True
@@ -100,6 +101,7 @@ class InputOhlcDataPoint(BaseModel):
 class InputIndicatorDataPoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["indicator"] = "indicator"
+    id: str = ""
     ticker: str | None = None
     name: str
     value: float
@@ -123,6 +125,7 @@ class InputPortfolioDataPoint(BaseModel):
 class InputRenkoDataPoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["renko"] = "renko"
+    id: str = ""
     ticker: str
     brick_size: float = Field(gt=0)
     open: float
@@ -165,6 +168,7 @@ class OutputMarketTradeOrder(BaseModel):
 class OutputTickerSubscription(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["ticker_subscription"] = "ticker_subscription"
+    id: str | None = None
     ticker: str
     scale: str
     update_scale: str | None = None
@@ -174,6 +178,7 @@ class OutputTickerSubscription(BaseModel):
 class SmaIndicatorSubscription(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["sma"] = "sma"
+    id: str | None = None
     ticker: str
     scale: str
     period: int
@@ -184,6 +189,7 @@ class SmaIndicatorSubscription(BaseModel):
 class EmaIndicatorSubscription(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["ema"] = "ema"
+    id: str | None = None
     ticker: str
     scale: str
     period: int
@@ -194,6 +200,7 @@ class EmaIndicatorSubscription(BaseModel):
 class MacdIndicatorSubscription(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["macd"] = "macd"
+    id: str | None = None
     ticker: str
     scale: str
     fast_period: int
@@ -206,6 +213,7 @@ class MacdIndicatorSubscription(BaseModel):
 class RsiIndicatorSubscription(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["rsi"] = "rsi"
+    id: str | None = None
     ticker: str
     scale: str
     period: int
@@ -216,6 +224,7 @@ class RsiIndicatorSubscription(BaseModel):
 class AtrIndicatorSubscription(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["atr"] = "atr"
+    id: str | None = None
     ticker: str
     scale: str
     period: int
@@ -226,6 +235,7 @@ class AtrIndicatorSubscription(BaseModel):
 class BollingerBandsIndicatorSubscription(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["bb"] = "bb"
+    id: str | None = None
     ticker: str
     scale: str
     period: int = Field(default=20, ge=1)
@@ -237,6 +247,7 @@ class BollingerBandsIndicatorSubscription(BaseModel):
 class StochasticIndicatorSubscription(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["stochastic"] = "stochastic"
+    id: str | None = None
     ticker: str
     scale: str
     k_period: int = Field(default=14, ge=1)
@@ -246,9 +257,24 @@ class StochasticIndicatorSubscription(BaseModel):
     partial: bool = False
 
 
+class FibonacciIndicatorSubscription(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["fibonacci"] = "fibonacci"
+    id: str | None = None
+    ticker: str
+    scale: str
+    lookback: int = Field(default=50, ge=2)
+    levels: list[float] = Field(
+        default_factory=lambda: [0.236, 0.382, 0.5, 0.618, 0.786]
+    )
+    update_scale: str | None = None
+    partial: bool = False
+
+
 class RenkoIndicatorSubscription(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["renko"] = "renko"
+    id: str | None = None
     ticker: str
     scale: str
     brick_size: float = Field(gt=0)
@@ -264,6 +290,7 @@ IndicatorSubscriptionSpec = Annotated[
     | AtrIndicatorSubscription
     | BollingerBandsIndicatorSubscription
     | StochasticIndicatorSubscription
+    | FibonacciIndicatorSubscription
     | RenkoIndicatorSubscription,
     Field(discriminator="kind"),
 ]

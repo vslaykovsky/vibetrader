@@ -8,6 +8,7 @@ from strategies_v2.utils import (
     AtrIndicatorSubscription,
     BollingerBandsIndicatorSubscription,
     EmaIndicatorSubscription,
+    FibonacciIndicatorSubscription,
     MacdIndicatorSubscription,
     RsiIndicatorSubscription,
     SmaIndicatorSubscription,
@@ -172,3 +173,45 @@ def test_indicator_engine_stochastic_two_names():
     by_n = {p.name: p.value for p in pts}
     assert by_n["stoch_k"] == pytest.approx(float(k_ref.iloc[i]))
     assert by_n["stoch_d"] == pytest.approx(float(d_ref.iloc[i]))
+
+
+def test_fibonacci_retracement_level_series():
+    high = pd.Series([3.0, 5.0, 4.0, 6.0], dtype=float)
+    low = pd.Series([2.0, 4.0, 3.0, 5.0], dtype=float)
+    s = ind.fibonacci_retracement_level_series(high, low, lookback=3, level=0.5)
+    assert float(s.iloc[2]) == pytest.approx(3.5)
+    assert float(s.iloc[3]) == pytest.approx(4.5)
+
+
+def test_indicator_engine_fibonacci_levels():
+    df = pd.DataFrame(
+        {
+            "open": [1.0, 2.0, 3.0, 4.0],
+            "high": [3.0, 5.0, 4.0, 6.0],
+            "low": [2.0, 4.0, 3.0, 5.0],
+            "close": [2.5, 4.5, 3.5, 5.5],
+        },
+        index=pd.date_range("2024-01-01", periods=4, freq="1D", tz="UTC"),
+    )
+    levels = [0.382, 0.618]
+    sub = FibonacciIndicatorSubscription(
+        ticker="X", scale="1d", lookback=3, levels=levels
+    )
+    eng = IndicatorEngine([sub])
+    eng.fit(df)
+    refs = {
+        lv: ind.fibonacci_retracement_level_series(
+            df["high"], df["low"], lookback=sub.lookback, level=float(lv)
+        )
+        for lv in levels
+    }
+    for i in range(len(df)):
+        pts = eng.values_at_row_for_subscription(0, i)
+        by_n = {p.name: p.value for p in pts}
+        for lv in levels:
+            name = "fib_" + str(float(lv)).replace(".", "p")
+            rv = refs[lv].iloc[i]
+            if np.isnan(rv):
+                assert name not in by_n
+            else:
+                assert by_n[name] == pytest.approx(float(rv))

@@ -84,3 +84,18 @@ def stochastic_k_d_series(
         ).mean()
     d_line = slow_k.rolling(window=d_period, min_periods=d_period).mean()
     return slow_k, d_line
+
+
+def fibonacci_retracement_level_series(
+    high: pd.Series,
+    low: pd.Series,
+    *,
+    lookback: int,
+    level: float,
+) -> pd.Series:
+    hi = high.astype(float)
+    lo = low.astype(float)
+    hi_max = hi.rolling(window=lookback, min_periods=lookback).max()
+    lo_min = lo.rolling(window=lookback, min_periods=lookback).min()
+    span = (hi_max - lo_min).replace(0.0, float("nan"))
+    return hi_max - float(level) * span

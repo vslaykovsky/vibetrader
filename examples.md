@@ -1,0 +1,20 @@
+1. Moving Average Crossover Strategy
+A trend-following strategy where traders buy when a shorter-period moving average (e.g., 10-period) crosses above a longer-period moving average (e.g., 50-period EMA), and sell when it crosses back below. A simpler variant: "Buy as long as price remains above the 50-period EMA; Sell as long as price remains below the 50 EMA." This is one of the most widely used technical strategies and depends entirely on historical price data.
+2. RSI Overbought/Oversold Strategy
+Uses the Relative Strength Index, a momentum oscillator measuring the speed and change of recent price movements. A reading above 70 signals overbought conditions (potential sell), while below 30 signals oversold conditions (potential buy). Day traders especially use this to catch intraday swings — buying near RSI 30 and selling near RSI 70.
+3. MACD Crossover Strategy
+The Moving Average Convergence Divergence shows the relationship between two trend-following moving averages. A bullish crossover (MACD line crossing above the signal line) triggers a buy, while a bearish crossover (crossing below) triggers a sell. Research has found MACD-based approaches to be among "the safest and most effective" of classical indicator strategies.
+4. Combined MACD + RSI Strategy
+A confluence strategy that uses MACD to confirm trend direction and RSI to time entries/exits. A bullish signal occurs when MACD shows upward momentum AND RSI moves out of the oversold zone; a bearish signal occurs when MACD turns downward AND RSI exits the overbought zone. Combining the two reduces false signals — backtests on this approach have reported win rates around 73%.
+5. Fibonacci Retracement Strategy
+After a sustained uptrend or downtrend, traders identify low-risk entry points at key Fibonacci retracement levels (typically 23.6%, 38.2%, 50%, 61.8%) drawn from recent price swing highs and lows. The thesis is that price often pulls back to these levels before resuming the prevailing trend, making them attractive zones to enter in the direction of the original move.
+6. Bollinger Bands Strategy
+Bollinger Bands plot two standard deviations above and below a moving average (typically 20-period). Traders use them to identify when prices move beyond statistical norms — buying when price touches or breaks the lower band (potential oversold bounce) and selling when it touches the upper band (potential overbought reversal). A "Bollinger squeeze" — when bands narrow — signals low volatility and an upcoming breakout.
+7. Stochastic Oscillator Strategy
+The stochastic oscillator compares a stock's closing price to its price range over a recent period (typically 14 days). Readings above 80 indicate overbought conditions, while readings below 20 indicate oversold conditions. Traders generate signals from %K and %D line crossovers, particularly effective when markets are trading sideways or range-bound.
+8. Ichimoku Cloud Strategy
+The Ichimoku Kinko Hyo system uses five lines — conversion line (9-period), base line (26-period), leading span A and B (forming the "cloud"), and lagging span — to identify trend direction, support/resistance, and entry signals all at once. A bullish signal occurs when price breaks above the cloud and the conversion line crosses above the base line; a bearish signal happens on the reverse.
+9. Momentum Trading Strategy
+Based on the principle that assets moving strongly in one direction tend to continue moving that way. Traders use indicators like Rate of Change (ROC), ADX (trend strength), and price velocity to identify stocks with strong momentum, then ride the trend until momentum weakens. This strategy performs best in trending markets and uses past price action to confirm sustained directional pressure.
+10. Mean Reversion Strategy
+The opposite of momentum: assumes that prices deviating significantly from a historical average will eventually revert to the mean. Traders use Bollinger Bands, the Z-score of price vs. its moving average, or RSI(2) to identify extreme deviations, then take positions betting the price will return to normal. Works best in range-bound, high-volatility markets.

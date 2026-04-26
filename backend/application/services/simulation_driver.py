@@ -26,6 +26,7 @@ from strategies_v2.utils import (
     AtrIndicatorSubscription,
     BollingerBandsIndicatorSubscription,
     EmaIndicatorSubscription,
+    FibonacciIndicatorSubscription,
     InputIndicatorDataPoint,
     InputOhlcDataPoint,
     InputPortfolioDataPoint,
@@ -50,18 +51,83 @@ _INDICATOR_SUBS = (
     AtrIndicatorSubscription,
     BollingerBandsIndicatorSubscription,
     StochasticIndicatorSubscription,
+    FibonacciIndicatorSubscription,
 )
 
 
 @dataclass
 class SubscriptionSpec:
-    """Compiled view of a subscription: effective ``update_scale`` + reference to the source model."""
+    """Compiled view of a subscription: effective ``update_scale`` + reference to the source model.
 
+    ``id`` is the resolved, non-empty, host-unique handle (user-provided when the strategy set
+    one, auto-assigned by ``assign_subscription_ids`` otherwise) — it is echoed on every input
+    point produced by this subscription.
+    """
+
+    id: str
     ticker: str
     scale: str
     update_scale: str
     source: object
     indicator_name: str | None = None
+
+
+def assign_subscription_ids(startup: StrategyOutput) -> StrategyOutput:
+    """Return a copy of ``startup`` where every subscription has a non-empty, unique ``id``.
+
+    User-provided ids are preserved (and validated unique across all subs). Subscriptions
+    submitted without an ``id`` are auto-assigned a deterministic ``f"{kind}_{n}"`` handle,
+    where ``n`` is the smallest non-negative integer that does not collide with another id
+    in the same startup batch. The returned object can be passed everywhere downstream
+    (compile_subscriptions, IndicatorEngine, multi-ticker walker) — every consumer can rely on
+    ``sub.id`` being a non-empty string.
+    """
+    used: set[str] = set()
+    for p in startup.root:
+        sub = _subscription_of(p)
+        if sub is None:
+            continue
+        sid = getattr(sub, "id", None)
+        if sid:
+            if sid in used:
+                raise ValueError(f"duplicate subscription id: {sid!r}")
+            used.add(sid)
+
+    new_root: list = []
+    for p in startup.root:
+        sub = _subscription_of(p)
+        if sub is None:
+            new_root.append(p)
+            continue
+        sid = getattr(sub, "id", None)
+        if not sid:
+            sid = _auto_id(sub.kind, used)
+            used.add(sid)
+            sub_with_id = sub.model_copy(update={"id": sid})
+            if isinstance(p, OutputTickerSubscription):
+                new_root.append(sub_with_id)
+            else:
+                new_root.append(p.model_copy(update={"indicator": sub_with_id}))
+        else:
+            new_root.append(p)
+    return StrategyOutput(new_root)
+
+
+def _subscription_of(p) -> object | None:
+    if isinstance(p, OutputTickerSubscription):
+        return p
+    if isinstance(p, OutputIndicatorSubscriptionOrder):
+        return p.indicator
+    return None
+
+
+def _auto_id(kind: str, used: set[str]) -> str:
+    n = 0
+    while True:
+        candidate = f"{kind}_{n}"
+        if candidate not in used:
+            return candidate
+        n += 1
 
 
 @dataclass
@@ -140,10 +206,13 @@ def compile_subscriptions(
     (defaulting to ``simulation_scale`` when unset) so the strategy additionally sees
     ``closed=False`` partial points at that cadence.
 
-    Renko subscriptions are returned in a dedicated list because they produce their own input
+    Subscription ids are resolved up front via ``assign_subscription_ids`` so every returned
+    ``SubscriptionSpec`` has a stable, unique ``id`` to echo on emitted points. Renko
+    subscriptions are returned in a dedicated list because they produce their own input
     kind (``InputRenkoDataPoint``) and are tracked by per-subscription brick state, not by the
     pandas-backed ``IndicatorEngine``.
     """
+    startup = assign_subscription_ids(startup)
     base_scale = normalize_scale(base_scale)
     simulation_scale = normalize_scale(simulation_scale)
     tickers: list[SubscriptionSpec] = []
@@ -156,7 +225,11 @@ def compile_subscriptions(
             )
             tickers.append(
                 SubscriptionSpec(
-                    ticker=p.ticker, scale=p.scale, update_scale=us, source=p
+                    id=str(p.id),
+                    ticker=p.ticker,
+                    scale=p.scale,
+                    update_scale=us,
+                    source=p,
                 )
             )
         elif isinstance(p, OutputIndicatorSubscriptionOrder):
@@ -167,6 +240,7 @@ def compile_subscriptions(
                 )
                 renkos.append(
                     SubscriptionSpec(
+                        id=str(ind.id),
                         ticker=ind.ticker,
                         scale=ind.scale,
                         update_scale=us,
@@ -180,6 +254,7 @@ def compile_subscriptions(
                 )
                 indicators.append(
                     SubscriptionSpec(
+                        id=str(ind.id),
                         ticker=ind.ticker,
                         scale=ind.scale,
                         update_scale=us,
@@ -320,6 +395,7 @@ def iter_simulation_steps(
             if _fires_on(driver_ts, next_ts, ts.update_scale):
                 step.ticker_points.append(
                     InputOhlcDataPoint(
+                        id=ts.id,
                         ticker=ts.ticker,
                         ohlc=Ohlc(
                             open=running.open,
@@ -340,7 +416,9 @@ def iter_simulation_steps(
                     sub_index, base_row
                 ):
                     step.indicator_points.append(
-                        pt.model_copy(update={"ticker": ind_spec.ticker})
+                        pt.model_copy(
+                            update={"id": ind_spec.id, "ticker": ind_spec.ticker}
+                        )
                     )
             else:
                 for pt in indicator_engine.partial_values_at_row_for_subscription(
@@ -351,7 +429,9 @@ def iter_simulation_steps(
                     partial_low=running.low,
                 ):
                     step.indicator_points.append(
-                        pt.model_copy(update={"ticker": ind_spec.ticker})
+                        pt.model_copy(
+                            update={"id": ind_spec.id, "ticker": ind_spec.ticker}
+                        )
                     )
 
         for ri, rspec in enumerate(renko_subs):
@@ -370,6 +450,7 @@ def iter_simulation_steps(
                 brick_close = brick_open + brick_size
                 step.renko_points.append(
                     InputRenkoDataPoint(
+                        id=rspec.id,
                         ticker=rspec.ticker,
                         brick_size=brick_size,
                         open=brick_open,
@@ -383,6 +464,7 @@ def iter_simulation_steps(
                 brick_close = brick_open - brick_size
                 step.renko_points.append(
                     InputRenkoDataPoint(
+                        id=rspec.id,
                         ticker=rspec.ticker,
                         brick_size=brick_size,
                         open=brick_open,
@@ -427,6 +509,7 @@ def _build_partial_snapshot(
         if isinstance(src, OutputTickerSubscription) and src.partial:
             out.append(
                 InputOhlcDataPoint(
+                    id=sub.id,
                     ticker=src.ticker,
                     ohlc=Ohlc(
                         open=running.open,
@@ -448,7 +531,7 @@ def _build_partial_snapshot(
             partial_high=running.high,
             partial_low=running.low,
         ):
-            out.append(pt.model_copy(update={"ticker": sub.ticker}))
+            out.append(pt.model_copy(update={"id": sub.id, "ticker": sub.ticker}))
     return out
 
 

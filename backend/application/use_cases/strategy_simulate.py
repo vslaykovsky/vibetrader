@@ -19,6 +19,7 @@ from application.services.scale_utils import (
 )
 from application.services.simulation_driver import (
     aggregate_to_base,
+    assign_subscription_ids,
     compile_subscriptions,
     expand_step_to_lines,
     iter_simulation_steps,
@@ -74,6 +75,8 @@ def _padding_days_for_indicator_subscriptions(subs: list[Any]) -> int:
                 max_bars,
                 (int(s.k_period) + int(s.k_slowing) + int(s.d_period)) * 3,
             )
+        elif k == "fibonacci":
+            max_bars = max(max_bars, int(s.lookback) * 3)
     return max(30, min(500, max_bars))
 
 
@@ -197,6 +200,7 @@ class StrategySimulateCommandHandler:
                         points=[InputPortfolioDataPoint(positions=[])],
                     )
                 )
+                startup = assign_subscription_ids(startup)
                 ticker, base_scale = _ticker_and_scale_from_startup(startup)
                 base_scale = normalize_scale(base_scale)
                 sim_scale = (
