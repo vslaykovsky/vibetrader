@@ -87,3 +87,7 @@ sudo usermod -aG docker $USER && newgrp docker
     - vibestrategy.ai
     - traderchat.ai
 
+
+## Precaching
+
+PYTHONPATH=$(pwd)  python scripts/precache_alpaca_daily.py --timeframe 1d --workers 1 --years 10 --symbols-file ../snp500.txt

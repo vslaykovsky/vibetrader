@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import pickle
 import threading
 import time
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
+from datetime import datetime, timezone
+from datetime import timedelta
 from typing import Optional
 
 import pandas as pd
@@ -127,6 +127,7 @@ class _CacheKey:
     end: date
     padding_days: int
     provider: str
+    asset_class: str
 
 
 @dataclass
@@ -135,36 +136,19 @@ class _CacheEntry:
     expires_at: float
 
 
-def _disk_cache_path(cache_dir: Path, key: _CacheKey) -> Path:
-    raw = "|".join(
-        (
-            key.ticker,
-            key.scale,
-            key.start.isoformat(),
-            key.end.isoformat(),
-            str(key.padding_days),
-            key.provider,
-        )
-    )
-    h = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-    return cache_dir / f"{h}.pkl"
-
-
 class HistoricalBarsQuery:
     """Loads OHLCV history via existing ``strategies.utils`` market data helpers.
 
     In-memory cache (default TTL 10 minutes) keyed by fetch arguments to avoid duplicate provider calls.
-    Optional ``cache_dir`` stores the same keyed payloads on disk (pickle); disk entries respect the same TTL via file mtime.
+    Also uses a Postgres-backed candles cache (``candle`` table) as best-effort read-through/write-through.
     """
 
     def __init__(
         self,
         *,
         cache_ttl_seconds: float = 600.0,
-        cache_dir: str | Path | None = None,
     ) -> None:
         self._cache_ttl = float(cache_ttl_seconds)
-        self._cache_dir = Path(cache_dir).expanduser().resolve() if cache_dir else None
         self._lock = threading.Lock()
         self._cache: dict[_CacheKey, _CacheEntry] = {}
 
@@ -177,14 +161,21 @@ class HistoricalBarsQuery:
         padding_days: int = 0,
         *,
         provider: Optional[str] = None,
+        asset_class: Optional[str] = None,
+        drop_wide_spread_bars: bool = True,
     ) -> pd.DataFrame:
         timeframe = scale_to_timeframe(scale)
         start_s = start.isoformat()
         end_s = end.isoformat()
         prov = provider if isinstance(provider, str) and provider.strip() else ""
+        asset = (asset_class or "").strip().lower()
+        if asset and asset not in {"us_equity", "crypto"}:
+            raise ValueError("asset_class must be one of: us_equity, crypto")
+        asset = asset or "us_equity"
+        norm_ticker = utils.normalize_crypto_symbol(ticker) if asset == "crypto" else ticker
         logger.info(
             "fetch begin ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s",
-            ticker.strip(),
+            norm_ticker.strip(),
             (scale or "").strip().lower(),
             start,
             end,
@@ -192,12 +183,13 @@ class HistoricalBarsQuery:
             provider if isinstance(provider, str) and provider.strip() else provider,
         )
         key = _CacheKey(
-            ticker=ticker.strip(),
+            ticker=norm_ticker.strip(),
             scale=(scale or "").strip().lower(),
             start=start,
             end=end,
             padding_days=int(padding_days),
             provider=prov,
+            asset_class=asset,
         )
         now = time.monotonic()
         with self._lock:
@@ -206,6 +198,15 @@ class HistoricalBarsQuery:
                 del self._cache[k]
             hit = self._cache.get(key)
             if hit is not None and hit.expires_at > now:
+                logger.info(
+                    "fetch cache hit (memory) ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s",
+                    key.ticker,
+                    key.scale,
+                    key.start,
+                    key.end,
+                    key.padding_days,
+                    provider if isinstance(provider, str) and provider.strip() else provider,
+                )
                 return hit.df
 
         # Postgres-backed candles cache. We only serve a DB hit if it fully covers the requested
@@ -235,6 +236,33 @@ class HistoricalBarsQuery:
                 min_ts = pd.Timestamp(cached_rows[0].timestamp).tz_convert("UTC")
                 max_ts = pd.Timestamp(cached_rows[-1].timestamp).tz_convert("UTC")
                 if min_ts <= s_utc and max_ts >= e_utc:
+                    logger.info(
+                        "fetch cache hit (db_full) ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s rows=%s",
+                        key.ticker,
+                        key.scale,
+                        padded_start,
+                        key.end,
+                        key.padding_days,
+                        provider if isinstance(provider, str) and provider.strip() else provider,
+                        len(cached_rows),
+                    )
+                    df_hit = _df_from_candles(cached_rows)
+                    with self._lock:
+                        self._cache[key] = _CacheEntry(
+                            df=df_hit, expires_at=time.monotonic() + self._cache_ttl
+                        )
+                    return df_hit
+                if _covers_all_whole_weeks(cached_rows, start=padded_start, end=key.end):
+                    logger.info(
+                        "fetch cache hit (db_weekly) ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s rows=%s",
+                        key.ticker,
+                        key.scale,
+                        padded_start,
+                        key.end,
+                        key.padding_days,
+                        provider if isinstance(provider, str) and provider.strip() else provider,
+                        len(cached_rows),
+                    )
                     df_hit = _df_from_candles(cached_rows)
                     with self._lock:
                         self._cache[key] = _CacheEntry(
@@ -243,29 +271,24 @@ class HistoricalBarsQuery:
                     return df_hit
         except Exception:
             logger.exception("candles cache read failed ticker=%s scale=%s", key.ticker, key.scale)
-        if self._cache_dir is not None:
-            path = _disk_cache_path(self._cache_dir, key)
-            try:
-                if path.is_file():
-                    age = time.time() - path.stat().st_mtime
-                    if age < self._cache_ttl:
-                        disk_df = pickle.loads(path.read_bytes())
-                        if isinstance(disk_df, pd.DataFrame):
-                            with self._lock:
-                                self._cache[key] = _CacheEntry(
-                                    df=disk_df, expires_at=time.monotonic() + self._cache_ttl
-                                )
-                            return disk_df
-            except Exception:
-                logger.exception("disk cache read failed path=%s", path)
-        df = utils.fetch_stock_bars(
-            ticker=key.ticker,
-            start_test_date=start_s,
-            end_test_date=end_s,
-            history_padding_days=key.padding_days,
-            timeframe=timeframe,
-            provider=provider if prov else None,
-        )
+        if asset == "crypto":
+            df = utils.fetch_crypto_bars(
+                ticker=key.ticker,
+                start_test_date=start_s,
+                end_test_date=end_s,
+                timeframe=timeframe,
+                drop_wide_spread_bars=drop_wide_spread_bars,
+            )
+        else:
+            df = utils.fetch_stock_bars(
+                ticker=key.ticker,
+                start_test_date=start_s,
+                end_test_date=end_s,
+                history_padding_days=key.padding_days,
+                timeframe=timeframe,
+                provider=provider if prov else None,
+                drop_wide_spread_bars=drop_wide_spread_bars,
+            )
 
         # Best-effort write-through to Postgres candles cache.
         try:
@@ -277,18 +300,23 @@ class HistoricalBarsQuery:
                     if engine.dialect.name == "postgresql":
                         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-                        stmt = pg_insert(Candle).values(records)
-                        stmt = stmt.on_conflict_do_update(
-                            index_elements=["ticker", "timeframe", "timestamp"],
-                            set_={
-                                "open": stmt.excluded.open,
-                                "high": stmt.excluded.high,
-                                "low": stmt.excluded.low,
-                                "close": stmt.excluded.close,
-                                "volume": stmt.excluded.volume,
-                            },
-                        )
-                        session.execute(stmt)
+                        # Avoid "too many parameters" errors for large backfills (e.g. 10y of 1h bars).
+                        # Each row binds multiple params; keep batches comfortably below typical driver limits.
+                        batch_size = 5_000
+                        for i in range(0, len(records), batch_size):
+                            batch = records[i : i + batch_size]
+                            stmt = pg_insert(Candle).values(batch)
+                            stmt = stmt.on_conflict_do_update(
+                                index_elements=["ticker", "timeframe", "timestamp"],
+                                set_={
+                                    "open": stmt.excluded.open,
+                                    "high": stmt.excluded.high,
+                                    "low": stmt.excluded.low,
+                                    "close": stmt.excluded.close,
+                                    "volume": stmt.excluded.volume,
+                                },
+                            )
+                            session.execute(stmt)
                     else:
                         for r in records:
                             session.merge(Candle(**r))
@@ -299,56 +327,86 @@ class HistoricalBarsQuery:
             logger.exception("candles cache write failed ticker=%s scale=%s", key.ticker, key.scale)
         with self._lock:
             self._cache[key] = _CacheEntry(df=df, expires_at=time.monotonic() + self._cache_ttl)
-        if self._cache_dir is not None:
-            path = _disk_cache_path(self._cache_dir, key)
-            try:
-                self._cache_dir.mkdir(parents=True, exist_ok=True)
-                tmp = path.with_name(path.name + ".tmp")
-                tmp.write_bytes(pickle.dumps(df, protocol=4))
-                tmp.replace(path)
-            except Exception:
-                logger.exception("disk cache write failed path=%s", path)
         return df
 
-    def fetch_chunked_merge(
-        self,
-        ticker: str,
-        scale: str,
-        start: date,
-        end: date,
-        padding_days: int = 0,
-        *,
-        max_bars_per_chunk: int = CHUNK_BAR_BUDGET,
-        provider: Optional[str] = None,
-    ) -> tuple[pd.DataFrame, int]:
-        """Load ``[start, end]`` in calendar windows under ``max_bars_per_chunk`` (estimate), merge, dedupe index.
 
-        ``padding_days`` is applied only to the **first** window so warmup matches a single-range fetch.
-        Returns ``(merged_df, num_windows)``.
-        """
-        chunks = plan_display_bars_fetch_chunks(
-            start, end, scale, max_bars_per_chunk=max_bars_per_chunk
-        )
-        if not chunks:
-            return pd.DataFrame(), 0
-        logger.info(
-            "fetch_chunked_merge begin ticker=%s scale=%s start=%s end=%s chunks=%s max_bars_per_chunk=%s provider=%s",
-            ticker.strip(),
-            (scale or "").strip().lower(),
-            start,
-            end,
-            len(chunks),
-            max_bars_per_chunk,
-            provider if isinstance(provider, str) and provider.strip() else provider,
-        )
-        frames: list[pd.DataFrame] = []
-        for i, (cs, ce) in enumerate(chunks):
-            pad = int(padding_days) if i == 0 else 0
-            part = self.fetch(ticker, scale, cs, ce, padding_days=pad, provider=provider)
-            if part is not None and not part.empty:
-                frames.append(part)
-        if not frames:
-            return pd.DataFrame(), len(chunks)
-        merged = pd.concat(frames).sort_index()
-        merged = merged[~merged.index.duplicated(keep="first")]
-        return merged, len(chunks)
+def _covers_all_whole_weeks(cached_rows: list[Candle], *, start: date, end: date) -> bool:
+    """Return True if we have at least one cached bar for every *whole* week fully contained
+    in the inclusive calendar range [start, end].
+
+    This is used to avoid refetching for weekend gaps (US equities don't trade on weekends).
+    """
+    if not cached_rows:
+        return False
+
+    # Whole weeks are Monday..Sunday that are fully inside [start, end].
+    first_monday = start + timedelta(days=(7 - start.weekday()) % 7)
+    last_sunday = end - timedelta(days=(end.weekday() + 1) % 7)
+    if first_monday > last_sunday:
+        return False
+
+    required: set[tuple[int, int]] = set()
+    cur = first_monday
+    while cur <= last_sunday:
+        iso = cur.isocalendar()
+        required.add((int(iso.year), int(iso.week)))
+        cur = cur + timedelta(days=7)
+
+    present: set[tuple[int, int]] = set()
+    for r in cached_rows:
+        ts = r.timestamp
+        if isinstance(ts, datetime):
+            dt = ts
+        else:
+            dt = pd.Timestamp(ts).to_pydatetime()
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        iso = dt.date().isocalendar()
+        present.add((int(iso.year), int(iso.week)))
+
+    return required.issubset(present)
+
+def fetch_chunked_merge(
+    self,
+    ticker: str,
+    scale: str,
+    start: date,
+    end: date,
+    padding_days: int = 0,
+    *,
+    max_bars_per_chunk: int = CHUNK_BAR_BUDGET,
+    provider: Optional[str] = None,
+) -> tuple[pd.DataFrame, int]:
+    """Load ``[start, end]`` in calendar windows under ``max_bars_per_chunk`` (estimate), merge, dedupe index.
+
+    ``padding_days`` is applied only to the **first** window so warmup matches a single-range fetch.
+    Returns ``(merged_df, num_windows)``.
+    """
+    chunks = plan_display_bars_fetch_chunks(
+        start, end, scale, max_bars_per_chunk=max_bars_per_chunk
+    )
+    if not chunks:
+        return pd.DataFrame(), 0
+    logger.info(
+        "fetch_chunked_merge begin ticker=%s scale=%s start=%s end=%s chunks=%s max_bars_per_chunk=%s provider=%s",
+        ticker.strip(),
+        (scale or "").strip().lower(),
+        start,
+        end,
+        len(chunks),
+        max_bars_per_chunk,
+        provider if isinstance(provider, str) and provider.strip() else provider,
+    )
+    frames: list[pd.DataFrame] = []
+    for i, (cs, ce) in enumerate(chunks):
+        pad = int(padding_days) if i == 0 else 0
+        part = self.fetch(ticker, scale, cs, ce, padding_days=pad, provider=provider)
+        if part is not None and not part.empty:
+            frames.append(part)
+    if not frames:
+        return pd.DataFrame(), len(chunks)
+    merged = pd.concat(frames).sort_index()
+    merged = merged[~merged.index.duplicated(keep="first")]
+    return merged, len(chunks)

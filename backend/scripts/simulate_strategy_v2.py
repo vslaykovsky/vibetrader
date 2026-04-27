@@ -375,9 +375,7 @@ def simulate(
     entry_script: str,
     simulation_scale: str | None = None,
 ) -> tuple[backtest_utils.DataJson, list[dict[str, str]] | None]:
-    cache_dir = workspace / "cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    bars_query = HistoricalBarsQuery(cache_dir=cache_dir)
+    bars_query = HistoricalBarsQuery()
     rt = StrategyRuntime(workspace, entry_script=entry_script)
     strategy_subprocess_secs = 0.0
 

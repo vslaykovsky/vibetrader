@@ -18,8 +18,11 @@ DEFAULT_DATABASE_URL = URL.create(
     host=os.getenv("POSTGRES_HOST", "localhost"),
     port=5432,
     database="postgres",
+    query={"sslmode": "require"} 
 )
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip() or DEFAULT_DATABASE_URL
+import logging
+logger = logging.getLogger(__name__)
 
 engine = create_engine(DATABASE_URL, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)

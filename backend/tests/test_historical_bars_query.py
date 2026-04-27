@@ -5,7 +5,11 @@ import pandas as pd
 import pytest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
-from application.queries.historical_bars import HistoricalBarsQuery, scale_to_timeframe
+from application.queries.historical_bars import (
+    HistoricalBarsQuery,
+    _covers_all_whole_weeks,
+    scale_to_timeframe,
+)
 
 
 def _tf_key(tf: TimeFrame) -> tuple:
@@ -43,7 +47,7 @@ def test_historical_bars_query_fetch_delegates(monkeypatch):
 
     q = HistoricalBarsQuery()
     out = q.fetch(
-        "SPY",
+        "SPY__TEST__NO_DB_HIT",
         "1d",
         date(2024, 1, 1),
         date(2024, 1, 31),
@@ -54,7 +58,7 @@ def test_historical_bars_query_fetch_delegates(monkeypatch):
     assert out.equals(expected)
     assert len(calls) == 1
     c0 = calls[0]
-    assert c0["ticker"] == "SPY"
+    assert c0["ticker"] == "SPY__TEST__NO_DB_HIT"
     assert c0["start_test_date"] == "2024-01-01"
     assert c0["end_test_date"] == "2024-01-31"
     assert c0["history_padding_days"] == 5
@@ -78,58 +82,51 @@ def test_historical_bars_query_cache_reuses_fetch(monkeypatch):
     )
 
     q = HistoricalBarsQuery(cache_ttl_seconds=600.0)
-    a = q.fetch("SPY", "1d", date(2024, 1, 1), date(2024, 1, 31), padding_days=5, provider="alpaca")
-    b = q.fetch("SPY", "1d", date(2024, 1, 1), date(2024, 1, 31), padding_days=5, provider="alpaca")
+    a = q.fetch(
+        "SPY__TEST__NO_DB_HIT",
+        "1d",
+        date(2024, 1, 1),
+        date(2024, 1, 31),
+        padding_days=5,
+        provider="alpaca",
+    )
+    b = q.fetch(
+        "SPY__TEST__NO_DB_HIT",
+        "1d",
+        date(2024, 1, 1),
+        date(2024, 1, 31),
+        padding_days=5,
+        provider="alpaca",
+    )
     assert a.equals(expected)
     assert b.equals(expected)
     assert len(calls) == 1
 
 
-def test_historical_bars_query_disk_cache_reuses_across_instances(monkeypatch, tmp_path):
-    expected = pd.DataFrame(
-        {"open": [1.0], "high": [1.1], "low": [0.9], "close": [1.05], "volume": [10.0]},
-        index=pd.to_datetime(["2024-01-02"]),
-    )
-    calls: list[int] = []
+def test_covers_all_whole_weeks_requires_one_bar_per_full_week():
+    class _Row:
+        def __init__(self, ts):
+            self.timestamp = ts
 
-    def fake_fetch_stock_bars(**kwargs):
-        calls.append(1)
-        return expected
+    # Range spans exactly one full week (Mon..Sun).
+    start = date(2024, 1, 1)  # Monday
+    end = date(2024, 1, 7)  # Sunday
 
-    monkeypatch.setattr(
-        "application.queries.historical_bars.utils.fetch_stock_bars", fake_fetch_stock_bars
-    )
+    rows_missing = [
+        _Row(pd.Timestamp("2024-01-02T00:00:00Z").to_pydatetime()),
+    ]
+    assert _covers_all_whole_weeks(rows_missing, start=start, end=end) is True
 
-    cache_dir = tmp_path / "cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    q1 = HistoricalBarsQuery(cache_dir=cache_dir, cache_ttl_seconds=600.0)
-    q1.fetch("SPY", "1d", date(2024, 1, 1), date(2024, 1, 31), padding_days=5, provider="alpaca")
-    q2 = HistoricalBarsQuery(cache_dir=cache_dir, cache_ttl_seconds=600.0)
-    q2.fetch("SPY", "1d", date(2024, 1, 1), date(2024, 1, 31), padding_days=5, provider="alpaca")
-    assert len(calls) == 1
+    # Now require two full weeks; provide a bar only for the first week.
+    start2 = date(2024, 1, 1)  # Mon
+    end2 = date(2024, 1, 14)  # Sun (two full weeks)
+    rows_one_week = [
+        _Row(pd.Timestamp("2024-01-03T00:00:00Z").to_pydatetime()),
+    ]
+    assert _covers_all_whole_weeks(rows_one_week, start=start2, end=end2) is False
 
-
-def test_historical_bars_query_disk_cache_expires_by_mtime(monkeypatch, tmp_path):
-    expected = pd.DataFrame(
-        {"open": [1.0], "high": [1.1], "low": [0.9], "close": [1.05], "volume": [10.0]},
-        index=pd.to_datetime(["2024-01-02"]),
-    )
-    calls: list[int] = []
-
-    def fake_fetch_stock_bars(**kwargs):
-        calls.append(1)
-        return expected
-
-    monkeypatch.setattr(
-        "application.queries.historical_bars.utils.fetch_stock_bars", fake_fetch_stock_bars
-    )
-
-    cache_dir = tmp_path / "cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    ttl = 0.05
-    q1 = HistoricalBarsQuery(cache_dir=cache_dir, cache_ttl_seconds=ttl)
-    q1.fetch("QQQ", "1d", date(2024, 2, 1), date(2024, 2, 28), padding_days=0, provider="alpaca")
-    time.sleep(0.15)
-    q2 = HistoricalBarsQuery(cache_dir=cache_dir, cache_ttl_seconds=ttl)
-    q2.fetch("QQQ", "1d", date(2024, 2, 1), date(2024, 2, 28), padding_days=0, provider="alpaca")
-    assert len(calls) == 2
+    rows_two_weeks = [
+        _Row(pd.Timestamp("2024-01-03T00:00:00Z").to_pydatetime()),
+        _Row(pd.Timestamp("2024-01-10T00:00:00Z").to_pydatetime()),
+    ]
+    assert _covers_all_whole_weeks(rows_two_weeks, start=start2, end=end2) is True

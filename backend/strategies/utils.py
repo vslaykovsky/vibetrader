@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
 from alpaca.data.enums import CryptoFeed
 from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
@@ -26,6 +28,8 @@ BACKTEST_PATH = WORKSPACE_DIR / "backtest.json"
 METRICS_PATH = WORKSPACE_DIR / "metrics.json"
 PARAMS_HYPEROPT_PATH = WORKSPACE_DIR / "params-hyperopt.json"
 AVAILABLE_PROVIDERS = {"auto", "alpaca", "moex"}
+
+_ALPACA_CRYPTO_BAR_CHUNK_BUDGET = 100_000
 
 
 class LwcMarker(BaseModel):
@@ -343,6 +347,8 @@ def _fetch_moex_bars(
     end_test_date: str,
     history_padding_days: int,
     timeframe: TimeFrame,
+    *,
+    drop_wide_spread_bars: bool = True,
 ) -> pd.DataFrame:
     moex_session.TOKEN = _moex_keys()
     period = period_from_timeframe(timeframe)
@@ -371,7 +377,8 @@ def _fetch_moex_bars(
         shaped[col] = pd.to_numeric(shaped[col], errors="coerce")
     shaped = shaped.dropna(subset=["begin", "open", "high", "low", "close", "volume"])
     shaped = shaped.set_index("begin")
-    return _drop_wide_spread_bars(_as_ohlcv_dataframe(shaped))
+    out = _as_ohlcv_dataframe(shaped)
+    return _drop_wide_spread_bars(out) if drop_wide_spread_bars else out
 
 
 def _fetch_alpaca_bars(
@@ -380,6 +387,8 @@ def _fetch_alpaca_bars(
     end_test_date: str,
     history_padding_days: int,
     timeframe: TimeFrame,
+    *,
+    drop_wide_spread_bars: bool = True,
 ) -> pd.DataFrame:
     api_key, secret_key = _alpaca_keys()
     client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
@@ -402,10 +411,220 @@ def _fetch_alpaca_bars(
         df = df.xs(ticker, level=0).copy()
     else:
         df = df.copy()
-    return _drop_wide_spread_bars(_as_ohlcv_dataframe(df))
+    out = _as_ohlcv_dataframe(df)
+    return _drop_wide_spread_bars(out) if drop_wide_spread_bars else out
 
 
-_ProviderFetcher = Callable[[str, str, str, int, TimeFrame], pd.DataFrame]
+def _is_http_429_exception(exc: BaseException) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 429:
+        return True
+
+    response = getattr(exc, "response", None)
+    if response is not None and getattr(response, "status_code", None) == 429:
+        return True
+
+    inner = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+    if inner is not None and inner is not exc:
+        return _is_http_429_exception(inner)
+
+    msg = str(exc)
+    lowered = msg.lower()
+    if "too many requests" in lowered or "rate limit" in lowered:
+        return True
+    try:
+        payload = json.loads(msg)
+        if isinstance(payload, dict):
+            message = str(payload.get("message", "")).lower()
+            if "too many requests" in message or "rate limit" in message:
+                return True
+    except Exception:
+        pass
+    return "429" in msg and ("Too Many Requests" in msg or "too many requests" in msg or "rate limit" in msg)
+
+
+def _timeframe_duration_seconds(tf: TimeFrame) -> float:
+    a = float(tf.amount)
+    u = tf.unit
+    if u == TimeFrameUnit.Minute:
+        return a * 60.0
+    if u == TimeFrameUnit.Hour:
+        return a * 3600.0
+    if u == TimeFrameUnit.Day:
+        return a * 86400.0
+    if u == TimeFrameUnit.Week:
+        return a * 7.0 * 86400.0
+    if u == TimeFrameUnit.Month:
+        return a * 31.0 * 86400.0
+    return a * 3600.0
+
+
+def _estimate_crypto_bars_between(
+    start: pd.Timestamp, end_exclusive: pd.Timestamp, tf: TimeFrame
+) -> int:
+    if end_exclusive <= start:
+        return 0
+    sec = float((end_exclusive - start) / pd.Timedelta(seconds=1))
+    bar_sec = _timeframe_duration_seconds(tf)
+    if bar_sec <= 0:
+        bar_sec = 60.0
+    return max(1, int(math.ceil(sec / bar_sec)))
+
+
+def _crypto_largest_chunk_end_exclusive(
+    cur: pd.Timestamp,
+    end_exclusive: pd.Timestamp,
+    tf: TimeFrame,
+    budget: int,
+) -> pd.Timestamp:
+    if cur >= end_exclusive:
+        return end_exclusive
+    if _estimate_crypto_bars_between(cur, end_exclusive, tf) <= budget:
+        return end_exclusive
+    bar_sec = max(1.0, _timeframe_duration_seconds(tf))
+    low = cur
+    high = end_exclusive
+    for _ in range(96):
+        if (high - low).value <= 1_000_000_000:
+            break
+        mid = low + (high - low) / 2
+        if mid <= low:
+            mid = low + pd.Timedelta(seconds=1)
+        if _estimate_crypto_bars_between(cur, mid, tf) <= budget:
+            low = mid
+        else:
+            high = mid
+    if low <= cur:
+        low = cur + pd.Timedelta(seconds=bar_sec)
+        if low >= end_exclusive:
+            low = end_exclusive
+    return low
+
+
+def _alpaca_crypto_barset_to_ohlcv(barset: Any, symbol: str) -> pd.DataFrame:
+    df = barset.df.copy()
+    if isinstance(df.index, pd.MultiIndex):
+        df = df.reset_index()
+        if "timestamp" in df.columns:
+            df = df.rename(columns={"timestamp": "time"})
+        elif "index" in df.columns:
+            df = df.rename(columns={"index": "time"})
+    elif "timestamp" in df.columns:
+        df = df.rename(columns={"timestamp": "time"})
+    if "symbol" in df.columns:
+        df = df[df["symbol"] == symbol].copy()
+    if "time" not in df.columns:
+        df = df.reset_index().rename(columns={df.index.name or "index": "time"})
+    df["time"] = pd.to_datetime(df["time"], utc=True)
+    df = df.sort_values("time")
+    if "symbol" in df.columns:
+        df = df.drop(columns=["symbol"])
+    df = df.set_index("time")
+    return _as_ohlcv_dataframe(df)
+
+
+@retry(
+    retry=retry_if_exception(_is_http_429_exception),
+    wait=wait_exponential_jitter(initial=1, max=60),
+    stop=stop_after_attempt(8),
+    reraise=True,
+)
+def _fetch_alpaca_crypto_bars_one_window(
+    client: CryptoHistoricalDataClient,
+    symbol: str,
+    start: pd.Timestamp,
+    end_exclusive: pd.Timestamp,
+    timeframe: TimeFrame,
+) -> pd.DataFrame:
+    request = CryptoBarsRequest(
+        symbol_or_symbols=symbol,
+        start=start.to_pydatetime(),
+        end=end_exclusive.to_pydatetime(),
+        timeframe=timeframe,
+    )
+    barset = client.get_crypto_bars(request, feed=CryptoFeed.US)
+    return _alpaca_crypto_barset_to_ohlcv(barset, symbol)
+
+
+@retry(
+    retry=retry_if_exception(_is_http_429_exception),
+    wait=wait_exponential_jitter(initial=1, max=60),
+    stop=stop_after_attempt(8),
+    reraise=True,
+)
+def _fetch_alpaca_bars_with_429_backoff(
+    ticker: str,
+    start_test_date: str,
+    end_test_date: str,
+    history_padding_days: int,
+    timeframe: TimeFrame,
+    *,
+    drop_wide_spread_bars: bool = True,
+) -> pd.DataFrame:
+    return _fetch_alpaca_bars(
+        ticker=ticker,
+        start_test_date=start_test_date,
+        end_test_date=end_test_date,
+        history_padding_days=history_padding_days,
+        timeframe=timeframe,
+        drop_wide_spread_bars=drop_wide_spread_bars,
+    )
+
+
+def _fetch_alpaca_crypto_bars(
+    ticker: str,
+    start_test_date: str,
+    end_test_date: str,
+    timeframe: TimeFrame,
+    *,
+    drop_wide_spread_bars: bool = True,
+) -> pd.DataFrame:
+    api_key, secret_key = _alpaca_keys()
+    client = CryptoHistoricalDataClient(api_key, secret_key)
+    symbol = normalize_crypto_symbol(ticker)
+    cur = pd.Timestamp(start_test_date, tz="UTC")
+    end = pd.Timestamp(_end_datetime_capped_yesterday(end_test_date), tz="UTC") + pd.Timedelta(days=1)
+    frames: list[pd.DataFrame] = []
+    while cur < end:
+        if _estimate_crypto_bars_between(cur, end, timeframe) <= _ALPACA_CRYPTO_BAR_CHUNK_BUDGET:
+            chunk_end = end
+        else:
+            chunk_end = _crypto_largest_chunk_end_exclusive(
+                cur, end, timeframe, _ALPACA_CRYPTO_BAR_CHUNK_BUDGET
+            )
+        part = _fetch_alpaca_crypto_bars_one_window(
+            client, symbol, cur, chunk_end, timeframe
+        )
+        if not part.empty:
+            frames.append(part)
+        cur = chunk_end
+    if not frames:
+        raise RuntimeError("No market data returned from Alpaca.")
+    merged = pd.concat(frames).sort_index()
+    merged = merged[~merged.index.duplicated(keep="first")]
+    return (
+        _drop_wide_spread_bars(merged) if drop_wide_spread_bars else merged
+    )
+
+
+def _fetch_alpaca_crypto_bars_with_429_backoff(
+    ticker: str,
+    start_test_date: str,
+    end_test_date: str,
+    timeframe: TimeFrame,
+    *,
+    drop_wide_spread_bars: bool = True,
+) -> pd.DataFrame:
+    return _fetch_alpaca_crypto_bars(
+        ticker=ticker,
+        start_test_date=start_test_date,
+        end_test_date=end_test_date,
+        timeframe=timeframe,
+        drop_wide_spread_bars=drop_wide_spread_bars,
+    )
+
+
+_ProviderFetcher = Callable[..., pd.DataFrame]
 
 
 def _fetch_with_shrink_retry(
@@ -416,6 +635,7 @@ def _fetch_with_shrink_retry(
     end_test_date: str,
     history_padding_days: int,
     timeframe: TimeFrame,
+    drop_wide_spread_bars: bool = True,
 ) -> pd.DataFrame:
     """Call ``fetcher``; on failure, halve the request window from the *left* (move
     ``start`` toward ``end``) and retry until the window collapses. Returns an empty
@@ -431,11 +651,12 @@ def _fetch_with_shrink_retry(
     while cur_start.date() <= cur_end.date():
         try:
             return fetcher(
-                ticker,
-                cur_start.date().isoformat(),
-                cur_end.date().isoformat(),
-                history_padding_days,
-                timeframe,
+                ticker=ticker,
+                start_test_date=cur_start.date().isoformat(),
+                end_test_date=cur_end.date().isoformat(),
+                history_padding_days=history_padding_days,
+                timeframe=timeframe,
+                drop_wide_spread_bars=drop_wide_spread_bars,
             )
         except Exception as exc:
             last_exc = exc
@@ -461,14 +682,17 @@ def _fetch_alpaca_with_retry(
     end_test_date: str,
     history_padding_days: int,
     timeframe: TimeFrame,
+    *,
+    drop_wide_spread_bars: bool = True,
 ) -> pd.DataFrame:
     return _fetch_with_shrink_retry(
-        _fetch_alpaca_bars,
+        _fetch_alpaca_bars_with_429_backoff,
         ticker=ticker,
         start_test_date=start_test_date,
         end_test_date=end_test_date,
         history_padding_days=history_padding_days,
         timeframe=timeframe,
+        drop_wide_spread_bars=drop_wide_spread_bars,
     )
 
 
@@ -478,6 +702,8 @@ def _fetch_moex_with_retry(
     end_test_date: str,
     history_padding_days: int,
     timeframe: TimeFrame,
+    *,
+    drop_wide_spread_bars: bool = True,
 ) -> pd.DataFrame:
     return _fetch_with_shrink_retry(
         _fetch_moex_bars,
@@ -486,6 +712,7 @@ def _fetch_moex_with_retry(
         end_test_date=end_test_date,
         history_padding_days=history_padding_days,
         timeframe=timeframe,
+        drop_wide_spread_bars=drop_wide_spread_bars,
     )
 
 
@@ -496,6 +723,8 @@ def fetch_stock_bars(
     history_padding_days: int,
     timeframe: TimeFrame,
     provider: Optional[str] = None,
+    *,
+    drop_wide_spread_bars: bool = True,
 ) -> pd.DataFrame:
     provider = _market_data_provider_name(provider=provider)
     if provider == "alpaca":
@@ -505,6 +734,7 @@ def fetch_stock_bars(
             end_test_date=end_test_date,
             history_padding_days=history_padding_days,
             timeframe=timeframe,
+            drop_wide_spread_bars=drop_wide_spread_bars,
         )
     if provider == "moex":
         return _fetch_moex_with_retry(
@@ -513,19 +743,26 @@ def fetch_stock_bars(
             end_test_date=end_test_date,
             history_padding_days=history_padding_days,
             timeframe=timeframe,
+            drop_wide_spread_bars=drop_wide_spread_bars,
         )
 
-    # auto mode: try Alpaca first for global symbols; fallback to MOEX. Each provider
-    # already shrinks its own window on transient failures; we still surface a combined
-    # error if BOTH providers raise outright before any data could be retrieved.
+    # auto mode: try Alpaca first for global symbols; fallback to MOEX.
+    # Keep provider selection fast (single attempt per provider, with 429 backoff on
+    # Alpaca). Window shrinking is reserved for explicit provider selection.
+    clamped = _clamp_request_window(start_test_date, end_test_date)
+    if clamped is None:
+        return pd.DataFrame()
+    cur_start_s, cur_end_s = clamped
+
     alpaca_exc: Exception | None = None
     try:
-        df = _fetch_alpaca_with_retry(
+        df = _fetch_alpaca_bars_with_429_backoff(
             ticker=ticker,
-            start_test_date=start_test_date,
-            end_test_date=end_test_date,
+            start_test_date=cur_start_s,
+            end_test_date=cur_end_s,
             history_padding_days=history_padding_days,
             timeframe=timeframe,
+            drop_wide_spread_bars=drop_wide_spread_bars,
         )
         if not df.empty:
             return df
@@ -533,12 +770,13 @@ def fetch_stock_bars(
         alpaca_exc = exc
 
     try:
-        df = _fetch_moex_with_retry(
+        df = _fetch_moex_bars(
             ticker=ticker,
-            start_test_date=start_test_date,
-            end_test_date=end_test_date,
+            start_test_date=cur_start_s,
+            end_test_date=cur_end_s,
             history_padding_days=history_padding_days,
             timeframe=timeframe,
+            drop_wide_spread_bars=drop_wide_spread_bars,
         )
         if not df.empty:
             return df
@@ -556,35 +794,13 @@ def fetch_crypto_bars(
     start_test_date: str,
     end_test_date: str,
     timeframe: TimeFrame,
+    *,
+    drop_wide_spread_bars: bool = True,
 ) -> pd.DataFrame:
-    api_key, secret_key = _alpaca_keys()
-    client = CryptoHistoricalDataClient(api_key, secret_key)
-    symbol = normalize_crypto_symbol(ticker)
-    start = pd.Timestamp(start_test_date, tz="UTC")
-    end = pd.Timestamp(_end_datetime_capped_yesterday(end_test_date), tz="UTC") + pd.Timedelta(days=1)
-    request = CryptoBarsRequest(
-        symbol_or_symbols=symbol,
-        start=start.to_pydatetime(),
-        end=end.to_pydatetime(),
+    return _fetch_alpaca_crypto_bars_with_429_backoff(
+        ticker=ticker,
+        start_test_date=start_test_date,
+        end_test_date=end_test_date,
         timeframe=timeframe,
+        drop_wide_spread_bars=drop_wide_spread_bars,
     )
-    barset = client.get_crypto_bars(request, feed=CryptoFeed.US)
-    df = barset.df.copy()
-    if isinstance(df.index, pd.MultiIndex):
-        df = df.reset_index()
-        if "timestamp" in df.columns:
-            df = df.rename(columns={"timestamp": "time"})
-        elif "index" in df.columns:
-            df = df.rename(columns={"index": "time"})
-    elif "timestamp" in df.columns:
-        df = df.rename(columns={"timestamp": "time"})
-    if "symbol" in df.columns:
-        df = df[df["symbol"] == symbol].copy()
-    if "time" not in df.columns:
-        df = df.reset_index().rename(columns={df.index.name or "index": "time"})
-    df["time"] = pd.to_datetime(df["time"], utc=True)
-    df = df.sort_values("time")
-    if "symbol" in df.columns:
-        df = df.drop(columns=["symbol"])
-    df = df.set_index("time")
-    return _drop_wide_spread_bars(_as_ohlcv_dataframe(df))
