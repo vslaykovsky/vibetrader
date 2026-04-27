@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import uuid
+import enum
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Index, Integer, String, Text
+from sqlalchemy import JSON, DateTime, Index, Integer, String, Text, Enum, UniqueConstraint, Float
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, validates
 
 
@@ -64,3 +65,34 @@ class Strategy(Base):
             f"status_text={_short(self.status_text)!r} "
             f"created_at={self.created_at}>"
         )
+
+
+class CandleTimeframe(str, enum.Enum):
+    M1 = "1m"
+    M15 = "15m"
+    H1 = "1h"
+    H4 = "4h"
+    D1 = "1d"
+    W1 = "1w"
+
+
+class Candle(Base):
+    __tablename__ = "candles"
+
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, nullable=False)
+    ticker: Mapped[str] = mapped_column(String(32), primary_key=True, nullable=False)
+    timeframe: Mapped[CandleTimeframe] = mapped_column(
+        Enum(CandleTimeframe, name="candle_timeframe", native_enum=True, validate_strings=True),
+        primary_key=True,
+        nullable=False,
+    )
+    open: Mapped[float] = mapped_column(Float, nullable=False)
+    high: Mapped[float] = mapped_column(Float, nullable=False)
+    low: Mapped[float] = mapped_column(Float, nullable=False)
+    close: Mapped[float] = mapped_column(Float, nullable=False)
+    volume: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    __table_args__ = (
+        UniqueConstraint("ticker", "timeframe", "timestamp", name="uq_candles_ticker_tf_ts"),
+        Index("ix_candles_ticker_timeframe_timestamp", "ticker", "timeframe", "timestamp"),
+    )
