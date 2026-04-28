@@ -136,6 +136,37 @@ def _sim_start_base_row(base_df: pd.DataFrame, start: date) -> int:
     raise ValueError("No bars in requested simulation date range (after padding)")
 
 
+def _simulation_row_range(base_df: pd.DataFrame, start: date, end: date) -> tuple[int, int]:
+    """
+    Return inclusive [start_row, end_row] indices in ``base_df`` that fall within
+    the date window [start, end] (UTC-normalized). Raises if no rows match.
+    """
+    if base_df.empty:
+        raise ValueError("No bars available")
+
+    idx = base_df.index
+    start_ts = pd.Timestamp(start).tz_localize("UTC")
+    end_excl = pd.Timestamp(end).tz_localize("UTC") + pd.Timedelta(days=1)
+
+    if getattr(idx, "tz", None) is None:
+        # Naive index: compare using naive UTC timestamps.
+        start_cmp = start_ts.tz_localize(None)
+        end_cmp = end_excl.tz_localize(None)
+    else:
+        start_cmp = start_ts
+        end_cmp = end_excl
+
+    start_i = int(idx.searchsorted(start_cmp, side="left"))
+    end_i = int(idx.searchsorted(end_cmp, side="left")) - 1
+    if start_i < 0:
+        start_i = 0
+    if end_i > (len(idx) - 1):
+        end_i = len(idx) - 1
+    if start_i > end_i:
+        raise ValueError("No bars in requested simulation date range")
+    return start_i, end_i
+
+
 def _ensure_loaded_through_abs_base_row(
     *,
     bars_query: HistoricalBarsQuery,

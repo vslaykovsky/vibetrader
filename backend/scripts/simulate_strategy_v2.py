@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from datetime import date
@@ -353,6 +354,21 @@ def _build_subscription_charts(
     return charts
 
 
+def _emit_ui(payload: dict) -> None:
+    line = json.dumps({"simulation_ui": True, **payload}, default=str)
+    sys.stderr.write(line + "\n")
+    sys.stderr.flush()
+
+
+def _progress_emit_step_percent() -> int:
+    raw = (os.environ.get("SIMULATION_PROGRESS_STEP_PERCENT") or "").strip()
+    try:
+        v = int(raw)
+    except Exception:
+        v = 10
+    return max(1, min(25, v))
+
+
 def _read_strategy_name(workspace: Path) -> str:
     params_path = workspace / "params.json"
     try:
@@ -517,6 +533,10 @@ def simulate(
             tickers[0] if tickers[0] in per_base_df else next(iter(per_base_df))
         )
         start_i, end_i = _simulation_row_range(per_base_df[primary_ticker], start_d, end_d)
+        total_units = max(0, int(end_i) - int(start_i) + 1)
+        progress_step = _progress_emit_step_percent()
+        next_progress_pct = 0
+        completed_units = 0
         logger.info(
             "primary_ticker=%s base_scale=%s simulation_row_range=[%s,%s] requested=[%s,%s]",
             primary_ticker,
@@ -525,6 +545,20 @@ def simulate(
             end_i,
             start_d,
             end_d,
+        )
+        _emit_ui(
+            {
+                "event": "start",
+                "workspace": str(workspace),
+                "entry_script": entry_script,
+                "tickers": tickers,
+                "base_scale": base_scale,
+                "simulation_scale": sim_scale,
+                "start_date": str(start_d),
+                "end_date": str(end_d),
+                "total_units": total_units,
+                "progress_step_percent": progress_step,
+            }
         )
         portfolio = Portfolio(initial_deposit=initial_deposit, ticker=primary_ticker)
 
@@ -665,6 +699,21 @@ def simulate(
                 portfolio.record_equity(step.unixtime, fill_price)
 
                 if step.is_base_close and start_i <= step.base_row <= end_i:
+                    completed_units += 1
+                    if total_units > 0:
+                        pct = int((completed_units * 100) // total_units)
+                        if pct >= next_progress_pct:
+                            _emit_ui(
+                                {
+                                    "event": "progress",
+                                    "percent": min(100, pct),
+                                    "completed_units": completed_units,
+                                    "total_units": total_units,
+                                    "unixtime": int(step.unixtime),
+                                    "base_row": int(step.base_row),
+                                }
+                            )
+                            next_progress_pct = min(100, pct + progress_step)
                     base_unix = int(pd.Timestamp(step.base_ts).timestamp())
                     t_ax = _time_for_chart(base_unix, base_scale)
                     eq = portfolio.equity(fill_price)
@@ -731,6 +780,13 @@ def simulate(
                 tickers,
             )
             primary_row_map = ts_to_row[primary_ticker]
+            total_units = sum(
+                1
+                for ts in all_ts_sorted
+                if (r := primary_row_map.get(ts)) is not None and start_i <= r <= end_i
+            )
+            next_progress_pct = 0
+            completed_units = 0
             for ts in all_ts_sorted:
                 base_unix = int(ts.timestamp())
                 t_ax = _time_for_chart(base_unix, base_scale)
@@ -804,6 +860,21 @@ def simulate(
                     and primary_bar is not None
                     and start_i <= primary_row <= end_i
                 ):
+                    completed_units += 1
+                    if total_units > 0:
+                        pct = int((completed_units * 100) // total_units)
+                        if pct >= next_progress_pct:
+                            _emit_ui(
+                                {
+                                    "event": "progress",
+                                    "percent": min(100, pct),
+                                    "completed_units": completed_units,
+                                    "total_units": total_units,
+                                    "unixtime": int(base_unix),
+                                    "base_row": int(primary_row),
+                                }
+                            )
+                            next_progress_pct = min(100, pct + progress_step)
                     c = primary_bar[3]
                     eq = portfolio.equity(c)
                     equity_points.append(
@@ -852,6 +923,17 @@ def simulate(
         except Exception as exc:
             logger.warning("failed to write inputs.json/outputs.json: %s", exc)
         rt.close()
+
+    if total_units > 0 and completed_units != total_units:
+        completed_units = total_units
+    _emit_ui(
+        {
+            "event": "done",
+            "percent": 100,
+            "completed_units": completed_units,
+            "total_units": total_units,
+        }
+    )
 
     is_eda = len(portfolio.trades) == 0
     equity_series_values = [p.value for p in equity_points]

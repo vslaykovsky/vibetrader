@@ -318,6 +318,51 @@ def _hyperopt_ui_line_to_status_text(raw_line: str) -> str | None:
     return None
 
 
+def _simulation_ui_line_to_status_text(raw_line: str) -> str | None:
+    s = raw_line.strip()
+    if not s.startswith("{") or "simulation_ui" not in s:
+        return None
+    try:
+        d = json.loads(s)
+    except json.JSONDecodeError:
+        return None
+    if d.get("simulation_ui") is not True:
+        return None
+    ev = d.get("event")
+    if ev == "start":
+        tickers = d.get("tickers")
+        sc = d.get("base_scale") or d.get("strategy_scale") or ""
+        units = d.get("total_units")
+        tkr = ""
+        if isinstance(tickers, list) and tickers:
+            tkr = str(tickers[0] or "")
+        parts: list[str] = ["Simulation · start"]
+        if tkr:
+            parts.append(tkr)
+        if isinstance(sc, str) and sc.strip():
+            parts.append(sc.strip())
+        if isinstance(units, int) and units > 0:
+            parts.append(f"{units} bars")
+        return " · ".join(parts)[:512]
+    if ev == "progress":
+        pct = d.get("percent")
+        done = d.get("completed_units")
+        total = d.get("total_units")
+        if isinstance(pct, (int, float)):
+            p = int(pct)
+        else:
+            p = None
+        parts = ["Simulation"]
+        if p is not None:
+            parts.append(f"{max(0, min(100, p))}%")
+        if isinstance(done, int) and isinstance(total, int) and total > 0:
+            parts.append(f"{done}/{total}")
+        return " · ".join(parts)[:512]
+    if ev == "done":
+        return "Simulation · done"[:512]
+    return None
+
+
 def thread_id_allowed(thread_id: str) -> bool:
     tid = (thread_id or "").strip()
     if not tid:
@@ -765,6 +810,7 @@ def _run_simulation(*, workspace: Path) -> subprocess.CompletedProcess[str]:
         cwd=str(workspace),
         timeout=timeout_s,
         freeze_timeout=freeze_timeout_s,
+        on_stderr_line=None,
     )
 
 
@@ -776,6 +822,7 @@ def _run_logged_subprocess_with_freeze_watchdog(
     cwd: str,
     timeout: int,
     freeze_timeout: int,
+    on_stderr_line: Callable[[str], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if freeze_timeout <= 0:
         return _run_logged_subprocess(label, cmd, cwd, timeout=timeout)
@@ -880,6 +927,11 @@ def _run_logged_subprocess_with_freeze_watchdog(
                     _append(out_chunks, line)
                 else:
                     _append(err_chunks, line)
+                    if on_stderr_line:
+                        try:
+                            on_stderr_line(line)
+                        except Exception:
+                            pass
     finally:
         try:
             sel.close()
@@ -1203,8 +1255,26 @@ def run_backtest(
         start_date, end_date, deposit, provider = resolved
         if on_progress:
             on_progress("Running simulation…")
+        def _on_sim_stderr_line(line: str) -> None:
+            if not on_progress:
+                return
+            msg = _simulation_ui_line_to_status_text(line)
+            if msg:
+                on_progress(msg)
         try:
-            bt = _run_simulation(workspace=root)
+            bt = _run_logged_subprocess_with_freeze_watchdog(
+                label="strategy simulation",
+                cmd=[
+                    sys.executable,
+                    str(SIMULATE_SCRIPT_PATH),
+                    "--entry",
+                    str(root / "strategy.py"),
+                ],
+                cwd=str(root),
+                timeout=int(os.getenv("STRATEGY_BACKTEST_TIMEOUT_S", "1800")),
+                freeze_timeout=int(os.getenv("STRATEGY_BACKTEST_FREEZE_TIMEOUT_S", "120")),
+                on_stderr_line=_on_sim_stderr_line if on_progress else None,
+            )
         except subprocess.TimeoutExpired as e:
             freeze_timeout_s = int(os.getenv("STRATEGY_BACKTEST_FREEZE_TIMEOUT_S", "120"))
             msg = f"backtest froze and was killed after {freeze_timeout_s}s without output"
@@ -1223,7 +1293,19 @@ def run_backtest(
             if fix_attempt.get("ok"):
                 if on_progress:
                     on_progress("Retrying simulation after auto-fix…")
-                bt = _run_simulation(workspace=root)
+                bt = _run_logged_subprocess_with_freeze_watchdog(
+                    label="strategy simulation",
+                    cmd=[
+                        sys.executable,
+                        str(SIMULATE_SCRIPT_PATH),
+                        "--entry",
+                        str(root / "strategy.py"),
+                    ],
+                    cwd=str(root),
+                    timeout=int(os.getenv("STRATEGY_BACKTEST_TIMEOUT_S", "1800")),
+                    freeze_timeout=int(os.getenv("STRATEGY_BACKTEST_FREEZE_TIMEOUT_S", "120")),
+                    on_stderr_line=_on_sim_stderr_line if on_progress else None,
+                )
             else:
                 return {
                     "ok": False,

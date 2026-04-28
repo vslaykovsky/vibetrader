@@ -329,6 +329,44 @@ class HistoricalBarsQuery:
             self._cache[key] = _CacheEntry(df=df, expires_at=time.monotonic() + self._cache_ttl)
         return df
 
+    def fetch_chunked_merge(
+        self,
+        ticker: str,
+        scale: str,
+        start: date,
+        end: date,
+        padding_days: int = 0,
+        *,
+        max_bars_per_chunk: int = CHUNK_BAR_BUDGET,
+        provider: Optional[str] = None,
+    ) -> tuple[pd.DataFrame, int]:
+        chunks = plan_display_bars_fetch_chunks(
+            start, end, scale, max_bars_per_chunk=max_bars_per_chunk
+        )
+        if not chunks:
+            return pd.DataFrame(), 0
+        logger.info(
+            "fetch_chunked_merge begin ticker=%s scale=%s start=%s end=%s chunks=%s max_bars_per_chunk=%s provider=%s",
+            ticker.strip(),
+            (scale or "").strip().lower(),
+            start,
+            end,
+            len(chunks),
+            max_bars_per_chunk,
+            provider if isinstance(provider, str) and provider.strip() else provider,
+        )
+        frames: list[pd.DataFrame] = []
+        for i, (cs, ce) in enumerate(chunks):
+            pad = int(padding_days) if i == 0 else 0
+            part = self.fetch(ticker, scale, cs, ce, padding_days=pad, provider=provider)
+            if part is not None and not part.empty:
+                frames.append(part)
+        if not frames:
+            return pd.DataFrame(), len(chunks)
+        merged = pd.concat(frames).sort_index()
+        merged = merged[~merged.index.duplicated(keep="first")]
+        return merged, len(chunks)
+
 
 def _covers_all_whole_weeks(cached_rows: list[Candle], *, start: date, end: date) -> bool:
     """Return True if we have at least one cached bar for every *whole* week fully contained
@@ -367,46 +405,3 @@ def _covers_all_whole_weeks(cached_rows: list[Candle], *, start: date, end: date
         present.add((int(iso.year), int(iso.week)))
 
     return required.issubset(present)
-
-def fetch_chunked_merge(
-    self,
-    ticker: str,
-    scale: str,
-    start: date,
-    end: date,
-    padding_days: int = 0,
-    *,
-    max_bars_per_chunk: int = CHUNK_BAR_BUDGET,
-    provider: Optional[str] = None,
-) -> tuple[pd.DataFrame, int]:
-    """Load ``[start, end]`` in calendar windows under ``max_bars_per_chunk`` (estimate), merge, dedupe index.
-
-    ``padding_days`` is applied only to the **first** window so warmup matches a single-range fetch.
-    Returns ``(merged_df, num_windows)``.
-    """
-    chunks = plan_display_bars_fetch_chunks(
-        start, end, scale, max_bars_per_chunk=max_bars_per_chunk
-    )
-    if not chunks:
-        return pd.DataFrame(), 0
-    logger.info(
-        "fetch_chunked_merge begin ticker=%s scale=%s start=%s end=%s chunks=%s max_bars_per_chunk=%s provider=%s",
-        ticker.strip(),
-        (scale or "").strip().lower(),
-        start,
-        end,
-        len(chunks),
-        max_bars_per_chunk,
-        provider if isinstance(provider, str) and provider.strip() else provider,
-    )
-    frames: list[pd.DataFrame] = []
-    for i, (cs, ce) in enumerate(chunks):
-        pad = int(padding_days) if i == 0 else 0
-        part = self.fetch(ticker, scale, cs, ce, padding_days=pad, provider=provider)
-        if part is not None and not part.empty:
-            frames.append(part)
-    if not frames:
-        return pd.DataFrame(), len(chunks)
-    merged = pd.concat(frames).sort_index()
-    merged = merged[~merged.index.duplicated(keep="first")]
-    return merged, len(chunks)
