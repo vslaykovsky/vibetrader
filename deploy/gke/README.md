@@ -1,28 +1,18 @@
 ## GKE deploy
 
-### Build & push (Artifact Registry)
+### Build, push, and deploy (Artifact Registry + GKE)
+
+Images and cluster are hardcoded in `scripts/gke_*.sh` to `us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-frontend:latest`, `…/vibetrader-backend:latest`, `…/vibetrader-live-runner:latest`, cluster `autopilot-cluster-1` (`us-central1`), project `traderchat`.
+
+From the repo root:
 
 ```bash
-export PROJECT_ID="your-gcp-project"
-export REGION="us-central1"
-export REPOSITORY="your-artifact-registry-repo"
-export TAG="v1"
-
-./scripts/gke_build_push.sh
+./scripts/gke_frontend.sh
+./scripts/gke_backend.sh
+./scripts/gke_live_runner.sh
 ```
 
-### Deploy to a GKE cluster
-
-```bash
-export PROJECT_ID="your-gcp-project"
-export REGION="us-central1"
-export CLUSTER="your-gke-cluster-name"
-
-export FRONTEND_IMAGE="us-central1-docker.pkg.dev/your-gcp-project/your-artifact-registry-repo/vibetrader-frontend:v1"
-export BACKEND_IMAGE="us-central1-docker.pkg.dev/your-gcp-project/your-artifact-registry-repo/vibetrader-backend:v1"
-
-./scripts/gke_deploy.sh
-```
+The backend defaults `LIVE_RUNNER_IMAGE` to `us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-live-runner:latest`; set it in `vibetrader-config` only to override (see `backend/k8s/live-runner-deployment.example.yaml`).
 
 ### Codex `exec --full-auto` (bubblewrap)
 

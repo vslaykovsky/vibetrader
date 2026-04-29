@@ -294,6 +294,35 @@ def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str) -> None:
         )
 
 
+@strategy_blueprint.patch("/strategy")
+@require_auth
+def patch_strategy() -> tuple:
+    uid = g.user_id
+    payload = request.get_json(silent=True) or {}
+    run_id = str(payload.get("id", "")).strip()
+    if not run_id:
+        return _validation_error("id is required")
+    raw = payload.get("strategy_name", "")
+    if not isinstance(raw, str):
+        return _validation_error("strategy_name must be a string")
+    name = str(raw)[:512]
+
+    session = SessionLocal()
+    try:
+        strategy = get_strategy_by_id(session, run_id)
+        if strategy is None:
+            return _validation_error("strategy not found")
+        owner = (strategy.created_by or "").strip()
+        if owner and owner != str(uid or "").strip():
+            return jsonify({"error": "forbidden", "status": None, "status_text": None}), 403
+        strategy.strategy_name = name.strip()
+        session.add(strategy)
+        session.commit()
+        return jsonify(serialize_strategy(strategy)), 200
+    finally:
+        session.close()
+
+
 @strategy_blueprint.get("/strategy")
 @require_auth
 @traceable(name="get_strategy")

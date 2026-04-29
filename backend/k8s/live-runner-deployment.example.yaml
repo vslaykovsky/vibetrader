@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vibetrader-backend
+spec:
+  template:
+    spec:
+      serviceAccountName: vibetrader-live-controlplane
+      containers:
+        - name: backend
+          env:
+            - name: LIVE_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: LIVE_RUNNER_IMAGE
+              value: us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-live-runner:latest
+            - name: LIVE_RUNNER_SERVICE_ACCOUNT
+              value: "" # optional: service account for runner pods
+            - name: LIVE_RUNNER_ENV_SECRET
+              value: "" # optional: secret injected into runner (DB + Alpaca creds)
+            - name: LIVE_RUNNER_ENV_CONFIGMAP
+              value: "" # optional: configmap injected into runner
+            - name: LIVE_RUNNER_CPU
+              value: "500m"
+            - name: LIVE_RUNNER_MEMORY
+              value: "512Mi"
+

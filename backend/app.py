@@ -15,19 +15,10 @@ from flask_cors import CORS
 from urllib.parse import parse_qsl, urlencode
 
 from api.routes import strategy_blueprint
+from api.live_routes import live_blueprint
+from api.settings_routes import settings_blueprint
 from api.simulation_routes import simulation_blueprint
-from db.models import Base
-from db.session import (
-    engine,
-    ensure_strategy_columns,
-    ensure_strategy_created_by_column,
-    ensure_strategy_created_by_email_column,
-    ensure_strategy_langsmith_trace_column,
-    ensure_strategy_strategy_name_column,
-    ensure_strategy_algorithm_column,
-    ensure_strategy_language_column,
-    ensure_strategy_messages_count_column,
-)
+from db.session import engine, init_database
 import logging
 from logging.handlers import RotatingFileHandler
 import json
@@ -60,18 +51,12 @@ def create_app() -> Flask:
         },
     )
 
-    Base.metadata.create_all(bind=engine)
-    ensure_strategy_columns(engine)
-    ensure_strategy_created_by_column(engine)
-    ensure_strategy_created_by_email_column(engine)
-    ensure_strategy_langsmith_trace_column(engine)
-    ensure_strategy_strategy_name_column(engine)
-    ensure_strategy_algorithm_column(engine)
-    ensure_strategy_language_column(engine)
-    ensure_strategy_messages_count_column(engine)
+    init_database(engine)
 
     app.register_blueprint(strategy_blueprint)
     app.register_blueprint(simulation_blueprint)
+    app.register_blueprint(live_blueprint)
+    app.register_blueprint(settings_blueprint)
 
     log_level = os.getenv("LOG_LEVEL", "INFO")
     gcp = (os.getenv("GCP_LOGGING", "1").strip() not in ("0", "false", "False"))

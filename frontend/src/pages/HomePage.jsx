@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { randomUUID } from '../randomUUID.js';
 import { useAuth } from '../AuthContext';
 import { ProfileMenu } from '../ProfileMenu';
@@ -42,7 +42,8 @@ export function HomePage() {
   }, [pricingOpen]);
 
   const goStrategy = () => navigate(`/strategy/${createThreadId()}`);
-  const primaryCta = () => (user ? goStrategy() : signInWithGoogle());
+  const goDashboard = () => navigate('/dashboard');
+  const primaryCta = () => (user ? goDashboard() : signInWithGoogle());
 
   return (
     <div className="home">
@@ -53,6 +54,11 @@ export function HomePage() {
             <span className="home-nav-logo">TraderChat</span>
           </div>
           <div className="home-nav-links">
+            {user ? (
+              <Link to="/dashboard" className="home-nav-link home-nav-link--anchor">
+                Dashboard
+              </Link>
+            ) : null}
             <button type="button" className="home-nav-link" onClick={() => setPricingOpen(true)}>
               Pricing
             </button>
@@ -89,7 +95,7 @@ export function HomePage() {
               </p>
               <div className="home-hero-actions">
                 <button type="button" className="home-btn home-btn-hero" onClick={primaryCta}>
-                  Get Started
+                  {user ? 'Open workspace' : 'Get Started'}
                 </button>
                 <button type="button" className="home-btn home-btn-secondary-solid" onClick={() => scrollToId('home-features')}>
                   How it Works

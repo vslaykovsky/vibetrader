@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import sqlite3
 import uuid
 import os
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import sessionmaker
@@ -26,6 +27,14 @@ logger = logging.getLogger(__name__)
 
 engine = create_engine(DATABASE_URL, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+
+@event.listens_for(engine, "connect")
+def _sqlite_enable_foreign_keys(dbapi_connection, connection_record):
+    if isinstance(dbapi_connection, sqlite3.Connection):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 
 def ensure_strategy_columns(eng: Engine) -> None:
@@ -226,3 +235,116 @@ def ensure_strategy_messages_count_column(eng: Engine) -> None:
                     "ELSE 0 END"
                 )
             )
+
+
+def ensure_live_runs_deployed_from_run_id_column(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    insp = inspect(eng)
+    if not insp.has_table("live_runs"):
+        return
+    cols = {c["name"] for c in insp.get_columns("live_runs")}
+    if "deployed_from_run_id" in cols:
+        return
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE live_runs ADD COLUMN deployed_from_run_id VARCHAR(36) NOT NULL DEFAULT ''"
+            )
+        )
+
+
+def ensure_live_runs_runner_backend_column(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    insp = inspect(eng)
+    if not insp.has_table("live_runs"):
+        return
+    cols = {c["name"] for c in insp.get_columns("live_runs")}
+    if "runner_backend" in cols:
+        return
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE live_runs ADD COLUMN runner_backend VARCHAR(16) NOT NULL DEFAULT 'kubernetes'"
+            )
+        )
+
+
+def ensure_live_runs_alpaca_account_id_column(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    insp = inspect(eng)
+    if not insp.has_table("live_runs"):
+        return
+    cols = {c["name"] for c in insp.get_columns("live_runs")}
+    if "alpaca_account_id" in cols:
+        return
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE live_runs ADD COLUMN alpaca_account_id VARCHAR(36) NOT NULL DEFAULT ''"
+            )
+        )
+
+
+def ensure_live_run_children_fk_ondelete_cascade(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    if eng.dialect.name != "postgresql":
+        return
+    insp = inspect(eng)
+    if not insp.has_table("live_runs"):
+        return
+    for table, constraint_name in (
+        ("live_run_events", "live_run_events_run_id_fkey"),
+        ("live_run_orders", "live_run_orders_run_id_fkey"),
+    ):
+        if not insp.has_table(table):
+            continue
+        fks = insp.get_foreign_keys(table)
+        match = [
+            fk
+            for fk in fks
+            if fk.get("referred_table") == "live_runs"
+            and list(fk.get("constrained_columns") or []) == ["run_id"]
+        ]
+        need_add = False
+        if not match:
+            need_add = True
+        else:
+            opt = match[0].get("options") or {}
+            if str(opt.get("ondelete") or "").upper() != "CASCADE":
+                need_add = True
+                old_name = match[0].get("name")
+                if old_name:
+                    with eng.begin() as conn:
+                        conn.execute(text(f'ALTER TABLE "{table}" DROP CONSTRAINT "{old_name}"'))
+        if need_add:
+            with eng.begin() as conn:
+                conn.execute(
+                    text(
+                        f'ALTER TABLE "{table}" ADD CONSTRAINT {constraint_name} '
+                        f'FOREIGN KEY (run_id) REFERENCES live_runs(id) ON DELETE CASCADE'
+                    )
+                )
+
+
+def init_database(eng: Engine) -> None:
+    import db.models
+
+    from db.models import Base
+
+    Base.metadata.create_all(bind=eng)
+    ensure_strategy_columns(eng)
+    ensure_strategy_created_by_column(eng)
+    ensure_strategy_created_by_email_column(eng)
+    ensure_strategy_langsmith_trace_column(eng)
+    ensure_strategy_strategy_name_column(eng)
+    ensure_strategy_algorithm_column(eng)
+    ensure_strategy_language_column(eng)
+    ensure_strategy_messages_count_column(eng)
+    ensure_live_runs_deployed_from_run_id_column(eng)
+    ensure_live_runs_runner_backend_column(eng)
+    ensure_live_runs_alpaca_account_id_column(eng)
+    ensure_live_run_children_fk_ondelete_cascade(eng)

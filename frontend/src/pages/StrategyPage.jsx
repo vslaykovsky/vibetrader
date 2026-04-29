@@ -448,6 +448,51 @@ export function StrategyPage() {
   const [chatPanelWidthPx, setChatPanelWidthPx] = useState(null);
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [canvasTab, setCanvasTab] = useState('strategy');
+  const [deployModalOpen, setDeployModalOpen] = useState(false);
+  const [deployModalPhase, setDeployModalPhase] = useState('loading');
+  const [deployModalError, setDeployModalError] = useState('');
+  const [deployTradingConfigured, setDeployTradingConfigured] = useState(false);
+  const [deployAccounts, setDeployAccounts] = useState([]);
+  const [deploySelectedAccountId, setDeploySelectedAccountId] = useState('');
+  const [deploySubmitting, setDeploySubmitting] = useState(false);
+  const [strategyNameByRunId, setStrategyNameByRunId] = useState(() => ({}));
+  const [editingCanvasTitle, setEditingCanvasTitle] = useState(false);
+  const [canvasTitleDraft, setCanvasTitleDraft] = useState('');
+  const [savingCanvasTitle, setSavingCanvasTitle] = useState(false);
+  const canvasTitleInputRef = useRef(null);
+
+  const mergeStrategyNameFromPayload = useCallback((payload) => {
+    if (!payload || typeof payload !== 'object' || !('strategy_name' in payload)) {
+      return;
+    }
+    const rid = typeof payload.id === 'string' ? payload.id.trim() : '';
+    if (!rid) {
+      return;
+    }
+    const sn = typeof payload.strategy_name === 'string' ? payload.strategy_name : '';
+    setStrategyNameByRunId((prev) => {
+      if (prev[rid] === sn) {
+        return prev;
+      }
+      return { ...prev, [rid]: sn };
+    });
+  }, []);
+
+  const skipNextCanvasTitleBlurCommitRef = useRef(false);
+
+  useLayoutEffect(() => {
+    if (!editingCanvasTitle) {
+      return undefined;
+    }
+    const el = canvasTitleInputRef.current;
+    if (el) {
+      el.focus();
+      if (typeof el.select === 'function') {
+        el.select();
+      }
+    }
+    return undefined;
+  }, [editingCanvasTitle]);
 
   useLayoutEffect(() => {
     if (!threadId) {
@@ -496,6 +541,58 @@ export function StrategyPage() {
     return fetch(url, { ...options, headers });
   }, [getAccessToken]);
 
+  const openTradingSettingsWindow = useCallback(() => {
+    const base = window.location.origin || '';
+    window.open(`${base}/dashboard/settings`, '_blank', 'noopener,noreferrer');
+  }, []);
+
+  useEffect(() => {
+    if (!deployModalOpen) {
+      return undefined;
+    }
+    let cancelled = false;
+    setDeployModalPhase('loading');
+    setDeployModalError('');
+    (async () => {
+      try {
+        const res = await authFetch(`${API_BASE_URL}/settings/trading`);
+        const payload = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (res.status === 503) {
+          setDeployTradingConfigured(false);
+          setDeployAccounts([]);
+          setDeploySelectedAccountId('');
+          setDeployModalPhase('ready');
+          return;
+        }
+        if (!res.ok) {
+          setDeployTradingConfigured(false);
+          setDeployAccounts([]);
+          setDeploySelectedAccountId('');
+          setDeployModalError(payload.error || `Could not load accounts (${res.status})`);
+          setDeployModalPhase('ready');
+          return;
+        }
+        setDeployTradingConfigured(true);
+        const acc = Array.isArray(payload.alpaca_accounts) ? payload.alpaca_accounts : [];
+        setDeployAccounts(acc);
+        const firstId = acc.length && typeof acc[0].id === 'string' ? acc[0].id : '';
+        setDeploySelectedAccountId(firstId);
+        setDeployModalPhase('ready');
+      } catch (e) {
+        if (cancelled) return;
+        setDeployTradingConfigured(false);
+        setDeployAccounts([]);
+        setDeploySelectedAccountId('');
+        setDeployModalError(e instanceof Error ? e.message : String(e));
+        setDeployModalPhase('ready');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [deployModalOpen, authFetch]);
+
   const syncLiveStrategyFromServer = useCallback(async () => {
     const tid = String(threadId || '').trim();
     if (!tid || !signedInUserId) {
@@ -527,9 +624,10 @@ export function StrategyPage() {
         status: payload.status ?? null,
         statusText: payload.status_text || '',
       });
+      mergeStrategyNameFromPayload(payload);
     } catch {
     }
-  }, [threadId, signedInUserId, authFetch]);
+  }, [threadId, signedInUserId, authFetch, mergeStrategyNameFromPayload]);
 
   const prevJobStatusRef = useRef(null);
 
@@ -595,12 +693,13 @@ export function StrategyPage() {
         setHistoricalStrategyAlgorithm(
           typeof payload.algorithm === 'string' ? payload.algorithm : '',
         );
+        mergeStrategyNameFromPayload(payload);
         setViewingRunId(runId);
       } catch (err) {
         setError(err.message);
       }
     },
-    [authFetch, navigate, location.pathname, location.search],
+    [authFetch, navigate, location.pathname, location.search, mergeStrategyNameFromPayload],
   );
 
   const fetchStrategyAlgorithm = useCallback(
@@ -679,6 +778,8 @@ export function StrategyPage() {
     appliedHashKeyRef.current = '';
     hydratingForRef.current = '';
     prevJobStatusRef.current = null;
+    setStrategyNameByRunId({});
+    setEditingCanvasTitle(false);
   }, [threadId]);
 
   useEffect(() => {
@@ -812,6 +913,7 @@ export function StrategyPage() {
         status: next.status ?? null,
         statusText: next.status_text || '',
       });
+      mergeStrategyNameFromPayload(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -909,6 +1011,7 @@ export function StrategyPage() {
           status: payload.status ?? null,
           statusText: payload.status_text || '',
         });
+        mergeStrategyNameFromPayload(payload);
         const loc = locationRef.current;
         const rawDraft = loc?.state?.draft;
         const draftText = typeof rawDraft === 'string' ? rawDraft.trim() : '';
@@ -932,7 +1035,7 @@ export function StrategyPage() {
     loadThreads();
     loadThread();
     return () => controller.abort();
-  }, [threadId, signedInUserId]);
+  }, [threadId, signedInUserId, mergeStrategyNameFromPayload]);
 
   useEffect(() => {
     homePromptAutoSubmitRef.current = false;
@@ -1144,6 +1247,7 @@ export function StrategyPage() {
             status: payload.status ?? null,
             statusText: payload.status_text || '',
           });
+          mergeStrategyNameFromPayload(payload);
           if (payload.status !== 'running') {
             setSubmitting(false);
             evtSource.close();
@@ -1164,7 +1268,7 @@ export function StrategyPage() {
       cancelled = true;
       evtSource?.close();
     };
-  }, [threadId, serverJob.status, getAccessToken, syncLiveStrategyFromServer]);
+  }, [threadId, serverJob.status, getAccessToken, syncLiveStrategyFromServer, mergeStrategyNameFromPayload]);
 
   useEffect(() => {
     if (skipNextChatEndScrollRef.current) {
@@ -1319,6 +1423,7 @@ export function StrategyPage() {
         status: payload.status ?? null,
         statusText: payload.status_text || '',
       });
+      mergeStrategyNameFromPayload(payload);
       if (payload.status !== 'running') {
         setSubmitting(false);
       }
@@ -1370,7 +1475,73 @@ export function StrategyPage() {
   });
 
   const output = displayOutput;
-  const strategyName = strategyNameFromOutput(output);
+  const nameFromRunOutput = strategyNameFromOutput(output);
+  const strategyName = useMemo(() => {
+    const r = String(displayStrategyRunId || '').trim();
+    if (!r) {
+      return nameFromRunOutput || 'Strategy';
+    }
+    if (Object.prototype.hasOwnProperty.call(strategyNameByRunId, r)) {
+      const db = String(strategyNameByRunId[r] ?? '').trim();
+      if (db) {
+        return db;
+      }
+      return nameFromRunOutput || 'Strategy';
+    }
+    return nameFromRunOutput || 'Strategy';
+  }, [displayStrategyRunId, strategyNameByRunId, nameFromRunOutput]);
+
+  async function commitCanvasTitle() {
+    if (skipNextCanvasTitleBlurCommitRef.current) {
+      skipNextCanvasTitleBlurCommitRef.current = false;
+      return;
+    }
+    const rid = String(displayStrategyRunId || '').trim();
+    if (!rid) {
+      setEditingCanvasTitle(false);
+      return;
+    }
+    const next = canvasTitleDraft.trim();
+    if (next === String(strategyName || '').trim()) {
+      setEditingCanvasTitle(false);
+      return;
+    }
+    setSavingCanvasTitle(true);
+    setError('');
+    try {
+      const res = await authFetch(`${API_BASE_URL}/strategy`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: rid, strategy_name: next }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === 'string' ? data.error : 'Failed to save name');
+        return;
+      }
+      mergeStrategyNameFromPayload(data);
+      setEditingCanvasTitle(false);
+      await refreshThreads();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingCanvasTitle(false);
+    }
+  }
+
+  function startEditCanvasTitle() {
+    if (!String(displayStrategyRunId || '').trim() || savingCanvasTitle) {
+      return;
+    }
+    setCanvasTitleDraft(strategyName);
+    setEditingCanvasTitle(true);
+  }
+
+  function cancelEditCanvasTitle() {
+    skipNextCanvasTitleBlurCommitRef.current = true;
+    setEditingCanvasTitle(false);
+  }
+
   const cliDescriptionText = strategyCliDescriptionFromOutput(output);
   const showCliDescription = cliDescriptionText != null;
   const paramsJsonText = paramsJsonFromOutput(output);
@@ -1424,61 +1595,68 @@ export function StrategyPage() {
 
   return (
     <>
+    <div className="dashboard-page strategy-shell">
+      <header className="dashboard-topbar">
+        <div className="dashboard-topbar-left">
+          <Link to="/" className="app-home-link" aria-label="Go to home page">
+            <span className="app-logo">TraderChat</span>
+          </Link>
+          <span className="dashboard-topbar-sep" aria-hidden>
+            /
+          </span>
+          <Link to="/dashboard" className="dashboard-topbar-crumb dashboard-topbar-link">
+            Dashboard
+          </Link>
+        </div>
+        <div className="dashboard-topbar-right">
+          <button
+            type="button"
+            className="button-new-thread"
+            onClick={() => navigate({ pathname: `/strategy/${randomUUID()}`, hash: '' })}
+            aria-label="New strategy"
+            title="New strategy"
+          >
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+              <path
+                d="M12 5v14M5 12h14"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </svg>
+            <span className="sr-only">New strategy</span>
+          </button>
+          <button
+            type="button"
+            className="theme-toggle"
+            onClick={toggleTheme}
+            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+            title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
+          >
+            <span className="home-ms" aria-hidden>
+              {theme === 'light' ? 'dark_mode' : 'light_mode'}
+            </span>
+          </button>
+          {user ? (
+            <div className="auth-user-area">
+              <ProfileMenu user={user} signOut={signOut} surface="strategy" />
+            </div>
+          ) : null}
+        </div>
+      </header>
     <main className={`layout${isNarrow ? ' layout-narrow' : ''}${mobileCanvasOpen ? ' is-mobile-canvas-open' : ''}`}>
       <div className="layout-dual" ref={layoutDualRef}>
         <section ref={chatPanelRef} className="chat-panel" style={chatPanelStyle}>
         <header className="chat-header">
           <div className="chat-header-top">
-            <div>
-              <div className="chat-brand">
-                <button
-                  type="button"
-                  className="sidebar-toggle"
-                  onClick={() => setSidebarOpen(true)}
-                  aria-label="Open sidebar"
-                >
-                  ☰
-                </button>
-                <Link to="/" className="app-home-link" aria-label="Go to homepage">
-                  <span className="app-logo">TraderChat</span>
-                </Link>
-              </div>
-            </div>
-            <div className="chat-header-actions">
-              <button
-                type="button"
-                className="theme-toggle"
-                onClick={toggleTheme}
-                aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-                title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
-              >
-                <span className="home-ms" aria-hidden>
-                  {theme === 'light' ? 'dark_mode' : 'light_mode'}
-                </span>
-              </button>
-              <button
-                type="button"
-                className="button-new-thread"
-                onClick={() => navigate({ pathname: `/strategy/${randomUUID()}`, hash: '' })}
-                aria-label="New strategy"
-                title="New strategy"
-              >
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden>
-                  <path
-                    d="M12 5v14M5 12h14"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                  />
-                </svg>
-                <span className="sr-only">New strategy</span>
-              </button>
-              {user && (
-                <div className="auth-user-area">
-                  <ProfileMenu user={user} signOut={signOut} />
-                </div>
-              )}
-            </div>
+            <button
+              type="button"
+              className="sidebar-toggle"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open sidebar"
+            >
+              ☰
+            </button>
           </div>
         </header>
 
@@ -1654,7 +1832,10 @@ export function StrategyPage() {
               type="button"
               className="button-deploy-live"
               disabled={deployDisabled}
-              onClick={() => window.alert('Live trading is not yet available. Stay tuned for updates!')}
+              onClick={() => {
+                if (deployDisabled) return;
+                setDeployModalOpen(true);
+              }}
               aria-label="Deploy live"
               aria-disabled={deployDisabled}
               title={deployTitle}
@@ -1698,7 +1879,57 @@ export function StrategyPage() {
               </button>
             ) : null}
           </div>
-          <h2 className="canvas-hero-title">{strategyName || 'Strategy'}</h2>
+          <div className="canvas-hero-title-row">
+            {editingCanvasTitle && String(displayStrategyRunId || '').trim() ? (
+              <input
+                ref={canvasTitleInputRef}
+                className="canvas-hero-title-input"
+                value={canvasTitleDraft}
+                onChange={(e) => setCanvasTitleDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void commitCanvasTitle();
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancelEditCanvasTitle();
+                  }
+                }}
+                onBlur={() => {
+                  void commitCanvasTitle();
+                }}
+                disabled={savingCanvasTitle}
+                maxLength={512}
+                aria-label="Strategy name"
+              />
+            ) : (
+              <h2 className="canvas-hero-title">{strategyName || 'Strategy'}</h2>
+            )}
+            {String(displayStrategyRunId || '').trim() && !editingCanvasTitle && !savingCanvasTitle ? (
+              <button
+                type="button"
+                className="button-canvas-edit-title"
+                onClick={startEditCanvasTitle}
+                aria-label="Edit strategy name"
+                title="Edit name"
+              >
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path
+                    d="M4 20.5L4 16.5L15.2 5.3C15.7 4.8 16.3 4.5 17 4.5C18.1 4.5 19 5.4 19 6.5C19 7.1 18.7 7.7 18.2 8.2L7 19.4L4 20.5Z"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M12.5 6.5L16.5 10.5"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+            ) : null}
+          </div>
         </header>
         {showCliDescription ? (
           <article className="canvas-text-block" aria-label="Strategy description">
@@ -1852,6 +2083,156 @@ export function StrategyPage() {
         </nav>
       </aside>
     </main>
+    </div>
+    {deployModalOpen
+      ? createPortal(
+          <div className="deploy-live-modal" role="dialog" aria-modal="true" aria-label="Deploy to Alpaca">
+            <button
+              type="button"
+              className="deploy-live-modal-scrim"
+              aria-label="Close"
+              onClick={() => {
+                if (!deploySubmitting) {
+                  setDeployModalOpen(false);
+                  setDeployModalPhase('loading');
+                }
+              }}
+            />
+            <div className="deploy-live-modal-panel">
+              <div className="deploy-live-modal-head">
+                <h2 className="deploy-live-modal-title">Deploy to Alpaca</h2>
+                <button
+                  type="button"
+                  className="deploy-live-modal-close"
+                  disabled={deploySubmitting}
+                  aria-label="Close"
+                  onClick={() => {
+                    setDeployModalOpen(false);
+                    setDeployModalPhase('loading');
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              {deployModalPhase === 'loading' ? <p className="deploy-live-modal-muted">Loading accounts…</p> : null}
+              {deployModalPhase === 'ready' && deployModalError ? (
+                <p className="deploy-live-modal-error">{deployModalError}</p>
+              ) : null}
+              {deployModalPhase === 'ready' && deployTradingConfigured && deployAccounts.length === 0 ? (
+                <p className="deploy-live-modal-muted">
+                  No Alpaca accounts yet. Add at least one in Settings, then open this dialog again.
+                </p>
+              ) : null}
+              {deployModalPhase === 'ready' && deployTradingConfigured && deployAccounts.length > 0 ? (
+                <div className="deploy-live-modal-accounts" role="group" aria-label="Alpaca account">
+                  {deployAccounts.map((a) => {
+                    const id = String(a.id || '').trim();
+                    if (!id) return null;
+                    const lab = typeof a.label === 'string' && a.label.trim() ? a.label.trim() : id.slice(0, 8);
+                    const mode = a.is_live ? 'Live' : 'Paper';
+                    return (
+                      <label key={id} className="deploy-live-account-option">
+                        <input
+                          type="radio"
+                          name="deploy-alpaca-account"
+                          value={id}
+                          checked={deploySelectedAccountId === id}
+                          onChange={() => setDeploySelectedAccountId(id)}
+                        />
+                        <span>
+                          <span className="deploy-live-account-label">{lab}</span>
+                          <span className="deploy-live-modal-muted">
+                            {' '}
+                            · {mode}
+                            {typeof a.account === 'string' && a.account.trim() ? ` · ${a.account.trim()}` : ''}
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : null}
+              {deployModalPhase === 'ready' && !deployTradingConfigured ? (
+                <p className="deploy-live-modal-muted">
+                  Trading settings are not available on the server. Deploy will use paper mode and server default
+                  Alpaca environment variables.
+                </p>
+              ) : null}
+              <div className="deploy-live-modal-actions">
+                <button type="button" className="dashboard-btn-ghost" onClick={openTradingSettingsWindow}>
+                  Settings
+                </button>               
+                <button
+                  type="button"
+                  className="dashboard-btn-primary"
+                  disabled={
+                    deploySubmitting ||
+                    deployModalPhase !== 'ready' ||
+                    (deployTradingConfigured &&
+                      (deployAccounts.length === 0 || !String(deploySelectedAccountId || '').trim()))
+                  }
+                  onClick={async () => {
+                    setDeployModalError('');
+                    const tid = String(threadId || '').trim();
+                    const rid = String(liveStrategyRunIdRef.current || '').trim();
+                    if (!tid || !rid) {
+                      setDeployModalError('Missing thread_id or strategy run id');
+                      return;
+                    }
+                    if (deployTradingConfigured) {
+                      if (!deployAccounts.length) {
+                        setDeployModalError('Add an Alpaca account in Settings first.');
+                        return;
+                      }
+                      const sid = String(deploySelectedAccountId || '').trim();
+                      if (!sid) {
+                        setDeployModalError('Select an Alpaca account.');
+                        return;
+                      }
+                    }
+                    setDeploySubmitting(true);
+                    setError('');
+                    try {
+                      const body = {
+                        thread_id: tid,
+                        enable_trading: false,
+                        deployed_from_run_id: rid,
+                      };
+                      if (deployTradingConfigured && String(deploySelectedAccountId || '').trim()) {
+                        body.alpaca_account_id = String(deploySelectedAccountId || '').trim();
+                      } else {
+                        body.paper = true;
+                      }
+                      const res = await authFetch(`${API_BASE_URL}/live/start`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                      });
+                      const payload = await res.json().catch(() => ({}));
+                      if (!res.ok) {
+                        throw new Error(payload.error || `Deploy failed (${res.status})`);
+                      }
+                      const liveRunId = String(payload.run_id || '').trim();
+                      setDeployModalOpen(false);
+                      setDeployModalPhase('loading');
+                      if (liveRunId) {
+                        window.open(`/live/${encodeURIComponent(liveRunId)}`, '_blank', 'noopener,noreferrer');
+                      }
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : String(e));
+                    } finally {
+                      setDeploySubmitting(false);
+                    }
+                  }}
+                >
+                  Deploy
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null}
     {composerExpanded
       ? createPortal(
           <div
