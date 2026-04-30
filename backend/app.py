@@ -73,6 +73,7 @@ def create_app() -> Flask:
             rid = uuid.uuid4().hex
         g.request_id = rid
         g.request_start = time.perf_counter()
+        g.is_admin = False
 
     @app.after_request
     def _log_request(response):

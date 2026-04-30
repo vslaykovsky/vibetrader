@@ -10,6 +10,12 @@ from jwt import PyJWKClient
 from flask import g, jsonify, request
 
 logger = logging.getLogger(__name__)
+ADMIN_EMAILS = ["vslaykovsky@gmail.com", "leegheid2void@gmail.com"]
+_ADMIN_EMAIL_SET = {e.strip().lower() for e in ADMIN_EMAILS}
+
+
+def is_admin_email(email: str | None) -> bool:
+    return isinstance(email, str) and email.strip().lower() in _ADMIN_EMAIL_SET
 
 
 def _jwt_secret() -> str:
@@ -206,6 +212,7 @@ def require_auth(fn):
             g.user_email = e or None
         else:
             g.user_email = None
+        g.is_admin = is_admin_email(g.user_email)
         if not g.user_id:
             logger.warning(
                 "auth 401: missing_sub method=%s path=%s role=%r aud=%r diag=%s",

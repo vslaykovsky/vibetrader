@@ -4,7 +4,7 @@ import json
 import threading
 import time
 
-from flask import Blueprint, Response, current_app, g, jsonify, request
+from flask import Blueprint, Response, current_app, g, jsonify, request, stream_with_context
 import logging
 from pathlib import Path
 from sqlalchemy import desc, text
@@ -34,6 +34,36 @@ from langsmith.run_helpers import get_current_run_tree
 strategy_blueprint = Blueprint("strategy", __name__)
 logger = logging.getLogger(__name__)
 
+
+def _messages_with_admin_extras(messages: list, strategy: Strategy) -> list:
+    trace = str(strategy.langsmith_trace or "").strip()
+    run_id = str(strategy.id or "").strip()
+    if not trace or not run_id:
+        return messages
+    out: list = []
+    for message in messages:
+        if not isinstance(message, dict):
+            out.append(message)
+            continue
+        item = dict(message)
+        if str(item.get("run_id") or "").strip() == run_id:
+            item["langsmith_trace"] = trace
+        out.append(item)
+    return out
+
+
+def _messages_without_admin_extras(messages: list) -> list:
+    out: list = []
+    for message in messages:
+        if not isinstance(message, dict):
+            out.append(message)
+            continue
+        item = dict(message)
+        item.pop("langsmith_trace", None)
+        out.append(item)
+    return out
+
+
 def _strategy_name_from_canvas(canvas: dict | None) -> str:
     if not isinstance(canvas, dict):
         return ""
@@ -52,9 +82,16 @@ def _strategy_name_from_canvas(canvas: dict | None) -> str:
     return name.strip() if isinstance(name, str) else ""
 
 
-def serialize_strategy(strategy: Strategy) -> dict:
+def serialize_strategy(
+    strategy: Strategy,
+) -> dict:
+    is_admin = bool(g.is_admin)
     canvas = redact_secret_json_values_for_user(dict(strategy.canvas or {}))
     messages = redact_secret_json_values_for_user(list(strategy.messages or []))
+    if is_admin:
+        messages = _messages_with_admin_extras(messages, strategy)
+    else:
+        messages = _messages_without_admin_extras(messages)
     return {
         "id": strategy.id,
         "thread_id": strategy.thread_id,
@@ -62,7 +99,7 @@ def serialize_strategy(strategy: Strategy) -> dict:
         "canvas": canvas,
         "status": strategy.status,
         "status_text": strategy.status_text or "",
-        "langsmith_trace": strategy.langsmith_trace or "",
+        "langsmith_trace": (strategy.langsmith_trace or "") if is_admin else "",
         "strategy_name": strategy.strategy_name or "",
         "algorithm": strategy.algorithm or "",
         "language": strategy.language or "",
@@ -483,7 +520,6 @@ def strategy_stream():
     thread_id = request.args.get("thread_id", "").strip()
     if not thread_id or not thread_id_allowed(thread_id):
         return _validation_error("invalid or missing thread_id")
-
     def generate():
         last_snapshot = None
         last_keepalive = time.monotonic()
@@ -509,7 +545,7 @@ def strategy_stream():
             time.sleep(0.5)
 
     return Response(
-        generate(),
+        stream_with_context(generate()),
         mimetype="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

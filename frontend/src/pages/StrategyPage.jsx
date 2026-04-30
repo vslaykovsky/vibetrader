@@ -179,6 +179,10 @@ function MessageBubble({
   const hasRunId = isAssistant && message.run_id;
   const answerDomId = hasRunId ? agentAnswerElementId(message.run_id) : undefined;
   const isActive = hasRunId && message.run_id === activeRunId;
+  const langsmithTrace =
+    isAssistant && typeof message.langsmith_trace === 'string'
+      ? message.langsmith_trace.trim()
+      : '';
   const replyMs =
     isAssistant &&
     typeof message.reply_duration_ms === 'number' &&
@@ -216,8 +220,23 @@ function MessageBubble({
     >
       <div className="message-header-row">
         <span className="message-role">{isAssistant ? 'Agent' : 'You'}</span>
-        {replyMs != null || hasRunId ? (
+        {replyMs != null || hasRunId || langsmithTrace ? (
           <div className="message-header-end">
+            {langsmithTrace ? (
+              <a
+                className="message-langsmith-link"
+                href={langsmithTrace}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => {
+                  e.stopPropagation();
+                }}
+                title="Open LangSmith trace"
+                aria-label="Open LangSmith trace"
+              >
+                LangSmith
+              </a>
+            ) : null}
             {replyMs != null ? (
               <span
                 className="message-role-reply-time"

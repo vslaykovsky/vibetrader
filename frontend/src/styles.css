@@ -1646,6 +1646,28 @@ li {
   border: 1px solid var(--reply-time-border);
 }
 
+.message-langsmith-link {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+  color: var(--accent-strong);
+  line-height: 1.2;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--reply-time-bg);
+  border: 1px solid var(--reply-time-border);
+  text-decoration: none;
+}
+
+.message-langsmith-link:hover {
+  color: var(--text);
+}
+
+.message-langsmith-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
 .chat-stream {
   min-height: 0;
   overflow-y: auto;
