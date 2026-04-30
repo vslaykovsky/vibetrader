@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import shutil
 import time
 import uuid
 from pathlib import Path
@@ -32,10 +31,16 @@ def _auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {tok}"}
 
 
-def _workspace(thread_id: str) -> Path:
-    from services.agent import STRATEGIES_DIR
+def _ensure_strategy_row(thread_id: str, *, code: str = "x = 1\n") -> None:
+    from db.models import Strategy
+    from db.session import SessionLocal
 
-    return Path(STRATEGIES_DIR) / thread_id
+    session = SessionLocal()
+    try:
+        session.add(Strategy(thread_id=thread_id, code=code))
+        session.commit()
+    finally:
+        session.close()
 
 
 def test_live_start_without_kubernetes_service_host_uses_local_runner():
@@ -46,10 +51,8 @@ def test_live_start_without_kubernetes_service_host_uses_local_runner():
     os.environ.pop("KUBERNETES_SERVICE_HOST", None)
     os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
     thread_id = str(uuid.uuid4())
-    ws = _workspace(thread_id)
     try:
-        ws.mkdir(parents=True, exist_ok=True)
-        (ws / "strategy.py").write_text("x = 1\n", encoding="utf-8")
+        _ensure_strategy_row(thread_id)
         app = create_app()
         client = app.test_client()
         res = client.post(
@@ -63,7 +66,6 @@ def test_live_start_without_kubernetes_service_host_uses_local_runner():
         assert body.get("deployment") is None
         assert body.get("ok") is True
     finally:
-        shutil.rmtree(ws, ignore_errors=True)
         if prev_backend is not None:
             os.environ["LIVE_RUNNER_BACKEND"] = prev_backend
         else:
@@ -84,10 +86,8 @@ def test_live_start_with_local_runner_backend():
     os.environ["LIVE_RUNNER_BACKEND"] = "local"
     os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
     thread_id = str(uuid.uuid4())
-    ws = _workspace(thread_id)
     try:
-        ws.mkdir(parents=True, exist_ok=True)
-        (ws / "strategy.py").write_text("x = 1\n", encoding="utf-8")
+        _ensure_strategy_row(thread_id)
         app = create_app()
         client = app.test_client()
         res = client.post(
@@ -114,7 +114,6 @@ def test_live_start_with_local_runner_backend():
         finally:
             session.close()
     finally:
-        shutil.rmtree(ws, ignore_errors=True)
         if prev_backend is not None:
             os.environ["LIVE_RUNNER_BACKEND"] = prev_backend
         else:
@@ -131,10 +130,8 @@ def test_live_status_skips_kubernetes_when_local_backend():
     os.environ["LIVE_RUNNER_BACKEND"] = "local"
     os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
     thread_id = str(uuid.uuid4())
-    ws = _workspace(thread_id)
     try:
-        ws.mkdir(parents=True, exist_ok=True)
-        (ws / "strategy.py").write_text("x = 1\n", encoding="utf-8")
+        _ensure_strategy_row(thread_id)
         app = create_app()
         client = app.test_client()
         hdrs = _auth_headers()
@@ -149,7 +146,6 @@ def test_live_status_skips_kubernetes_when_local_backend():
         assert k8s.get("skipped") is True
         assert k8s.get("deployment_exists") is False
     finally:
-        shutil.rmtree(ws, ignore_errors=True)
         if prev_backend is not None:
             os.environ["LIVE_RUNNER_BACKEND"] = prev_backend
         else:
@@ -166,10 +162,8 @@ def test_live_stop_without_kubernetes_when_local_backend():
     os.environ["LIVE_RUNNER_BACKEND"] = "local"
     os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
     thread_id = str(uuid.uuid4())
-    ws = _workspace(thread_id)
     try:
-        ws.mkdir(parents=True, exist_ok=True)
-        (ws / "strategy.py").write_text("x = 1\n", encoding="utf-8")
+        _ensure_strategy_row(thread_id)
         app = create_app()
         client = app.test_client()
         hdrs = _auth_headers()
@@ -190,7 +184,6 @@ def test_live_stop_without_kubernetes_when_local_backend():
         finally:
             session.close()
     finally:
-        shutil.rmtree(ws, ignore_errors=True)
         if prev_backend is not None:
             os.environ["LIVE_RUNNER_BACKEND"] = prev_backend
         else:

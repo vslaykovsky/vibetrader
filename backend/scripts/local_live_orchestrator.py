@@ -53,21 +53,30 @@ def _runner_env(row: LiveRun) -> dict[str, str]:
 
 
 def _build_cmd(row: LiveRun, *, enable_trading: bool) -> list[str]:
-    entry = Path(row.entry_path)
-    if not entry.is_file():
-        raise SystemExit(f"entry_path is not a file: {entry}")
     rid = (row.id or "").strip()
     script = _BACKEND_ROOT / "scripts" / "run_alpaca_strategy.py"
     cmd: list[str] = [
         sys.executable,
         str(script),
-        "--entry",
-        str(entry),
         "--run-id",
         rid,
         "--runner-id",
         (row.runner_id or rid)[:64],
     ]
+    ep = (row.entry_path or "").strip()
+    if ep:
+        entry = Path(ep)
+        if not entry.is_file():
+            raise SystemExit(f"entry_path is not a file: {entry}")
+        cmd += ["--entry", str(entry)]
+    else:
+        tid = (row.thread_id or "").strip()
+        if not tid:
+            raise SystemExit("live_runs.thread_id is required when entry_path is empty")
+        cmd += ["--thread-id", tid]
+        sid = (row.deployed_from_run_id or "").strip()
+        if sid:
+            cmd += ["--strategy-id", sid]
     cb = (row.created_by or "").strip()
     if cb:
         cmd += ["--created-by", cb]

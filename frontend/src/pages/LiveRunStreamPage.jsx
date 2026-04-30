@@ -306,7 +306,7 @@ export function LiveRunStreamPage() {
 
   const backtestHref = useMemo(() => {
     const tid = String(runMeta?.thread_id || '').trim();
-    const dep = String(runMeta?.deployed_from_run_id || '').trim();
+    const dep = String(runMeta?.strategy_id || runMeta?.deployed_from_run_id || '').trim();
     if (tid && dep) return `/strategy/${tid}#${dep}`;
     if (tid) return `/strategy/${tid}`;
     return '';

@@ -2196,7 +2196,7 @@ export function StrategyPage() {
                       const body = {
                         thread_id: tid,
                         enable_trading: false,
-                        deployed_from_run_id: rid,
+                        strategy_id: rid,
                       };
                       if (deployTradingConfigured && String(deploySelectedAccountId || '').trim()) {
                         body.alpaca_account_id = String(deploySelectedAccountId || '').trim();

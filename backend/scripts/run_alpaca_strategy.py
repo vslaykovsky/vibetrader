@@ -4,7 +4,9 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sys
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -54,8 +56,9 @@ from application.services.simulation_driver import (
 )
 from application.services.scale_utils import floor_ts_to_scale
 from application.services.strategy_runtime import StrategyRuntime
-from db.models import LiveRun, LiveRunEvent, LiveRunOrder
+from db.models import LiveRun, LiveRunEvent, LiveRunOrder, Strategy
 from db.session import SessionLocal
+from db.strategy_queries import resolve_strategy_row_for_live
 from strategies_v2.utils import (
     InputIndicatorDataPoint,
     InputOhlcDataPoint,
@@ -74,6 +77,33 @@ from strategies_v2.utils import (
 logger = logging.getLogger(__name__)
 
 _SIMULATION_SCALE = "1m"
+
+
+def _materialize_workspace_from_db(strategy_row: Strategy, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "strategy.py").write_text(strategy_row.code or "", encoding="utf-8")
+    canvas = strategy_row.canvas or {}
+    output = canvas.get("output") if isinstance(canvas.get("output"), dict) else {}
+    params_blob = output.get("params.json") if isinstance(output, dict) else None
+    params_path = dest / "params.json"
+    if isinstance(params_blob, dict):
+        params_path.write_text(
+            json.dumps(params_blob, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    elif isinstance(params_blob, str) and params_blob.strip():
+        params_path.write_text(params_blob, encoding="utf-8")
+    else:
+        tmpl = _BACKEND_ROOT / "strategies_v2" / "params.json"
+        if tmpl.is_file():
+            shutil.copy2(tmpl, params_path)
+        else:
+            params_path.write_text("{}\n", encoding="utf-8")
+    v2 = _BACKEND_ROOT / "strategies_v2"
+    for name in ("utils.py", "hyperopt.py"):
+        src = v2 / name
+        if src.is_file():
+            shutil.copy2(src, dest / name)
 
 
 def _log_strategy_input(inp: StrategyInput) -> None:
@@ -417,7 +447,22 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="Run a strategies_v2 strategy against live Alpaca events stored in DB, and optionally place trades via Alpaca Trading API."
     )
-    parser.add_argument("--entry", required=True, help="Path to strategy entry script (e.g. strategy.py).")
+    parser.add_argument(
+        "--entry",
+        default="",
+        help="Path to strategy entry script; if omitted, use --thread-id and load strategy from the database.",
+    )
+    parser.add_argument(
+        "--thread-id",
+        default="",
+        help="Chat thread UUID; strategy code is loaded from the latest strategy row (or --strategy-id).",
+    )
+    parser.add_argument(
+        "--strategy-id",
+        default="",
+        dest="strategy_id",
+        help="Optional primary key (id) of the strategy table row whose code column supplies strategy.py.",
+    )
     parser.add_argument("--paper", action="store_true", help="Use Alpaca paper trading.")
     parser.add_argument("--enable-trading", action="store_true", help="Actually submit Alpaca orders.")
     parser.add_argument("--poll-ms", type=int, default=250, help="DB poll interval in milliseconds.")
@@ -434,13 +479,45 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
 
-    entry_path = Path(args.entry).resolve()
-    if not entry_path.is_file():
-        parser.error(f"--entry must be an existing file: {entry_path}")
-    workspace = entry_path.parent
-    entry_script = entry_path.relative_to(workspace).as_posix()
     run_id = (str(args.run_id).strip() or str(uuid.uuid4())).strip()
     runner_id = (str(args.runner_id).strip() or run_id)[:64]
+    entry_raw = (args.entry or "").strip()
+    thread_raw = (args.thread_id or "").strip()
+    strategy_id_raw = (args.strategy_id or "").strip()
+    temp_workspace: Path | None = None
+    if not entry_raw:
+        if not thread_raw and run_id:
+            with SessionLocal() as session:
+                lr0 = session.get(LiveRun, run_id)
+                if lr0 is not None:
+                    thread_raw = (lr0.thread_id or "").strip()
+                    if not strategy_id_raw:
+                        strategy_id_raw = (lr0.deployed_from_run_id or "").strip()
+        if not thread_raw:
+            parser.error("provide --entry, or --thread-id, or --run-id for an existing live_runs row")
+        with SessionLocal() as session:
+            strat_row, strat_err = resolve_strategy_row_for_live(
+                session,
+                thread_id=thread_raw,
+                strategy_id=strategy_id_raw,
+            )
+            if strat_err or strat_row is None:
+                parser.error(strat_err or "strategy not found")
+        temp_workspace = Path(tempfile.mkdtemp(prefix=f"live_run_{run_id}_"))
+        _materialize_workspace_from_db(strat_row, temp_workspace)
+        workspace = temp_workspace
+        entry_script = "strategy.py"
+        entry_path = workspace / entry_script
+        thread_id_eff = thread_raw
+        stored_entry_path = ""
+    else:
+        entry_path = Path(entry_raw).resolve()
+        if not entry_path.is_file():
+            parser.error(f"--entry must be an existing file: {entry_path}")
+        workspace = entry_path.parent
+        entry_script = entry_path.relative_to(workspace).as_posix()
+        thread_id_eff = (args.thread_id or "").strip() or workspace.name
+        stored_entry_path = str(entry_path)
 
     client = _alpaca_client(paper=bool(args.paper))
     rt = StrategyRuntime(workspace, entry_script=entry_script)
@@ -467,24 +544,24 @@ def main(argv: list[str]) -> int:
                 rb = (os.environ.get("LIVE_RUNNER_BACKEND") or "local").strip() or "local"
                 row = LiveRun(
                     id=run_id,
-                    thread_id=workspace.name,
+                    thread_id=thread_id_eff,
                     created_by=(str(args.created_by).strip() or None),
                     created_by_email=(str(args.created_by_email).strip() or None),
                     mode="paper" if bool(args.paper) else "live",
                     status="running",
                     status_text="starting",
-                    entry_path=str(entry_path),
+                    entry_path=stored_entry_path,
                     runner_backend=rb,
                     runner_id=runner_id,
                     last_input_event_id=0,
                 )
                 session.add(row)
             else:
-                row.thread_id = workspace.name
+                row.thread_id = thread_id_eff
                 row.mode = "paper" if bool(args.paper) else "live"
                 row.status = "running"
                 row.status_text = "starting"
-                row.entry_path = str(entry_path)
+                row.entry_path = stored_entry_path
                 row.runner_id = runner_id
                 cb = str(args.created_by).strip()
                 if cb:
@@ -784,6 +861,8 @@ def main(argv: list[str]) -> int:
             rt.close()
         except Exception:
             pass
+        if temp_workspace is not None:
+            shutil.rmtree(temp_workspace, ignore_errors=True)
     return 0
 
 

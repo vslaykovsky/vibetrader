@@ -14,7 +14,8 @@ from application.services.alpaca_live_db import delete_runner_subscriptions
 from auth import require_auth
 from db.models import LiveRun, LiveRunEvent, Strategy
 from db.session import SessionLocal
-from services.agent import STRATEGIES_DIR, thread_id_allowed
+from db.strategy_queries import resolve_strategy_row_for_live
+from services.agent import thread_id_allowed
 from services.supabase_trading_settings import (
     fetch_alpaca_account_for_user,
     fetch_profile_alpaca_keys,
@@ -134,14 +135,11 @@ def _deployment_name(run_id: str) -> str:
     return f"live-run-{short}"
 
 
-def _strategy_entry_path(thread_id: str) -> Path:
-    return Path(STRATEGIES_DIR) / thread_id / "strategy.py"
-
-
 def _deployment_manifest(
     *,
     run_id: str,
     thread_id: str,
+    strategy_id: str,
     paper: bool,
     enable_trading: bool,
     user_id: str,
@@ -151,7 +149,6 @@ def _deployment_manifest(
 ) -> dict[str, Any]:
     name = _deployment_name(run_id)
     namespace = _k8s_namespace()
-    entry = _strategy_entry_path(thread_id)
     env_from = _runner_env_from()
     resources = _runner_resources()
     sa = (os.environ.get("LIVE_RUNNER_SERVICE_ACCOUNT") or "").strip()
@@ -159,8 +156,8 @@ def _deployment_manifest(
     args = [
         "python",
         "scripts/run_alpaca_strategy.py",
-        "--entry",
-        str(entry),
+        "--thread-id",
+        thread_id,
         "--run-id",
         run_id,
         "--runner-id",
@@ -168,6 +165,9 @@ def _deployment_manifest(
         "--created-by",
         user_id,
     ]
+    sid = (strategy_id or "").strip()
+    if sid:
+        args += ["--strategy-id", sid]
     if user_email:
         args += ["--created-by-email", user_email]
     if paper:
@@ -230,10 +230,9 @@ def live_start() -> tuple:
     thread_id = str(payload.get("thread_id", "")).strip()
     if not thread_id or not thread_id_allowed(thread_id):
         return _bad("invalid or missing thread_id")
-    deployed_from_run_id = str(payload.get("deployed_from_run_id") or "").strip()
-    entry = _strategy_entry_path(thread_id)
-    if not entry.is_file():
-        return _bad(f"strategy entry not found: {entry}", 404)
+    strategy_id = str(
+        payload.get("strategy_id") or payload.get("deployed_from_run_id") or ""
+    ).strip()
 
     run_id = str(payload.get("run_id") or "").strip() or str(uuid.uuid4())
     paper = bool(payload.get("paper", True))
@@ -263,6 +262,13 @@ def live_start() -> tuple:
     status_text = "creating deployment" if use_k8s else "waiting for local worker"
     session = SessionLocal()
     try:
+        _, strat_err = resolve_strategy_row_for_live(
+            session,
+            thread_id=thread_id,
+            strategy_id=strategy_id,
+        )
+        if strat_err:
+            return _bad(strat_err, 404)
         run = LiveRun(
             id=run_id,
             thread_id=thread_id,
@@ -271,8 +277,8 @@ def live_start() -> tuple:
             mode="paper" if paper else "live",
             status="starting",
             status_text=status_text,
-            entry_path=str(entry),
-            deployed_from_run_id=deployed_from_run_id,
+            entry_path="",
+            deployed_from_run_id=strategy_id,
             alpaca_account_id=alpaca_account_id if use_supabase_trading else "",
             runner_backend=runner_backend,
             runner_id=run_id[:64],
@@ -308,6 +314,7 @@ def live_start() -> tuple:
     manifest = _deployment_manifest(
         run_id=run_id,
         thread_id=thread_id,
+        strategy_id=strategy_id,
         paper=paper,
         enable_trading=enable_trading,
         user_id=str(g.user_id),
@@ -398,6 +405,7 @@ def live_runs() -> tuple:
                 "status": r.status,
                 "status_text": r.status_text,
                 "entry_path": r.entry_path,
+                "strategy_id": sid,
                 "deployed_from_run_id": sid,
                 "strategy_name": name,
                 "backtest_at": bt_at,
@@ -501,6 +509,7 @@ def live_status() -> tuple:
                 "status": row.status,
                 "status_text": row.status_text,
                 "entry_path": row.entry_path,
+                "strategy_id": getattr(row, "deployed_from_run_id", "") or "",
                 "deployed_from_run_id": getattr(row, "deployed_from_run_id", "") or "",
                 "alpaca_account_id": getattr(row, "alpaca_account_id", "") or "",
                 "runner_backend": getattr(row, "runner_backend", "") or "kubernetes",

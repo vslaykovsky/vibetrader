@@ -37,3 +37,25 @@ def ensure_latest_thread_strategy(
     session.add(strategy)
     session.flush()
     return strategy
+
+
+def resolve_strategy_row_for_live(
+    session: Session,
+    *,
+    thread_id: str,
+    strategy_id: str,
+) -> tuple[Strategy | None, str | None]:
+    sid = (strategy_id or "").strip()
+    if sid:
+        row = get_strategy_by_id(session, sid)
+        if row is None:
+            return None, "strategy row not found"
+        if row.thread_id != thread_id:
+            return None, "strategy id does not match thread_id"
+    else:
+        row = latest_thread_strategy(session, thread_id)
+        if row is None:
+            return None, "no saved strategy for this thread"
+    if not (row.code or "").strip():
+        return None, "strategy has no code saved"
+    return row, None
