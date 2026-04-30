@@ -9,6 +9,7 @@ import {
 import { CHART_THEME } from '../lib/chartTheme.js';
 import { coerceChartTimeSeconds, visibleTimeRangeToUnix } from '../lib/chartHistory.js';
 import { attachSyncedCrosshair, attachSyncedTimeScales } from '../lib/lwcSync.js';
+import { formatChartTick } from '../lib/dateTime.js';
 
 /** Empty fraction on the right when ``lockedVisibleRange`` is set (LWC cannot extend ``setVisibleRange`` past last bar). */
 const PREVIEW_RIGHT_EMPTY_FRACTION = 0.3;
@@ -52,6 +53,7 @@ export function SimulationCharts({
   livePlayback = false,
   viewportCapped = false,
   onVisibleTimeRangeChange = null,
+  timeZone = 'UTC',
 }) {
   const priceHostRef = useRef(null);
   const equityHostRef = useRef(null);
@@ -95,23 +97,7 @@ export function SimulationCharts({
     // day-of-month label, which makes the chart look like it's missing bars).
     const tfKey = String(chartTf || '').trim().toLowerCase();
     const isIntraday = tfKey === '1m' || tfKey === '15m' || tfKey === '1h' || tfKey === '4h';
-    const tickMarkFormatter = (timeSec) => {
-      const u = typeof timeSec === 'number'
-        ? timeSec
-        : (timeSec && typeof timeSec === 'object' && 'timestamp' in timeSec)
-          ? Number(timeSec.timestamp)
-          : NaN;
-      if (!Number.isFinite(u)) return '';
-      const d = new Date(u * 1000);
-      const dd = String(d.getUTCDate()).padStart(2, '0');
-      const mon = d.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' });
-      const hh = String(d.getUTCHours()).padStart(2, '0');
-      const mm = String(d.getUTCMinutes()).padStart(2, '0');
-      if (!isIntraday) return `${dd} ${mon}`;
-      // For 1m show HH:MM at midnight too so the date is implied by the hour.
-      if (hh === '00' && mm === '00') return `${dd} ${mon}`;
-      return `${hh}:${mm}`;
-    };
+    const tickMarkFormatter = (timeSec) => formatChartTick(timeSec, timeZone, isIntraday);
     const chartPrice = createChart(topEl, {
       ...CHART_THEME,
       width: topEl.clientWidth,
@@ -299,7 +285,7 @@ export function SimulationCharts({
       lineSeriesRef.current = null;
       markersPluginRef.current = null;
     };
-  }, []);
+  }, [chartTf, timeZone]);
 
   useEffect(() => {
     const candleSeries = candleSeriesRef.current;

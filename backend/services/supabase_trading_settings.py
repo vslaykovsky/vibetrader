@@ -6,6 +6,7 @@ import os
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 
@@ -31,6 +32,17 @@ def _service_role_key() -> str:
 
 def service_role_configured() -> bool:
     return bool(_supabase_url() and _service_role_key())
+
+
+def normalize_timezone(value: str | None) -> str:
+    tz = (value or "").strip()
+    if not tz:
+        return ""
+    try:
+        ZoneInfo(tz)
+    except ZoneInfoNotFoundError:
+        return ""
+    return tz
 
 
 def _headers() -> dict[str, str]:
@@ -125,7 +137,7 @@ def fetch_trading_settings_payload(user_id: str) -> dict[str, Any] | None:
     uid = (user_id or "").strip()
     if not uid or not service_role_configured():
         return None
-    pr = _get("profiles", {"id": f"eq.{uid}", "select": "alpaca_api_key,alpaca_secret_key,updated_at"})
+    pr = _get("profiles", {"id": f"eq.{uid}", "select": "alpaca_api_key,alpaca_secret_key,timezone,updated_at"})
     if pr.status_code != 200:
         logger.warning("supabase profiles read status=%s", pr.status_code)
         return None
@@ -140,6 +152,7 @@ def fetch_trading_settings_payload(user_id: str) -> dict[str, Any] | None:
             "has_alpaca_secret_key": bool(sk),
             "alpaca_api_key_hint": mask_secret_tail(ak) if ak else "",
             "alpaca_secret_key_hint": mask_secret_tail(sk) if sk else "",
+            "timezone": normalize_timezone(str(p0.get("timezone") or "")),
             "updated_at": p0.get("updated_at"),
         }
     ar = _get(
@@ -169,16 +182,27 @@ def upsert_profile_alpaca_keys(
     *,
     alpaca_api_key: str | None = None,
     alpaca_secret_key: str | None = None,
+    user_timezone: str | None = None,
 ) -> tuple[bool, str]:
     uid = (user_id or "").strip()
     if not uid or not service_role_configured():
         return False, "Trading settings are not configured on the server"
-    if alpaca_api_key is None and alpaca_secret_key is None:
+    if alpaca_api_key is None and alpaca_secret_key is None and user_timezone is None:
         return False, "No fields to update"
+    tz = normalize_timezone(user_timezone) if user_timezone is not None else None
+    if user_timezone is not None and not tz:
+        return False, "Invalid timezone"
     now_iso = datetime.now(timezone.utc).isoformat()
-    rget = _get("profiles", {"id": f"eq.{urllib.parse.quote(uid, safe='')}", "select": "alpaca_api_key,alpaca_secret_key"})
+    rget = _get(
+        "profiles",
+        {
+            "id": f"eq.{urllib.parse.quote(uid, safe='')}",
+            "select": "alpaca_api_key,alpaca_secret_key,timezone",
+        },
+    )
     ak = ""
     sk = ""
+    existing_tz = ""
     has_row = False
     if rget.status_code == 200 and isinstance(rget.json(), list) and rget.json():
         has_row = True
@@ -186,11 +210,19 @@ def upsert_profile_alpaca_keys(
         if isinstance(row0, dict):
             ak = str(row0.get("alpaca_api_key") or "")
             sk = str(row0.get("alpaca_secret_key") or "")
+            existing_tz = normalize_timezone(str(row0.get("timezone") or ""))
     if alpaca_api_key is not None:
         ak = alpaca_api_key
     if alpaca_secret_key is not None:
         sk = alpaca_secret_key
-    body = {"alpaca_api_key": ak, "alpaca_secret_key": sk, "updated_at": now_iso}
+    if tz is not None:
+        existing_tz = tz
+    body = {
+        "alpaca_api_key": ak,
+        "alpaca_secret_key": sk,
+        "timezone": existing_tz,
+        "updated_at": now_iso,
+    }
     if has_row:
         r = _patch(f"profiles?id=eq.{urllib.parse.quote(uid, safe='')}", body)
         if r.status_code in (200, 204):

@@ -45,8 +45,10 @@ def settings_trading_profile_put() -> tuple:
     body = request.get_json(silent=True) or {}
     api_key = body.get("alpaca_api_key")
     secret_key = body.get("alpaca_secret_key")
+    tz = body.get("timezone")
     ak = None
     sk = None
+    user_timezone = None
     if "alpaca_api_key" in body:
         if not isinstance(api_key, str):
             return _bad("alpaca_api_key must be a string")
@@ -55,7 +57,16 @@ def settings_trading_profile_put() -> tuple:
         if not isinstance(secret_key, str):
             return _bad("alpaca_secret_key must be a string")
         sk = secret_key
-    ok, err = upsert_profile_alpaca_keys(str(g.user_id), alpaca_api_key=ak, alpaca_secret_key=sk)
+    if "timezone" in body:
+        if not isinstance(tz, str):
+            return _bad("timezone must be a string")
+        user_timezone = tz
+    ok, err = upsert_profile_alpaca_keys(
+        str(g.user_id),
+        alpaca_api_key=ak,
+        alpaca_secret_key=sk,
+        user_timezone=user_timezone,
+    )
     if not ok:
         return _bad(err or "Save failed", 502)
     return jsonify({"ok": True}), 200

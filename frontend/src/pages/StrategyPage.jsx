@@ -8,6 +8,8 @@ import { attachSyncedCrosshair, attachSyncedTimeScales } from '../lib/lwcSync.js
 import { renderCharts } from '../strategyChartRenderer.js';
 import { useAuth } from '../AuthContext';
 import { useTheme } from '../ThemeContext';
+import { useTimeZone } from '../TimeZoneContext.jsx';
+import { dateKeyFromIso as zonedDateKeyFromIso, parseIsoInstant, todayDateKey } from '../lib/dateTime.js';
 import { ProfileMenu } from '../ProfileMenu';
 import { SimulationPanel } from '../components/SimulationPanel.jsx';
 
@@ -119,31 +121,15 @@ function threadDisplayName(thread) {
 }
 
 function parseIsoTime(value) {
-  if (typeof value !== 'string') return null;
-  let t = value.trim();
-  if (!t) return null;
-  if (/^\d{4}-\d{2}-\d{2}T/.test(t) && !/[zZ]|[+-]\d{2}:\d{2}$/.test(t)) {
-    t = `${t}Z`;
-  }
-  t = t.replace(/(\.\d{3})\d+([zZ]|[+-]\d{2}:\d{2})$/, '$1$2');
-  const ms = Date.parse(t);
-  return Number.isFinite(ms) ? ms : null;
+  return parseIsoInstant(value);
 }
 
-function dateKeyFromIso(value) {
-  if (typeof value !== 'string') return null;
-  const t = value.trim();
-  if (!t) return null;
-  const m = t.match(/^(\d{4}-\d{2}-\d{2})/);
-  return m ? m[1] : null;
+function dateKeyFromIso(value, timeZone) {
+  return zonedDateKeyFromIso(value, timeZone);
 }
 
-function isoDateTodayKey() {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+function isoDateTodayKey(timeZone) {
+  return todayDateKey(timeZone);
 }
 
 function agentAnswerElementId(runId) {
@@ -422,6 +408,7 @@ export function StrategyPage() {
   const location = useLocation();
   const { user, signOut, getAccessToken } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const { timeZone } = useTimeZone();
   const signedInUserId = user?.id ?? null;
   const [messages, setMessages] = useState([]);
   const [canvas, setCanvas] = useState({});
@@ -1346,7 +1333,7 @@ export function StrategyPage() {
     let detachChartDnD;
     try {
       const runKey = `${threadId}:${viewingRunId || liveStrategyRunId || 'live'}`;
-      const rendered = renderCharts(root, chartData, { chartOrderStorageBase: runKey });
+      const rendered = renderCharts(root, chartData, { chartOrderStorageBase: runKey, timeZone });
       detachChartDnD = rendered.detachChartDnD;
       detachSync = attachSyncedTimeScales(rendered.lwCharts);
       detachCrosshair = attachSyncedCrosshair(rendered.lwCrosshairBindings);
@@ -1360,7 +1347,7 @@ export function StrategyPage() {
       detachCrosshair?.();
       mount.innerHTML = '';
     };
-  }, [displayOutput, threadId, viewingRunId, liveStrategyRunId]);
+  }, [displayOutput, threadId, viewingRunId, liveStrategyRunId, timeZone]);
 
   async function handleSubmit(event, messageFromField) {
     if (event && typeof event.preventDefault === 'function') {
@@ -1478,9 +1465,9 @@ export function StrategyPage() {
     return bt - at;
   });
 
-  const todayKey = isoDateTodayKey();
+  const todayKey = isoDateTodayKey(timeZone);
   const groupedThreads = sortedThreads.reduce((acc, t) => {
-    const key = dateKeyFromIso(t?.latest_created_at) || 'Unknown date';
+    const key = dateKeyFromIso(t?.latest_created_at, timeZone) || 'Unknown date';
     if (!acc[key]) {
       acc[key] = [];
     }
@@ -1630,23 +1617,6 @@ export function StrategyPage() {
         <div className="dashboard-topbar-right">
           <button
             type="button"
-            className="button-new-thread"
-            onClick={() => navigate({ pathname: `/strategy/${randomUUID()}`, hash: '' })}
-            aria-label="New strategy"
-            title="New strategy"
-          >
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path
-                d="M12 5v14M5 12h14"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-              />
-            </svg>
-            <span className="sr-only">New strategy</span>
-          </button>
-          <button
-            type="button"
             className="theme-toggle"
             onClick={toggleTheme}
             aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
@@ -1675,6 +1645,23 @@ export function StrategyPage() {
               aria-label="Open sidebar"
             >
               ☰
+            </button>
+            <button
+              type="button"
+              className="button-new-thread"
+              onClick={() => navigate({ pathname: `/strategy/${randomUUID()}`, hash: '' })}
+              aria-label="New strategy"
+              title="New strategy"
+            >
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path
+                  d="M12 5v14M5 12h14"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                />
+              </svg>
+              <span className="sr-only">New strategy</span>
             </button>
           </div>
         </header>

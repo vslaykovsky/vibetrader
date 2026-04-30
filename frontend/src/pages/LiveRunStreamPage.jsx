@@ -3,6 +3,8 @@ import { Link, useParams } from 'react-router-dom';
 import { formatDistanceStrict } from 'date-fns';
 import { useAuth } from '../AuthContext';
 import { useTheme } from '../ThemeContext';
+import { useTimeZone } from '../TimeZoneContext.jsx';
+import { formatUnixDateTime } from '../lib/dateTime.js';
 import { ProfileMenu } from '../ProfileMenu';
 import { renderCharts } from '../strategyChartRenderer.js';
 import { attachSyncedCrosshair, attachSyncedTimeScales } from '../lib/lwcSync.js';
@@ -85,10 +87,8 @@ function chartDedupeKey(spec, idx) {
   return `${ty}:i:${idx}`;
 }
 
-function fmtUnixTime(u) {
-  if (u == null || !Number.isFinite(Number(u))) return '—';
-  const ms = Number(u) > 2e10 ? Number(u) : Number(u) * 1000;
-  return new Date(ms).toLocaleString();
+function fmtUnixTime(u, timeZone) {
+  return formatUnixDateTime(u, timeZone);
 }
 
 function liveRunCanStop(status) {
@@ -108,6 +108,7 @@ export function LiveRunStreamPage() {
   const { runId = '' } = useParams();
   const { user, signOut, getAccessToken } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const { timeZone } = useTimeZone();
   const [runMeta, setRunMeta] = useState(null);
   const [dbRow, setDbRow] = useState(null);
   const [metaLoading, setMetaLoading] = useState(true);
@@ -284,6 +285,7 @@ export function LiveRunStreamPage() {
       const rid = String(runId || '').trim();
       const rendered = renderCharts(root, dataJson, {
         chartOrderStorageBase: rid ? `live:${rid}` : 'live',
+        timeZone,
       });
       detachChartDnD = rendered.detachChartDnD;
       detachSync = attachSyncedTimeScales(rendered.lwCharts);
@@ -298,7 +300,7 @@ export function LiveRunStreamPage() {
       detachCrosshair?.();
       mount.innerHTML = '';
     };
-  }, [chartEpoch, runId]);
+  }, [chartEpoch, runId, timeZone]);
 
   const displayStatus = dbRow?.status ?? runMeta?.status ?? '';
   const createdAt = dbRow?.created_at ?? runMeta?.created_at;
@@ -479,7 +481,7 @@ export function LiveRunStreamPage() {
                 <tbody>
                   {[...trades].reverse().map((t) => (
                     <tr key={t.rowKey}>
-                      <td>{fmtUnixTime(t.unixtime)}</td>
+                      <td>{fmtUnixTime(t.unixtime, timeZone)}</td>
                       <td>{t.ticker ?? '—'}</td>
                       <td>{t.direction ?? '—'}</td>
                       <td>{t.deposit_ratio != null ? String(t.deposit_ratio) : '—'}</td>

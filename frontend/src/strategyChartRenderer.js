@@ -17,6 +17,7 @@ import {
   sanitizeDetailsOpenState,
   validateChartOrder,
 } from './lib/chartOrder.js';
+import { formatChartTick, normalizeTimeZone } from './lib/dateTime.js';
 
 const SERIES_TYPE_MAP = {
   Candlestick: CandlestickSeries,
@@ -323,7 +324,7 @@ function makeSection(container, titleText, openStore, panelKey, helpText) {
   return { details, chartEl };
 }
 
-function renderLightweightChart(container, chartSpec, openStore, panelKey, helpText) {
+function renderLightweightChart(container, chartSpec, openStore, panelKey, helpText, timeZone) {
   const { details, chartEl: el } = makeSection(
     container,
     chartSpec.title || '',
@@ -333,7 +334,16 @@ function renderLightweightChart(container, chartSpec, openStore, panelKey, helpT
   );
   el.style.height = '350px';
 
-  const chart = createChart(el, { ...CHART_THEME, autoSize: true, height: 350 });
+  const isIntraday = chartHasIntradayTime(chartSpec);
+  const chart = createChart(el, {
+    ...CHART_THEME,
+    autoSize: true,
+    height: 350,
+    timeScale: {
+      ...(CHART_THEME.timeScale || {}),
+      tickMarkFormatter: (timeSec) => formatChartTick(timeSec, timeZone, isIntraday),
+    },
+  });
 
   details.addEventListener('toggle', () => {
     if (!details.open) return;
@@ -690,11 +700,11 @@ function renderMetricsPanel(container, metrics, openStore) {
   container.appendChild(details);
 }
 
-function renderOneChartPanel(panelHost, spec, openStore, srcIdx, catalogMap) {
+function renderOneChartPanel(panelHost, spec, openStore, srcIdx, catalogMap, timeZone) {
   const panelKey = `c${srcIdx}`;
   if (spec.type === 'lightweight-charts') {
     const helpText = helpTextForLightweightChart(spec, catalogMap);
-    return renderLightweightChart(panelHost, spec, openStore, panelKey, helpText);
+    return renderLightweightChart(panelHost, spec, openStore, panelKey, helpText, timeZone);
   }
   if (spec.type === 'plotly') {
     renderPlotlyChart(panelHost, spec, openStore, panelKey, null);
@@ -715,6 +725,7 @@ export function renderCharts(container, dataJson, options) {
   let dndSignal = null;
   const charts = dataJson?.charts;
   const base = options?.chartOrderStorageBase;
+  const timeZone = normalizeTimeZone(options?.timeZone);
   const chartCount = Array.isArray(charts) ? charts.length : 0;
   const catalogMap = catalogMapFromDataJson(dataJson);
   const includeMetrics = buildMetricsPanelItems(dataJson?.metrics ?? null).length > 0;
@@ -751,6 +762,7 @@ export function renderCharts(container, dataJson, options) {
           openStore,
           srcIdx,
           catalogMap,
+          timeZone,
         );
         if (chart) {
           lwCharts.push(chart);
@@ -768,6 +780,7 @@ export function renderCharts(container, dataJson, options) {
           openStore,
           srcIdx,
           catalogMap,
+          timeZone,
         );
         if (chart) {
           lwCharts.push(chart);

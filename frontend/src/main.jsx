@@ -4,13 +4,16 @@ import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import { AuthProvider } from './AuthContext';
 import { ThemeProvider } from './ThemeContext';
+import { TimeZoneProvider } from './TimeZoneContext.jsx';
 import './styles.css';
 
 const app = (
   <BrowserRouter>
     <ThemeProvider>
       <AuthProvider>
-        <App />
+        <TimeZoneProvider>
+          <App />
+        </TimeZoneProvider>
       </AuthProvider>
     </ThemeProvider>
   </BrowserRouter>

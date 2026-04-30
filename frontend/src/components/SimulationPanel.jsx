@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { DateTimePickerModal } from './DateTimePickerModal.jsx';
 import { SimulationCharts } from './SimulationCharts.jsx';
+import { useTimeZone } from '../TimeZoneContext.jsx';
+import { formatChartTick, formatUnixDateTime } from '../lib/dateTime.js';
 import {
   bucketStart,
   DISPLAY_TF_OPTIONS,
@@ -68,6 +70,7 @@ function mergeBars(prev, next) {
 }
 
 export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToken }) {
+  const { timeZone } = useTimeZone();
   // ── User input / session ──────────────────────────────────────────────
   const [startDate, setStartDate] = useState('');
   const [datePickerOpen, setDatePickerOpen] = useState(false);
@@ -263,9 +266,10 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     const apiEnd = unixToIsoDateUTC(upperUnix + 86400);
 
     appendLog(
-      `[init] start_date=${sd} chartTf=${chartTf} cursorEnd=${cursorEndUnix} anchorBucket=${anchorBucket} (${new Date(
-        anchorBucket * 1000,
-      ).toISOString()}) apiStart=${apiStart} apiEnd=${apiEnd} padBackSec=${padBack}`,
+      `[init] start_date=${sd} chartTf=${chartTf} cursorEnd=${cursorEndUnix} anchorBucket=${anchorBucket} (${formatUnixDateTime(
+        anchorBucket,
+        timeZone,
+      )}) apiStart=${apiStart} apiEnd=${apiEnd} padBackSec=${padBack}`,
     );
     setBarsLoading(true);
     setBarsError('');
@@ -292,20 +296,10 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
         if (initial.length > 0) {
           rightBarUnixRef.current = initial[initial.length - 1].unixtime;
           setRightBarUnix(initial[initial.length - 1].unixtime);
-          const firstIso = new Date(initial[0].unixtime * 1000).toISOString();
-          const lastIso = new Date(
-            initial[initial.length - 1].unixtime * 1000,
-          ).toISOString();
-          // Bar-times in HH:MM UTC, comma-joined: makes it obvious whether the
-          // chart actually has 4 intraday 4h bars per session or just one.
+          const firstIso = formatUnixDateTime(initial[0].unixtime, timeZone);
+          const lastIso = formatUnixDateTime(initial[initial.length - 1].unixtime, timeZone);
           const stamps = initial
-            .map((b) => {
-              const d = new Date(b.unixtime * 1000);
-              const hh = String(d.getUTCHours()).padStart(2, '0');
-              const mm = String(d.getUTCMinutes()).padStart(2, '0');
-              const dd = String(d.getUTCDate()).padStart(2, '0');
-              return `${dd}/${hh}:${mm}`;
-            })
+            .map((b) => formatChartTick(b.unixtime, timeZone, true))
             .join(',');
           appendLog(
             `[init] loaded ${initial.length} bars: first=${initial[0].unixtime}(${firstIso}) last=${initial[initial.length - 1].unixtime}(${lastIso})`,
@@ -324,7 +318,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
       alive = false;
       ac.abort();
     };
-  }, [sessionReady, startDate, threadId, chartTf, tfSec, callDisplayBars, bars.length, appendLog]);
+  }, [sessionReady, startDate, threadId, chartTf, tfSec, callDisplayBars, bars.length, appendLog, timeZone]);
 
   // ── Playback loop: rAF reveals next bar at ``liveBps``; prefetches more when buffer is low. ─
   // Effect identity is stable across ``bars`` updates so the rAF clock never resets.
@@ -564,13 +558,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
           );
           if (trimmed.length > 0) {
             const stamps = trimmed
-              .map((b) => {
-                const d = new Date(b.unixtime * 1000);
-                const hh = String(d.getUTCHours()).padStart(2, '0');
-                const mm = String(d.getUTCMinutes()).padStart(2, '0');
-                const dd = String(d.getUTCDate()).padStart(2, '0');
-                return `${dd}/${hh}:${mm}`;
-              })
+              .map((b) => formatChartTick(b.unixtime, timeZone, true))
               .join(',');
             appendLogRef.current?.(`[history] kept-stamps=${stamps}`);
           }
@@ -585,7 +573,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
         }
       })();
     }, PAN_HISTORY_DEBOUNCE_MS);
-  }, [sessionReady, startDate, threadId, tfSec, callDisplayBars]);
+  }, [sessionReady, startDate, threadId, tfSec, callDisplayBars, timeZone]);
 
   // ── Stream: trades / equity / status (no bars consumed for chart) ────
   const openStream = useCallback(async () => {
@@ -602,9 +590,9 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
         appendLog(JSON.stringify(payload));
         if (payload?.kind === 'trade') {
           const tu = Number(payload.unixtime) || 0;
-          const tIso = tu > 0 ? new Date(tu * 1000).toISOString() : '?';
+          const tIso = tu > 0 ? formatUnixDateTime(tu, timeZone) : '?';
           const bucket = tu > 0 ? bucketStart(tu, chartTfRef.current) : 0;
-          const bIso = bucket > 0 ? new Date(bucket * 1000).toISOString() : '?';
+          const bIso = bucket > 0 ? formatUnixDateTime(bucket, timeZone) : '?';
           appendLog(
             `[trade-event] dir=${payload.direction} price=${payload.price} ` +
               `unixtime=${tu} (${tIso}) bucket@${chartTfRef.current}=${bucket} (${bIso})`,
@@ -687,7 +675,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     es.onopen = () => {
       appendLog('[stream open]');
     };
-  }, [apiBaseUrl, threadId, getAccessToken, appendLog, stopStream]);
+  }, [apiBaseUrl, threadId, getAccessToken, appendLog, stopStream, timeZone]);
   const openStreamRef = useRef(openStream);
   openStreamRef.current = openStream;
 
@@ -911,8 +899,8 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     if (visible.length > 0) {
       const first = visible[0];
       const last = visible[visible.length - 1];
-      const isoFirst = new Date((first.unixtime || 0) * 1000).toISOString();
-      const isoLast = new Date((last.unixtime || 0) * 1000).toISOString();
+      const isoFirst = formatUnixDateTime(first.unixtime || 0, timeZone);
+      const isoLast = formatUnixDateTime(last.unixtime || 0, timeZone);
       appendLogRef.current?.(
         `[markers] count=${visible.length} first=${first.unixtime}(${isoFirst}) last=${last.unixtime}(${isoLast}) right=${rightBarUnix}`,
       );
@@ -935,7 +923,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
         };
       })
       .sort((a, b) => a.time - b.time);
-  }, [trades, rightBarUnix, chartTf, knownSourceTf]);
+  }, [trades, rightBarUnix, chartTf, knownSourceTf, timeZone]);
 
   const livePlayback = busy && !paused;
   const showChartArea = sessionReady || initLoading || candles.length > 0 || barsLoading || Boolean(barsError);
@@ -1046,6 +1034,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
               livePlayback={livePlayback}
               viewportCapped={false}
               onVisibleTimeRangeChange={handleVisibleTimeRange}
+              timeZone={timeZone}
             />
           ) : (
             <p className="simulation-charts-placeholder muted">

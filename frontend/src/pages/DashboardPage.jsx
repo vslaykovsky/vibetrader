@@ -4,6 +4,8 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { randomUUID } from '../randomUUID.js';
 import { useAuth } from '../AuthContext';
 import { useTheme } from '../ThemeContext';
+import { useTimeZone } from '../TimeZoneContext.jsx';
+import { formatIsoDateTime } from '../lib/dateTime.js';
 import { ProfileMenu } from '../ProfileMenu';
 
 const API_BASE_URL =
@@ -12,11 +14,8 @@ const API_BASE_URL =
 
 const THREAD_PREVIEW_LIMIT = 10;
 
-function fmtTime(iso) {
-  if (typeof iso !== 'string' || !iso.trim()) return '';
-  const ms = Date.parse(iso);
-  if (!Number.isFinite(ms)) return iso;
-  return new Date(ms).toLocaleString();
+function fmtTime(iso, timeZone) {
+  return formatIsoDateTime(iso, timeZone);
 }
 
 function threadTitle(t) {
@@ -107,6 +106,7 @@ export function DashboardPage() {
   const location = useLocation();
   const { user, signOut, getAccessToken } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const { timeZone } = useTimeZone();
   const [threads, setThreads] = useState([]);
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -270,7 +270,7 @@ export function DashboardPage() {
                           <div className="dashboard-card-main">
                             <h3 className="dashboard-card-title">{threadTitle(t)}</h3>
                             <p className="dashboard-card-meta muted">
-                              Updated {fmtTime(t.latest_created_at)}
+                              Updated {fmtTime(t.latest_created_at, timeZone)}
                               {Number.isFinite(Number(t.message_count)) ? ` · ${t.message_count} messages` : ''}
                             </p>
                           </div>
