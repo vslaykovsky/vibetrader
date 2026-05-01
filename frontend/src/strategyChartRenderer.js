@@ -7,6 +7,7 @@ import {
   BaselineSeries,
   BarSeries,
   createSeriesMarkers,
+  MismatchDirection,
 } from 'lightweight-charts';
 import Plotly from 'plotly.js-dist-min';
 import { CHART_THEME } from './lib/chartTheme.js';
@@ -45,6 +46,26 @@ const PLOTLY_CONFIG = {
 
 const INTRADAY_TIME_RE = /[T ]\d{2}:\d{2}/;
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+const TIME_COLUMN_NAMES = new Set([
+  'time', 'date', 'datetime', 'timestamp',
+  'entry_time', 'exit_time', 'open_time', 'close_time',
+]);
+
+function detectTimeColumn(columns, rows) {
+  for (const col of columns) {
+    if (TIME_COLUMN_NAMES.has(col.toLowerCase())) return col;
+  }
+  for (const col of columns) {
+    const sample = rows.slice(0, 3);
+    const allParseable = sample.length > 0 && sample.every((r) => {
+      const u = toUnixSeconds(r?.[col]);
+      return typeof u === 'number' && Number.isFinite(u) && u > 946684800;
+    });
+    if (allParseable) return col;
+  }
+  return null;
+}
 
 const CHART_ORDER_LS_PREFIX = 'vibetrader:chartPanelOrder:';
 const DETAILS_OPEN_LS_PREFIX = 'vibetrader:chartDetailsOpen:';
@@ -324,7 +345,7 @@ function makeSection(container, titleText, openStore, panelKey, helpText) {
   return { details, chartEl };
 }
 
-function renderLightweightChart(container, chartSpec, openStore, panelKey, helpText, timeZone) {
+function renderLightweightChart(container, chartSpec, openStore, panelKey, helpText, timeZone, onCrosshairMove) {
   const { details, chartEl: el } = makeSection(
     container,
     chartSpec.title || '',
@@ -382,7 +403,54 @@ function renderLightweightChart(container, chartSpec, openStore, panelKey, helpT
   }
 
   chart.timeScale().fitContent();
-  return { chart, primarySeries };
+
+  const setCrosshairAt = (unixSec) => {
+    if (!primarySeries) return;
+    const ts = chart.timeScale();
+    if (typeof ts.timeToIndex !== 'function') return;
+    const idx = ts.timeToIndex(unixSec, true);
+    if (idx === null) return;
+    const lr = ts.getVisibleLogicalRange?.();
+    if (lr && Number.isFinite(lr.from) && Number.isFinite(lr.to)) {
+      const span = lr.to - lr.from;
+      if (idx < lr.from || idx > lr.to) {
+        try {
+          ts.setVisibleLogicalRange({ from: idx - span / 2, to: idx + span / 2 });
+        } catch { /* ignore */ }
+      }
+    }
+    let bar;
+    try { bar = primarySeries.dataByIndex(idx, MismatchDirection.NearestLeft); } catch { /* ignore */ }
+    const price = bar?.close ?? bar?.value ?? bar?.open ?? null;
+    if (price != null) {
+      try { chart.setCrosshairPosition(price, unixSec, primarySeries); } catch { /* ignore */ }
+    }
+  };
+
+  const clearCrosshair = () => {
+    try { chart.clearCrosshairPosition(); } catch { /* ignore */ }
+  };
+
+  let crosshairUnsub = null;
+  if (typeof onCrosshairMove === 'function') {
+    const handler = (param) => {
+      if (param.sourceEvent == null) return;
+      if (param.time == null) {
+        onCrosshairMove(null);
+      } else {
+        const u = typeof param.time === 'number'
+          ? (param.time > 1e12 ? Math.floor(param.time / 1000) : Math.floor(param.time))
+          : toUnixSeconds(param.time);
+        if (typeof u === 'number' && Number.isFinite(u)) {
+          onCrosshairMove(u);
+        }
+      }
+    };
+    chart.subscribeCrosshairMove(handler);
+    crosshairUnsub = () => chart.unsubscribeCrosshairMove(handler);
+  }
+
+  return { chart, primarySeries, setCrosshairAt, clearCrosshair, crosshairUnsub };
 }
 
 export { attachSyncedCrosshair } from './lib/lwcSync.js';
@@ -457,12 +525,13 @@ function triggerCsvDownload(filename, csvText) {
   URL.revokeObjectURL(url);
 }
 
-function renderTablePanel(container, table, title, openStore, panelKey) {
-  if (!Array.isArray(table) || table.length === 0) return;
+function renderTablePanel(container, table, title, openStore, panelKey, helpText, onRowHover, onRowLeave) {
+  if (!Array.isArray(table) || table.length === 0) return null;
   const first = table[0];
-  if (!first || typeof first !== 'object') return;
+  if (!first || typeof first !== 'object') return null;
   const columns = Object.keys(first);
-  if (columns.length === 0) return;
+  if (columns.length === 0) return null;
+  const timeCol = detectTimeColumn(columns, table);
 
   const toComparable = (v) => {
     if (v === null || v === undefined) return { kind: 'empty', value: null };
@@ -499,7 +568,30 @@ function renderTablePanel(container, table, title, openStore, panelKey) {
   details.className = 'strategy-chart-details';
   const summary = document.createElement('summary');
   summary.className = 'strategy-chart-summary';
-  summary.textContent = typeof title === 'string' && title.trim() ? title : 'Table';
+  const titleEl = document.createElement('span');
+  titleEl.className = 'strategy-chart-summary-title';
+  titleEl.textContent = typeof title === 'string' && title.trim() ? title : 'Table';
+  summary.appendChild(titleEl);
+  const trimmedHelp = typeof helpText === 'string' ? helpText.trim() : '';
+  if (trimmedHelp) {
+    const wrap = document.createElement('span');
+    wrap.className = 'strategy-chart-help-wrap';
+    const helpBtn = document.createElement('button');
+    helpBtn.type = 'button';
+    helpBtn.className = 'strategy-chart-help-btn';
+    helpBtn.setAttribute('aria-label', 'Chart description');
+    helpBtn.textContent = '?';
+    const stopToggle = (ev) => { ev.preventDefault(); ev.stopPropagation(); };
+    helpBtn.addEventListener('mousedown', stopToggle);
+    helpBtn.addEventListener('click', stopToggle);
+    const tooltip = document.createElement('div');
+    tooltip.className = 'strategy-chart-help-tooltip';
+    tooltip.setAttribute('role', 'tooltip');
+    tooltip.textContent = trimmedHelp;
+    wrap.appendChild(helpBtn);
+    wrap.appendChild(tooltip);
+    summary.appendChild(wrap);
+  }
   details.appendChild(summary);
 
   if (openStore && typeof panelKey === 'string' && panelKey !== '') {
@@ -529,9 +621,9 @@ function renderTablePanel(container, table, title, openStore, panelKey) {
   wrap.appendChild(toolbar);
 
   const tableScroll = document.createElement('div');
-  const maxVisibleRows = 20;
+  const maxVisibleRows = 10;
   if (table.length > maxVisibleRows) {
-    tableScroll.style.cssText = 'overflow:auto;max-height:560px;';
+    tableScroll.style.cssText = 'overflow:auto;max-height:300px;';
   } else {
     tableScroll.style.cssText = 'overflow-x:auto;';
   }
@@ -557,11 +649,49 @@ function renderTablePanel(container, table, title, openStore, panelKey) {
     return String(v);
   };
 
+  let rowTimeData = [];
+  let chartHighlightedTr = null;
+
+  const setChartHighlight = (tr) => {
+    if (chartHighlightedTr && chartHighlightedTr !== tr) {
+      chartHighlightedTr.style.outline = '';
+      chartHighlightedTr.style.background = '';
+    }
+    chartHighlightedTr = tr;
+    if (tr) {
+      tr.style.outline = '1px solid rgba(255,255,255,0.25)';
+      tr.style.background = 'rgba(255,255,255,0.06)';
+    }
+  };
+
+  const clearChartHighlight = () => {
+    if (chartHighlightedTr) {
+      chartHighlightedTr.style.outline = '';
+      chartHighlightedTr.style.background = '';
+      chartHighlightedTr = null;
+    }
+  };
+
+  const buildRowTimeData = () => {
+    chartHighlightedTr = null;
+    rowTimeData = [];
+    if (!timeCol) return;
+    const trs = [...tbody.children];
+    for (let i = 0; i < trs.length; i++) {
+      const row = currentRows[i];
+      if (!row) continue;
+      const u = toUnixSeconds(row[timeCol]);
+      if (typeof u === 'number' && Number.isFinite(u) && u > 0) {
+        rowTimeData.push({ unixSec: u, tr: trs[i] });
+      }
+    }
+  };
+
   const renderBody = () => {
     tbody.innerHTML = '';
     for (const row of currentRows) {
       const tr = document.createElement('tr');
-      tr.style.cssText = 'border-bottom:1px solid #2a2e39;';
+      tr.style.cssText = 'border-bottom:1px solid #2a2e39;transition:background 0.1s;';
       for (const col of columns) {
         const td = document.createElement('td');
         td.textContent = fmtCell(row?.[col]);
@@ -570,6 +700,7 @@ function renderTablePanel(container, table, title, openStore, panelKey) {
       }
       tbody.appendChild(tr);
     }
+    buildRowTimeData();
   };
 
   const updateHeaders = () => {
@@ -589,7 +720,7 @@ function renderTablePanel(container, table, title, openStore, panelKey) {
     th.dataset.col = col;
     th.textContent = col.replace(/_/g, ' ');
     th.style.cssText =
-      'text-align:left;padding:10px 12px;border-bottom:1px solid #363a45;color:#888;font-weight:600;text-transform:capitalize;cursor:pointer;user-select:none;';
+      'position:sticky;top:0;z-index:1;text-align:left;padding:10px 12px;border-bottom:1px solid #363a45;color:#888;font-weight:600;text-transform:capitalize;cursor:pointer;user-select:none;background:#1e2130;';
     th.addEventListener('click', () => {
       if (sortCol !== col) {
         sortCol = col;
@@ -620,10 +751,60 @@ function renderTablePanel(container, table, title, openStore, panelKey) {
   updateHeaders();
   renderBody();
 
+  if (timeCol && typeof onRowHover === 'function') {
+    tbody.addEventListener('mouseover', (e) => {
+      const tr = e.target.closest('tr');
+      if (!tr || !tbody.contains(tr)) return;
+      const idx = [...tbody.children].indexOf(tr);
+      const row = currentRows[idx];
+      if (!row) return;
+      const u = toUnixSeconds(row[timeCol]);
+      if (typeof u === 'number' && Number.isFinite(u) && u > 0) {
+        for (const item of rowTimeData) {
+          item.tr.style.background = '';
+        }
+        tr.style.background = 'rgba(255,255,255,0.06)';
+        onRowHover(u);
+      }
+    });
+    tbody.addEventListener('mouseleave', () => {
+      for (const item of rowTimeData) {
+        item.tr.style.background = '';
+      }
+      onRowLeave?.();
+    });
+  }
+
+  const scrollToTime = (unixSec) => {
+    if (!rowTimeData.length) return;
+    let nearest = rowTimeData[0];
+    let nearestDist = Math.abs(rowTimeData[0].unixSec - unixSec);
+    for (const item of rowTimeData) {
+      const d = Math.abs(item.unixSec - unixSec);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearest = item;
+      }
+    }
+    const tr = nearest.tr;
+    if (!tr) return;
+    setChartHighlight(tr);
+    const containerTop = tableScroll.scrollTop;
+    const containerBottom = containerTop + tableScroll.clientHeight;
+    const trTop = tr.offsetTop;
+    const trBottom = trTop + tr.offsetHeight;
+    if (trTop < containerTop) {
+      tableScroll.scrollTop = trTop;
+    } else if (trBottom > containerBottom) {
+      tableScroll.scrollTop = trBottom - tableScroll.clientHeight;
+    }
+  };
+
   tableScroll.appendChild(tbl);
   wrap.appendChild(tableScroll);
   details.appendChild(wrap);
   container.appendChild(details);
+  return { scrollToTime, clearHighlight: clearChartHighlight };
 }
 
 function buildMetricsPanelItems(metrics) {
@@ -700,19 +881,21 @@ function renderMetricsPanel(container, metrics, openStore) {
   container.appendChild(details);
 }
 
-function renderOneChartPanel(panelHost, spec, openStore, srcIdx, catalogMap, timeZone) {
+function renderOneChartPanel(panelHost, spec, openStore, srcIdx, catalogMap, timeZone, onCrosshairMove, onRowHover, onRowLeave) {
   const panelKey = `c${srcIdx}`;
+  const chartDesc = typeof spec.description === 'string' ? spec.description.trim() : '';
   if (spec.type === 'lightweight-charts') {
-    const helpText = helpTextForLightweightChart(spec, catalogMap);
-    return renderLightweightChart(panelHost, spec, openStore, panelKey, helpText, timeZone);
+    const catalogHelp = helpTextForLightweightChart(spec, catalogMap);
+    const helpText = [chartDesc, catalogHelp].filter(Boolean).join('\n\n') || null;
+    return renderLightweightChart(panelHost, spec, openStore, panelKey, helpText, timeZone, onCrosshairMove);
   }
   if (spec.type === 'plotly') {
-    renderPlotlyChart(panelHost, spec, openStore, panelKey, null);
+    renderPlotlyChart(panelHost, spec, openStore, panelKey, chartDesc || null);
     return { chart: null, primarySeries: null };
   }
   if (spec.type === 'table') {
-    renderTablePanel(panelHost, spec.rows, spec.title, openStore, panelKey);
-    return { chart: null, primarySeries: null };
+    const tableSync = renderTablePanel(panelHost, spec.rows, spec.title, openStore, panelKey, chartDesc || null, onRowHover, onRowLeave);
+    return { chart: null, primarySeries: null, scrollToTime: tableSync?.scrollToTime ?? null, clearHighlight: tableSync?.clearHighlight ?? null };
   }
   return { chart: null, primarySeries: null };
 }
@@ -722,6 +905,9 @@ export function renderCharts(container, dataJson, options) {
 
   const lwCharts = [];
   const lwCrosshairBindings = [];
+  const lwSyncFns = [];
+  const tableSyncers = [];
+  const crosshairUnsubs = [];
   let dndSignal = null;
   const charts = dataJson?.charts;
   const base = options?.chartOrderStorageBase;
@@ -740,6 +926,39 @@ export function renderCharts(container, dataJson, options) {
         )
       : null;
 
+  const onCrosshairMove = (unixSec) => {
+    if (unixSec == null) {
+      for (const { clearHighlight } of tableSyncers) clearHighlight();
+      return;
+    }
+    for (const { scrollToTime } of tableSyncers) scrollToTime(unixSec);
+  };
+
+  const onRowHover = (unixSec) => {
+    for (const { setCrosshairAt } of lwSyncFns) {
+      setCrosshairAt(unixSec);
+    }
+  };
+
+  const onRowLeave = () => {
+    for (const { clearCrosshair } of lwSyncFns) {
+      clearCrosshair();
+    }
+  };
+
+  const collectResult = (result) => {
+    const { chart, primarySeries, setCrosshairAt, clearCrosshair, crosshairUnsub, scrollToTime, clearHighlight } = result ?? {};
+    if (chart) {
+      lwCharts.push(chart);
+      lwCrosshairBindings.push({ chart, series: primarySeries });
+      if (setCrosshairAt) lwSyncFns.push({ setCrosshairAt, clearCrosshair });
+      if (crosshairUnsub) crosshairUnsubs.push(crosshairUnsub);
+    }
+    if (scrollToTime) {
+      tableSyncers.push({ scrollToTime, clearHighlight: clearHighlight ?? (() => {}) });
+    }
+  };
+
   if (Array.isArray(charts) && charts.length > 0) {
     const n = charts.length;
     const useDnd = typeof base === 'string' && base.trim() !== '' && n > 1;
@@ -756,36 +975,14 @@ export function renderCharts(container, dataJson, options) {
         const row = createChartDndRow(srcIdx);
         list.appendChild(row);
         const inner = row.querySelector('.strategy-chart-dnd-inner');
-        const { chart, primarySeries } = renderOneChartPanel(
-          inner,
-          spec,
-          openStore,
-          srcIdx,
-          catalogMap,
-          timeZone,
-        );
-        if (chart) {
-          lwCharts.push(chart);
-          lwCrosshairBindings.push({ chart, series: primarySeries });
-        }
+        collectResult(renderOneChartPanel(inner, spec, openStore, srcIdx, catalogMap, timeZone, onCrosshairMove, onRowHover, onRowLeave));
       }
       dndSignal = new AbortController();
       setupChartPanelDnD(list, storageKey, n, dndSignal.signal);
     } else {
       for (let srcIdx = 0; srcIdx < charts.length; srcIdx++) {
         const spec = charts[srcIdx];
-        const { chart, primarySeries } = renderOneChartPanel(
-          container,
-          spec,
-          openStore,
-          srcIdx,
-          catalogMap,
-          timeZone,
-        );
-        if (chart) {
-          lwCharts.push(chart);
-          lwCrosshairBindings.push({ chart, series: primarySeries });
-        }
+        collectResult(renderOneChartPanel(container, spec, openStore, srcIdx, catalogMap, timeZone, onCrosshairMove, onRowHover, onRowLeave));
       }
     }
   }
@@ -797,6 +994,7 @@ export function renderCharts(container, dataJson, options) {
     lwCrosshairBindings,
     detachChartDnD: () => {
       dndSignal?.abort();
+      for (const unsub of crosshairUnsubs) unsub();
     },
   };
 }

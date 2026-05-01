@@ -79,6 +79,7 @@ class LightweightChartsChart(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["lightweight-charts"] = "lightweight-charts"
     title: str
+    description: str = ""
     series: list[LwcSeries] = Field(default_factory=list)
 
 
@@ -86,6 +87,7 @@ class PlotlyChart(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["plotly"] = "plotly"
     title: str
+    description: str = ""
     data: list[dict[str, Any]] = Field(default_factory=list)
     layout: dict[str, Any] = Field(default_factory=dict)
 
@@ -94,6 +96,7 @@ class TableChart(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["table"] = "table"
     title: str = ""
+    description: str = ""
     rows: list[dict[str, Any]] = Field(default_factory=list)
 
 
