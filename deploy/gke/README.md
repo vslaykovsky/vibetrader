@@ -13,7 +13,7 @@ From the repo root:
 ./scripts/gke_alpaca_listener.sh
 ```
 
-The backend defaults `LIVE_RUNNER_IMAGE` to `us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-live-runner:latest`; set it in `vibetrader-config` only to override (see `backend/k8s/live-runner-deployment.example.yaml`).
+The backend defaults `LIVE_RUNNER_IMAGE` to `us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-live-runner:latest`; set it in `vibetrader-config` only to override (see `deploy/gke/live-runner-deployment.example.yaml`).
 
 ### Codex `exec --full-auto` (bubblewrap)
 

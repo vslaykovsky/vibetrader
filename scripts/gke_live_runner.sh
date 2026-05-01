@@ -10,4 +10,4 @@ docker buildx build --platform linux/amd64 -f backend/Dockerfile.runner -t us-ce
 
 gcloud container clusters get-credentials autopilot-cluster-1 --region us-central1 --project traderchat
 
-kubectl apply -f backend/k8s/live-runner-rbac.yaml
+kubectl apply -f deploy/gke/live-runner-rbac.yaml

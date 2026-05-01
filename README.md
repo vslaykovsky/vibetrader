@@ -128,9 +128,9 @@ In Kubernetes mode the backend creates a per-run `Deployment` using these enviro
 
 RBAC: the backend needs permission to create/delete deployments in its namespace. Apply:
 
-- `backend/k8s/live-runner-rbac.yaml`
+- `deploy/gke/live-runner-rbac.yaml`
 
-Backend manifest snippet: see `backend/k8s/live-runner-deployment.example.yaml` for the env vars expected by the backend.
+Backend manifest snippet: see `deploy/gke/live-runner-deployment.example.yaml` for the env vars expected by the backend.
 
 Runner image:
 
@@ -150,10 +150,10 @@ Images are fixed to `us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader
 
 - **Frontend**: `./scripts/gke_frontend.sh`
 - **Backend**: `./scripts/gke_backend.sh`
-- **Live runner** (`backend/Dockerfile.runner` + `backend/k8s/live-runner-rbac.yaml`): `./scripts/gke_live_runner.sh`
+- **Live runner** (`backend/Dockerfile.runner` + `deploy/gke/live-runner-rbac.yaml`): `./scripts/gke_live_runner.sh`
 - **Alpaca listener** (`backend/scripts/alpaca_live_listener.py` as one long-lived replica): `./scripts/gke_alpaca_listener.sh`
 
-You may set `LIVE_RUNNER_IMAGE` in `vibetrader-config` to override the same default URI (see `backend/k8s/live-runner-deployment.example.yaml`). Rebuild and push the live-runner image when runner code or dependencies change.
+You may set `LIVE_RUNNER_IMAGE` in `vibetrader-config` to override the same default URI (see `deploy/gke/live-runner-deployment.example.yaml`). Rebuild and push the live-runner image when runner code or dependencies change.
 
 If you have docker related issues: 
 ```
