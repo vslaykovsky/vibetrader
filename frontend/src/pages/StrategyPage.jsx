@@ -306,6 +306,44 @@ function hasRenderableChartOutput(output) {
   return Array.isArray(chartData.charts) && chartData.charts.length > 0;
 }
 
+function parsedChartOutput(output) {
+  if (!output || typeof output !== 'object') {
+    return null;
+  }
+  const raw = output['backtest.json'] ?? output['data.json'];
+  if (raw == null) {
+    return null;
+  }
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  return raw && typeof raw === 'object' ? raw : null;
+}
+
+function hasStrategyTrades(output) {
+  const chartData = parsedChartOutput(output);
+  const embeddedMetrics = chartData && typeof chartData.metrics === 'object' ? chartData.metrics : null;
+  const metrics = embeddedMetrics || metricsJsonFromOutput(output);
+  const numTrades = Number(metrics?.num_trades);
+  if (Number.isFinite(numTrades)) {
+    return numTrades > 0;
+  }
+  const tradesChart = Array.isArray(chartData?.charts)
+    ? chartData.charts.find(
+        (chart) =>
+          chart?.type === 'table' &&
+          typeof chart.title === 'string' &&
+          chart.title.trim().toLowerCase() === 'trades',
+      )
+    : null;
+  return Array.isArray(tradesChart?.rows) && tradesChart.rows.length > 0;
+}
+
 function strategyCliDescriptionFromOutput(output) {
   if (!output || typeof output !== 'object') {
     return undefined;
@@ -1577,8 +1615,17 @@ export function StrategyPage() {
     (!loading && Array.isArray(messages) && messages.length > 0) ||
     (Number.isFinite(Number(currentThreadMeta?.message_count)) &&
       Number(currentThreadMeta?.message_count) > 0);
-  const deployDisabled = loading || showProcessing || !strategyAvailable;
-  const deployTitle = deployDisabled ? 'Strategy not available yet' : 'Deploy live';
+  const deployableStrategyHasTrades = hasStrategyTrades(output);
+  const deployDisabled = loading || showProcessing || !strategyAvailable || !deployableStrategyHasTrades;
+  const deployTitle = loading
+    ? 'Strategy is loading'
+    : showProcessing
+      ? 'Wait for the strategy run to finish'
+      : !strategyAvailable
+        ? 'Strategy not available yet'
+        : !deployableStrategyHasTrades
+          ? 'Live deployment requires a strategy run with at least one trade'
+          : 'Deploy live';
 
   const chatPanelStyle = isNarrow
     ? undefined
@@ -1788,103 +1835,24 @@ export function StrategyPage() {
       ) : null}
 
       <section className="canvas-panel canvas-panel-charts" style={canvasPanelStyle}>
-        {showSimulationTab ? (
-          <nav className="canvas-tabs" aria-label="Canvas view">
-            <button
-              type="button"
-              className={`canvas-tab${canvasTab === 'strategy' ? ' is-active' : ''}`}
-              onClick={() => setCanvasTab('strategy')}
-            >
-              Strategy
-            </button>
-            <button
-              type="button"
-              className={`canvas-tab${canvasTab === 'simulation' ? ' is-active' : ''}`}
-              onClick={() => setCanvasTab('simulation')}
-            >
-              Simulation
-            </button>
-          </nav>
-        ) : null}
-        {canvasTab === 'simulation' && showSimulationTab ? (
-          <SimulationPanel
-            threadId={threadId}
-            apiBaseUrl={API_BASE_URL}
-            authFetch={authFetch}
-            getAccessToken={getAccessToken}
-          />
-        ) : null}
-        {canvasTab === 'strategy' || !showSimulationTab ? (
-        <>
         <header className="canvas-hero">
-          <div className="canvas-hero-actions">
-            {viewingRunId ? (
-              <button
-                type="button"
-                className="button-back-to-current"
-                onClick={() => {
-                  setViewingRunId(null);
-                  setHistoricalCanvas(null);
-                  navigate(
-                    { pathname: location.pathname, search: location.search, hash: '' },
-                    { replace: true },
-                  );
-                }}
-              >
-                Back to current
-              </button>
-            ) : null}
+          {viewingRunId ? (
             <button
               type="button"
-              className="button-deploy-live"
-              disabled={deployDisabled}
+              className="button-back-to-current"
               onClick={() => {
-                if (deployDisabled) return;
-                setDeployModalOpen(true);
+                setViewingRunId(null);
+                setHistoricalCanvas(null);
+                navigate(
+                  { pathname: location.pathname, search: location.search, hash: '' },
+                  { replace: true },
+                );
               }}
-              aria-label="Deploy live"
-              aria-disabled={deployDisabled}
-              title={deployTitle}
             >
-              <span aria-hidden>🚀</span>
+              Back to current
             </button>
-            <button
-              type="button"
-              className="button-delete-thread"
-              onClick={handleDeleteThread}
-              disabled={deletingThread || showProcessing || Boolean(viewingRunId)}
-              aria-label="Delete strategy"
-              title={viewingRunId ? 'Return to current thread to delete' : 'Delete strategy'}
-            >
-              <svg viewBox="0 0 24 24" fill="none" aria-hidden>
-                <path
-                  d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"
-                  stroke="currentColor"
-                  strokeWidth="1.7"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </button>
-            {isNarrow ? (
-              <button
-                type="button"
-                className="button-close-canvas"
-                onClick={() => setMobileCanvasOpen(false)}
-                aria-label="Close strategy view"
-                title="Close"
-              >
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path
-                    d="M6 6l12 12M18 6L6 18"
-                    stroke="currentColor"
-                    strokeWidth="2.6"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
-            ) : null}
-          </div>
+          ) : null}
+          <div className="canvas-hero-main">
           <div className="canvas-hero-title-row">
             {editingCanvasTitle && String(displayStrategyRunId || '').trim() ? (
               <input
@@ -1936,7 +1904,99 @@ export function StrategyPage() {
               </button>
             ) : null}
           </div>
+            <div className="canvas-hero-actions">
+              <button
+                type="button"
+                className={`canvas-header-action${canvasTab === 'strategy' || !showSimulationTab ? ' is-active' : ''}`}
+                onClick={() => setCanvasTab('strategy')}
+                aria-pressed={canvasTab === 'strategy' || !showSimulationTab}
+              >
+                Backtest
+              </button>
+              <span
+                className="canvas-header-action-wrap"
+                title={showSimulationTab ? 'Simulation' : 'Run a backtest first'}
+              >
+                <button
+                  type="button"
+                  className={`canvas-header-action${canvasTab === 'simulation' && showSimulationTab ? ' is-active' : ''}`}
+                  onClick={() => {
+                    if (showSimulationTab) {
+                      setCanvasTab('simulation');
+                    }
+                  }}
+                  disabled={!showSimulationTab}
+                  aria-pressed={canvasTab === 'simulation' && showSimulationTab}
+                  title={showSimulationTab ? 'Simulation' : 'Run a backtest first'}
+                >
+                  Simulation
+                </button>
+              </span>
+              <span className="canvas-header-action-wrap" title={deployTitle}>
+                <button
+                  type="button"
+                  className="canvas-header-action"
+                  disabled={deployDisabled}
+                  onClick={() => {
+                    if (deployDisabled) return;
+                    setDeployModalOpen(true);
+                  }}
+                  aria-label="Deploy live"
+                  aria-disabled={deployDisabled}
+                  title={deployTitle}
+                >
+                  Live
+                </button>
+              </span>
+              <button
+                type="button"
+                className="canvas-header-action canvas-header-action-icon canvas-header-action-danger"
+                onClick={handleDeleteThread}
+                disabled={deletingThread || showProcessing || Boolean(viewingRunId)}
+                aria-label="Delete strategy"
+                title={viewingRunId ? 'Return to current thread to delete' : 'Delete strategy'}
+              >
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path
+                    d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+              {isNarrow ? (
+                <button
+                  type="button"
+                  className="button-close-canvas"
+                  onClick={() => setMobileCanvasOpen(false)}
+                  aria-label="Close strategy view"
+                  title="Close"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path
+                      d="M6 6l12 12M18 6L6 18"
+                      stroke="currentColor"
+                      strokeWidth="2.6"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </button>
+              ) : null}
+            </div>
+          </div>
         </header>
+        {canvasTab === 'simulation' && showSimulationTab ? (
+          <SimulationPanel
+            threadId={threadId}
+            apiBaseUrl={API_BASE_URL}
+            authFetch={authFetch}
+            getAccessToken={getAccessToken}
+          />
+        ) : null}
+        {canvasTab === 'strategy' || !showSimulationTab ? (
+        <>
         {showCliDescription ? (
           <article className="canvas-text-block" aria-label="Strategy description">
             <h3 className="canvas-text-block-title">Description</h3>
