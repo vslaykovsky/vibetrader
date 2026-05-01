@@ -146,11 +146,12 @@ Operational tips:
 
 ## Deploy (GKE)
 
-Images are fixed to `us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-frontend:latest`, `…/vibetrader-backend:latest`, and `…/vibetrader-live-runner:latest`. Cluster: `autopilot-cluster-1` in `us-central1`, project `traderchat`, namespace `vibetrader`.
+Images are fixed to `us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-frontend:latest`, `…/vibetrader-backend:latest`, `…/vibetrader-live-runner:latest`, and `…/vibetrader-alpaca-listener:latest`. Cluster: `autopilot-cluster-1` in `us-central1`, project `traderchat`, namespace `vibetrader`.
 
 - **Frontend**: `./scripts/gke_frontend.sh`
 - **Backend**: `./scripts/gke_backend.sh`
 - **Live runner** (`backend/Dockerfile.runner` + `backend/k8s/live-runner-rbac.yaml`): `./scripts/gke_live_runner.sh`
+- **Alpaca listener** (`backend/scripts/alpaca_live_listener.py` as one long-lived replica): `./scripts/gke_alpaca_listener.sh`
 
 You may set `LIVE_RUNNER_IMAGE` in `vibetrader-config` to override the same default URI (see `backend/k8s/live-runner-deployment.example.yaml`). Rebuild and push the live-runner image when runner code or dependencies change.
 

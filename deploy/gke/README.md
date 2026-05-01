@@ -2,7 +2,7 @@
 
 ### Build, push, and deploy (Artifact Registry + GKE)
 
-Images and cluster are hardcoded in `scripts/gke_*.sh` to `us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-frontend:latest`, `…/vibetrader-backend:latest`, `…/vibetrader-live-runner:latest`, cluster `autopilot-cluster-1` (`us-central1`), project `traderchat`.
+Images and cluster are hardcoded in `scripts/gke_*.sh` to `us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-frontend:latest`, `…/vibetrader-backend:latest`, `…/vibetrader-live-runner:latest`, `…/vibetrader-alpaca-listener:latest`, cluster `autopilot-cluster-1` (`us-central1`), project `traderchat`.
 
 From the repo root:
 
@@ -10,6 +10,7 @@ From the repo root:
 ./scripts/gke_frontend.sh
 ./scripts/gke_backend.sh
 ./scripts/gke_live_runner.sh
+./scripts/gke_alpaca_listener.sh
 ```
 
 The backend defaults `LIVE_RUNNER_IMAGE` to `us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-live-runner:latest`; set it in `vibetrader-config` only to override (see `backend/k8s/live-runner-deployment.example.yaml`).

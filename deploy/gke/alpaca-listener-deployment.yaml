@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vibetrader-alpaca-listener
+  namespace: vibetrader
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: vibetrader-alpaca-listener
+  template:
+    metadata:
+      labels:
+        app: vibetrader-alpaca-listener
+    spec:
+      containers:
+        - name: alpaca-listener
+          image: us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-alpaca-listener:latest
+          imagePullPolicy: Always
+          args:
+            - python
+            - scripts/alpaca_live_listener.py
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "250m"
+              memory: "512Mi"
+          envFrom:
+            - configMapRef:
+                name: vibetrader-config
+                optional: false
