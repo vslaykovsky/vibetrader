@@ -271,6 +271,8 @@ def _build_subscription_charts(
             else:
                 period = getattr(spec, "period", None)
                 sub_title = f"{kind} {period}" if period is not None else kind
+                if ticker == primary_ticker and markers:
+                    spec_series[0] = spec_series[0].model_copy(update={"markers": markers})
                 ticker_aux.append(
                     backtest_utils.LightweightChartsChart(
                         title=f"{ticker} {sub_title} ({base_scale})",
@@ -303,6 +305,8 @@ def _build_subscription_charts(
                 if _output_indicator_name_is_price_overlay(out_name):
                     price_series.append(line)
                 else:
+                    if markers:
+                        line = line.model_copy(update={"markers": markers})
                     ticker_aux.append(
                         backtest_utils.LightweightChartsChart(
                             title=f"{ticker} output:{out_name} ({base_scale})",
@@ -347,6 +351,7 @@ def _build_subscription_charts(
                         label=f"{spec.ticker} renko",
                         options={"upColor": "#26a69a", "downColor": "#ef5350"},
                         data=points,
+                        markers=(markers or None) if spec.ticker == primary_ticker else None,
                     )
                 ],
             )
@@ -1005,6 +1010,7 @@ def simulate(
                 label="Strategy equity",
                 options={"color": "#2962ff", "lineWidth": 2},
                 data=equity_points,
+                markers=markers or None,
             ),
             backtest_utils.LwcTimeValueSeries(
                 type="Line",

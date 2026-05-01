@@ -2708,6 +2708,24 @@ html[data-theme='dark'] .chat-compose-fullscreen-send {
   border-color: #5c6370;
 }
 
+.strategy-chart-remove-wrap {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.strategy-chart-remove-btn {
+  width: auto;
+  height: auto;
+  border: 0;
+  background: transparent;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.strategy-chart-remove-btn:hover {
+  color: #ef5350;
+}
+
 .strategy-chart-help-tooltip {
   position: absolute;
   left: auto;
@@ -3427,6 +3445,31 @@ html[data-theme='dark'] .simulation-btn-primary:hover:not(:disabled) {
   color: var(--muted);
   line-height: 1.3;
   padding: 0 2px;
+}
+
+.simulation-chart-pane-caption--clickable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.simulation-chart-pane-caption--clickable:hover {
+  color: var(--fg);
+}
+
+.simulation-chart-pane-caption-chevron {
+  font-size: 0.65rem;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.simulation-chart-remove-wrap {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.simulation-chart-remove-btn:hover {
+  color: #ef5350;
+  border-color: #ef5350;
 }
 
 .simulation-chart-pane-caption-text {

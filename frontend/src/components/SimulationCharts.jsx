@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   MismatchDirection,
   createChart,
@@ -61,6 +61,7 @@ export function SimulationCharts({
   const candleSeriesRef = useRef(null);
   const lineSeriesRef = useRef(null);
   const markersPluginRef = useRef(null);
+  const lineMarkersPluginRef = useRef(null);
   const prevLenRef = useRef(0);
   /** First candle time before last commit — detect prepended OHLC (older rows added before previous head). */
   const prevFirstBarTimeRef = useRef(null);
@@ -75,6 +76,11 @@ export function SimulationCharts({
   const livePlaybackRef = useRef(false);
   livePlaybackRef.current = livePlayback;
   const lastCandleLenRef = useRef(0);
+
+  const [priceCollapsed, setPriceCollapsed] = useState(false);
+  const [equityCollapsed, setEquityCollapsed] = useState(false);
+  const [priceVisible, setPriceVisible] = useState(true);
+  const [equityVisible, setEquityVisible] = useState(true);
 
   const catalogHelpText = useMemo(() => {
     if (!indicatorSeriesCatalog.length) return '';
@@ -131,6 +137,7 @@ export function SimulationCharts({
     });
 
     markersPluginRef.current = createSeriesMarkers(candleSeries, []);
+    lineMarkersPluginRef.current = createSeriesMarkers(lineSeries, []);
 
     const detachTs = attachSyncedTimeScales([chartPrice, chartEq], { mode: 'leader' });
     const detachXh = attachSyncedCrosshair([
@@ -271,8 +278,10 @@ export function SimulationCharts({
     lastEqSigRef.current = '';
 
     const ro = new ResizeObserver(() => {
-      chartPrice.resize(topEl.clientWidth, topEl.clientHeight || 280);
-      chartEq.resize(botEl.clientWidth, botEl.clientHeight || 160);
+      const pw = topEl.clientWidth, ph = topEl.clientHeight;
+      if (pw > 0 && ph > 0) chartPrice.resize(pw, ph);
+      const ew = botEl.clientWidth, eh = botEl.clientHeight;
+      if (ew > 0 && eh > 0) chartEq.resize(ew, eh);
     });
     ro.observe(topEl);
     ro.observe(botEl);
@@ -284,6 +293,7 @@ export function SimulationCharts({
       candleSeriesRef.current = null;
       lineSeriesRef.current = null;
       markersPluginRef.current = null;
+      lineMarkersPluginRef.current = null;
     };
   }, [chartTf, timeZone]);
 
@@ -560,6 +570,7 @@ export function SimulationCharts({
         ? [...markers].sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0))
         : [];
     markersPluginRef.current?.setMarkers(sortedMarkers);
+    lineMarkersPluginRef.current?.setMarkers(sortedMarkers);
 
     if (hasLocked) {
       /** ``fitContent`` / right padding only when preview lock window changes — not on prepend (would reset pan/zoom). */
@@ -614,40 +625,80 @@ export function SimulationCharts({
 
   return (
     <div className="simulation-charts-stack" aria-label="Simulation price and equity charts">
-      <div className="simulation-chart-pane">
-        <div className="simulation-chart-pane-caption">
-          <span className="simulation-chart-pane-caption-text">Price</span>
-          {catalogHelpText ? (
-            <span className="strategy-chart-help-wrap">
+      {priceVisible && (
+        <div className="simulation-chart-pane">
+          <div
+            className="simulation-chart-pane-caption simulation-chart-pane-caption--clickable"
+            onClick={() => setPriceCollapsed((c) => !c)}
+          >
+            <span className="simulation-chart-pane-caption-chevron">
+              {priceCollapsed ? '▶' : '▼'}
+            </span>
+            <span className="simulation-chart-pane-caption-text">Price</span>
+            {catalogHelpText ? (
+              <span className="strategy-chart-help-wrap">
+                <button
+                  type="button"
+                  className="strategy-chart-help-btn"
+                  aria-label="Output series descriptions"
+                  onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                >
+                  ?
+                </button>
+                <div className="strategy-chart-help-tooltip" role="tooltip">
+                  {catalogHelpText}
+                </div>
+              </span>
+            ) : null}
+            <span className="strategy-chart-help-wrap simulation-chart-remove-wrap">
               <button
                 type="button"
-                className="strategy-chart-help-btn"
-                aria-label="Output series descriptions"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
+                className="strategy-chart-help-btn simulation-chart-remove-btn"
+                aria-label="Remove price chart"
+                onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setPriceVisible(false); }}
               >
-                ?
+                x
               </button>
-              <div className="strategy-chart-help-tooltip" role="tooltip">
-                {catalogHelpText}
-              </div>
             </span>
-          ) : null}
+          </div>
+          <div
+            className="simulation-chart-host simulation-chart-host--price"
+            ref={priceHostRef}
+            style={priceCollapsed ? { display: 'none' } : undefined}
+          />
         </div>
-        <div className="simulation-chart-host simulation-chart-host--price" ref={priceHostRef} />
-      </div>
-      <div className="simulation-chart-pane">
-        <div className="simulation-chart-pane-caption">
-          <span className="simulation-chart-pane-caption-text">Equity</span>
+      )}
+      {equityVisible && (
+        <div className="simulation-chart-pane">
+          <div
+            className="simulation-chart-pane-caption simulation-chart-pane-caption--clickable"
+            onClick={() => setEquityCollapsed((c) => !c)}
+          >
+            <span className="simulation-chart-pane-caption-chevron">
+              {equityCollapsed ? '▶' : '▼'}
+            </span>
+            <span className="simulation-chart-pane-caption-text">Equity</span>
+            <span className="strategy-chart-help-wrap simulation-chart-remove-wrap">
+              <button
+                type="button"
+                className="strategy-chart-help-btn simulation-chart-remove-btn"
+                aria-label="Remove equity chart"
+                onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setEquityVisible(false); }}
+              >
+                x
+              </button>
+            </span>
+          </div>
+          <div
+            className="simulation-chart-host simulation-chart-host--equity"
+            ref={equityHostRef}
+            style={equityCollapsed ? { display: 'none' } : undefined}
+          />
         </div>
-        <div className="simulation-chart-host simulation-chart-host--equity" ref={equityHostRef} />
-      </div>
+      )}
     </div>
   );
 }

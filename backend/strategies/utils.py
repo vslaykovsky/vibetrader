@@ -86,6 +86,7 @@ class LightweightChartsChart(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["lightweight-charts"] = "lightweight-charts"
     title: str
+    description: str = ""
     series: list[LwcSeries] = Field(default_factory=list)
 
 

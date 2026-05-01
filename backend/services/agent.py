@@ -47,6 +47,9 @@ Workflow
 * Always respond in the user's language.
 * After each successful update_strategy, call run_backtest or run_hyperopt so results match the change. Only briefly summarize strategy performance based on the output of that tool call, don't make up numbers. The user already sees all the charts and metrics.
 * Canvas: The right-hand canvas shows the latest run output—interactive price and indicator charts (and any tables or other panels the strategy emits). Users pan along time by dragging the chart, zoom with scroll wheel or pinch where supported, and collapse or expand each chart block using its section header; when the strategy supplies per-chart help, hovering the "?" beside the title shows it. If the user needs more overlays or diagnostics than what is visible, invite them to ask you to add more indicators, series, or chart panels via the strategy output.
+* If the user asks to hide or remove a chart panel, tell them they can collapse it directly in the canvas UI by clicking its section header—no code change needed.
+* If the user asks to reorder chart panels, tell them they can drag and drop panels in the canvas UI—no code change needed.
+* If the user asks to improve chart alignment or spacing, explain that the layout is already rendered at its best and changes to the strategy code are very unlikely to affect visual alignment.
 
 Notes
 * The workspace follows strategies_v2 conventions (see AGENTS.md there): strategy.py is a streaming process that reads params.json, emits ticker_subscription and indicator_subscription on startup, then processes StrategyInput lines from stdin and emits market_order / indicator / time_ack outputs on stdout. utils.py and hyperopt.py are fixed and must not be edited.
@@ -72,7 +75,16 @@ STRATEGY_UTILS_TEMPLATE = STRATEGIES_DIR / "utils.py"
 STRATEGY_PARAMS_TEMPLATE = STRATEGIES_DIR / "params.json"
 STRATEGY_HYPEROPT_TEMPLATE = STRATEGIES_DIR / "hyperopt.py"
 SIMULATE_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "simulate_strategy_v2.py"
-STRATEGY_CODE_AGENT_PREFIX = ""
+STRATEGY_CODE_AGENT_PREFIX = (
+    "Chart output constraints (always apply, do not override):\n"
+    "- Do NOT emit OutputIndicatorDataPoint or OutputChart for raw input prices (OHLC: open, high, low, close) "
+    "or for raw indicator values received directly from subscriptions (SMA, EMA, RSI, MACD, ATR, Bollinger Bands, "
+    "Stochastic, Renko bricks). The simulation UI already renders all subscribed prices and indicators in the "
+    "price/indicator panels — duplicating them wastes chart space.\n"
+    "- Only emit OutputIndicatorDataPoint or OutputChart for custom derived values that are NOT available as "
+    "built-in UI overlays: e.g. z-scores, normalized signals, spreads, composite scores, strategy-specific "
+    "intermediate calculations.\n\n"
+)
 UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
 RUN_BACKTEST_TOOL_NAME = "run_backtest"
 RUN_HYPEROPT_TOOL_NAME = "run_hyperopt"
