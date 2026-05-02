@@ -43,6 +43,7 @@ class Position:
 class Portfolio:
     initial_deposit: float
     ticker: str
+    max_leverage: float = 1.0
     cash: float = field(init=False)
     positions: dict[str, Position] = field(default_factory=dict)
     realized_pnl: float = field(init=False, default=0.0)
@@ -53,6 +54,9 @@ class Portfolio:
     def __post_init__(self) -> None:
         if self.initial_deposit <= 0:
             raise ValueError("initial_deposit must be positive")
+        self.max_leverage = float(self.max_leverage)
+        if self.max_leverage < 1:
+            raise ValueError("max_leverage must be at least 1")
         self.cash = float(self.initial_deposit)
         self.ticker = str(self.ticker).strip()
 
@@ -190,6 +194,20 @@ class Portfolio:
                 )
                 return
             qty = spend / price
+            if self._exceeds_max_leverage(
+                ticker=t, projected_qty=before_qty + qty, price=price
+            ):
+                self._record_invalid_order(
+                    ticker=t,
+                    direction=d,
+                    deposit_ratio=dr,
+                    price=price,
+                    unixtime=unixtime,
+                    reason="max_leverage exceeded",
+                    explanation=reason,
+                    qty=qty,
+                )
+                return
             if pos is None or pos.qty <= 0:
                 self.positions[t] = Position(qty=qty, avg_entry_price=price)
             else:
@@ -249,6 +267,20 @@ class Portfolio:
                 basis = self.initial_deposit
             qty = basis * dr / price
             proceeds = qty * price
+            if self._exceeds_max_leverage(
+                ticker=t, projected_qty=before_qty - qty, price=price
+            ):
+                self._record_invalid_order(
+                    ticker=t,
+                    direction=d,
+                    deposit_ratio=dr,
+                    price=price,
+                    unixtime=unixtime,
+                    reason="max_leverage exceeded",
+                    explanation=reason,
+                    qty=qty,
+                )
+                return
             self.cash += proceeds
             if pos is None or pos.qty >= 0:
                 self.positions[t] = Position(qty=-qty, avg_entry_price=price)
@@ -384,6 +416,32 @@ class Portfolio:
                 reason=str(getattr(item, "short_explanation", "") or reason),
                 cash_basis=cash_basis,
             )
+
+    def _exceeds_max_leverage(
+        self, *, ticker: str, projected_qty: float, price: float
+    ) -> bool:
+        marks = {ticker: price}
+        eq = self.equity(marks)
+        if eq <= 0:
+            return True
+        quantities = {t: pos.qty for t, pos in self.positions.items()}
+        if abs(projected_qty) <= 1e-12:
+            quantities.pop(ticker, None)
+        else:
+            quantities[ticker] = projected_qty
+        gross = self._gross_exposure(marks, quantities)
+        return gross > eq * float(self.max_leverage) + 1e-9
+
+    def _gross_exposure(self, marks: dict[str, float], quantities: dict[str, float]) -> float:
+        total = 0.0
+        for t, qty in quantities.items():
+            if abs(qty) <= 1e-12:
+                continue
+            pos = self.positions.get(t)
+            px = marks.get(t, self.last_marks.get(t, pos.avg_entry_price if pos else 0.0))
+            if px > 0:
+                total += abs(qty) * px
+        return total
 
     def _record_invalid_order_from_item(
         self,

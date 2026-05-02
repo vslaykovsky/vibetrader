@@ -22,6 +22,22 @@ def read_strategy_scale(params_path: Path | None = None) -> str:
     return "1d"
 
 
+def read_strategy_max_leverage(params_path: Path | None = None) -> float:
+    path = params_path or _DEFAULT_PARAMS
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return 1.0
+    raw = data.get("max_leverage", 1.0)
+    try:
+        max_leverage = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError("params.json 'max_leverage' must be a number")
+    if max_leverage < 1:
+        raise ValueError("params.json 'max_leverage' must be at least 1")
+    return max_leverage
+
+
 def estimate_source_bar_count(start: date, end: date, scale: str) -> int:
     """Upper-bound estimate of bars the host will iterate for the given range and strategy scale."""
     days = max(1, (end - start).days + 1)

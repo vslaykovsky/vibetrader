@@ -38,6 +38,7 @@ from application.services.simulation_driver import (
     expand_step_to_lines,
     iter_simulation_steps,
 )
+from application.services.simulation_limits import read_strategy_max_leverage
 from application.services.strategy_runtime import StrategyRuntime, StrategyRuntimeError
 from application.use_cases.strategy_simulate import (
     _indicator_subscriptions_from_startup,
@@ -472,6 +473,7 @@ def simulate(
     provider: str | None,
     entry_script: str,
     simulation_scale: str | None = None,
+    max_leverage: float = 1.0,
 ) -> tuple[
     backtest_utils.DataJson,
     list[dict[str, str]] | None,
@@ -650,7 +652,11 @@ def simulate(
                 "progress_step_percent": progress_step,
             }
         )
-        portfolio = Portfolio(initial_deposit=initial_deposit, ticker=primary_ticker)
+        portfolio = Portfolio(
+            initial_deposit=initial_deposit,
+            ticker=primary_ticker,
+            max_leverage=max_leverage,
+        )
 
         markers: dict[str, list[backtest_utils.LwcMarker]] = {}
         equity_points: list[backtest_utils.LwcTimeValuePoint] = []
@@ -1246,8 +1252,10 @@ def main(argv: list[str]) -> int:
 
     provider = params.get("provider")
     simulation_scale = params.get("simulation_scale")
+    max_leverage = read_strategy_max_leverage(params_path)
     logger.info(
-        "run entry=%s workspace=%s start=%s end=%s initial_deposit=%s provider=%s simulation_scale=%s",
+        "run entry=%s workspace=%s start=%s end=%s initial_deposit=%s "
+        "provider=%s simulation_scale=%s max_leverage=%s",
         entry_path,
         workspace,
         start_d,
@@ -1255,6 +1263,7 @@ def main(argv: list[str]) -> int:
         deposit,
         provider,
         simulation_scale,
+        max_leverage,
     )
 
     doc, indicator_catalog, trained_model_params = simulate(
@@ -1265,6 +1274,7 @@ def main(argv: list[str]) -> int:
         provider=provider,
         entry_script=entry_script,
         simulation_scale=simulation_scale,
+        max_leverage=max_leverage,
     )
     backtest_path, metrics_path = _write_workspace_outputs(
         doc,

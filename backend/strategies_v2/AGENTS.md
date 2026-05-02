@@ -22,7 +22,7 @@ These instructions apply inside each strategy workspace copied from `backend/str
 `params.json` is the single source of truth for strategy configuration. Include:
 
 - Strategy metadata: `ticker`, native bar `scale`, `strategy_name` without ticker text, and short UI `description`.
-- Host inputs: `start_date`, `end_date`, positive `initial_deposit`, optional `provider` (`alpaca`, `moex`, `auto`), and optional `simulation_scale` (`1m`, `15m`, `1h`, `4h`, `1d`, `1w`; defaults to `scale`).
+- Host inputs: `start_date`, `end_date`, positive `initial_deposit`, optional `provider` (`alpaca`, `moex`, `auto`), optional `simulation_scale` (`1m`, `15m`, `1h`, `4h`, `1d`, `1w`; defaults to `scale`), and optional `max_leverage` (defaults to `1.0`, no margin).
 - Strategy tunables: periods, thresholds, lookbacks, sizing, Renko brick settings, model hyperparameters chosen before fitting, and similar knobs.
 - `run_mode: "train" | "test"` only for real trainable model strategies like boosted trees and ANNs, not simple indicator or rule strategies.
 

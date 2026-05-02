@@ -1,10 +1,13 @@
 from datetime import date, timedelta
 from pathlib import Path
 
+import pytest
+
 from application.services.simulation_limits import (
     CHUNK_BAR_BUDGET,
     estimate_source_bar_count,
     plan_display_bars_fetch_chunks,
+    read_strategy_max_leverage,
     read_strategy_scale,
     simulation_start_validation_error,
 )
@@ -37,6 +40,19 @@ def test_read_strategy_scale_reads_params(tmp_path: Path):
     p = tmp_path / "params.json"
     p.write_text('{"scale": "4H", "ticker": "X"}', encoding="utf-8")
     assert read_strategy_scale(p) == "4h"
+
+
+def test_read_strategy_max_leverage_reads_params(tmp_path: Path):
+    p = tmp_path / "params.json"
+    p.write_text('{"max_leverage": "2.5"}', encoding="utf-8")
+    assert read_strategy_max_leverage(p) == 2.5
+
+    p.write_text('{"ticker": "X"}', encoding="utf-8")
+    assert read_strategy_max_leverage(p) == 1.0
+
+    p.write_text('{"max_leverage": 0.5}', encoding="utf-8")
+    with pytest.raises(ValueError):
+        read_strategy_max_leverage(p)
 
 
 def test_plan_display_chunks_minute_year_stays_under_cap_per_chunk():

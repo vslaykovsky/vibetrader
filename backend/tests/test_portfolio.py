@@ -83,6 +83,61 @@ def test_portfolio_apply_market_orders_uses_batch_cash_for_buys():
         pytest.approx(100.0),
     ]
 
+    p4 = Portfolio(initial_deposit=10_000.0, ticker="SPY")
+    p4.apply_market_order(direction="sell", deposit_ratio=1.0, price=100.0, unixtime=1)
+    p4.apply_market_orders(
+        [
+            OutputMarketTradeOrder(ticker="AAPL", direction="buy", deposit_ratio=0.5),
+            OutputMarketTradeOrder(ticker="MSFT", direction="buy", deposit_ratio=0.5),
+        ],
+        prices={"AAPL": 50.0, "MSFT": 25.0},
+        unixtime=2,
+    )
+    assert p4.cash == pytest.approx(20_000.0)
+    assert sorted(p4.positions) == ["SPY"]
+    assert [t.action for t in p4.trades] == ["sell_short", "invalid", "invalid"]
+    assert [t.reason for t in p4.trades] == [
+        "",
+        "max_leverage exceeded",
+        "max_leverage exceeded",
+    ]
+
+
+def test_portfolio_max_leverage_prevents_margin_but_allows_opt_in_and_reductions():
+    p = Portfolio(initial_deposit=10_000.0, ticker="SPY")
+    p.apply_market_order(direction="sell", deposit_ratio=1.0, price=100.0, unixtime=1)
+    p.apply_market_order(
+        ticker="AAPL",
+        direction="buy",
+        deposit_ratio=1.0,
+        price=50.0,
+        unixtime=2,
+    )
+    assert p.cash == pytest.approx(20_000.0)
+    assert sorted(p.positions) == ["SPY"]
+    assert [t.action for t in p.trades] == ["sell_short", "invalid"]
+    assert p.trades[-1].qty == pytest.approx(400.0)
+    assert p.trades[-1].reason == "max_leverage exceeded"
+
+    p.apply_market_order(direction="buy", deposit_ratio=1.0, price=100.0, unixtime=3)
+    assert p.cash == pytest.approx(10_000.0)
+    assert p.positions == {}
+    assert [t.action for t in p.trades] == ["sell_short", "invalid", "buy_to_cover"]
+
+    p2 = Portfolio(initial_deposit=10_000.0, ticker="SPY", max_leverage=3.0)
+    p2.apply_market_order(direction="sell", deposit_ratio=1.0, price=100.0, unixtime=1)
+    p2.apply_market_order(
+        ticker="AAPL",
+        direction="buy",
+        deposit_ratio=1.0,
+        price=50.0,
+        unixtime=2,
+    )
+    assert p2.cash == pytest.approx(0.0)
+    assert p2.positions["SPY"].qty == pytest.approx(-100.0)
+    assert p2.positions["AAPL"].qty == pytest.approx(400.0)
+    assert [t.action for t in p2.trades] == ["sell_short", "buy"]
+
 
 def test_portfolio_sell_partial_realized_pnl():
     p = Portfolio(initial_deposit=10_000.0, ticker="SPY")
@@ -144,6 +199,8 @@ def test_portfolio_records_invalid_bad_deposit():
 def test_portfolio_rejects_nonpositive_deposit_init():
     with pytest.raises(ValueError):
         Portfolio(initial_deposit=0.0, ticker="X")
+    with pytest.raises(ValueError):
+        Portfolio(initial_deposit=100.0, ticker="X", max_leverage=0.0)
 
 
 def test_portfolio_to_portfolio_datapoint_flat():

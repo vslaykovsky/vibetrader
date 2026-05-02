@@ -14,6 +14,7 @@ from application.queries.historical_bars import HistoricalBarsQuery
 from application.schemas.simulation_dto import InitSimulationCommand, simulation_event
 from application.services.simulation_limits import (
     min_calendar_end_covering_bar_count,
+    read_strategy_max_leverage,
     read_strategy_scale,
 )
 from application.services.indicators import IndicatorEngine
@@ -545,7 +546,12 @@ class StrategySimulateCommandHandler:
             ts_to_row[t] = row_map
         all_ts_sorted = sorted({ts for row_map in ts_to_row.values() for ts in row_map})
         primary_row_map = ts_to_row[primary_ticker]
-        portfolio = Portfolio(initial_deposit=cmd.initial_deposit, ticker=primary_ticker)
+        max_leverage = read_strategy_max_leverage(workspace / "params.json")
+        portfolio = Portfolio(
+            initial_deposit=cmd.initial_deposit,
+            ticker=primary_ticker,
+            max_leverage=max_leverage,
+        )
         last_prices: dict[str, float] = {}
 
         sess.emit(simulation_event("status", status="running", strategy_scale=base_scale))
@@ -845,7 +851,12 @@ class StrategySimulateCommandHandler:
             ticker_subs, indicator_subs, renko_subs = compile_subscriptions(
                 startup, base_scale, sim_scale
             )
-            portfolio = Portfolio(initial_deposit=cmd.initial_deposit, ticker=ticker)
+            max_leverage = read_strategy_max_leverage(workspace / "params.json")
+            portfolio = Portfolio(
+                initial_deposit=cmd.initial_deposit,
+                ticker=ticker,
+                max_leverage=max_leverage,
+            )
             sess.emit(
                 simulation_event(
                     "status", status="running", strategy_scale=base_scale
