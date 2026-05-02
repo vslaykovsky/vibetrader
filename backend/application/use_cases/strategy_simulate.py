@@ -36,7 +36,6 @@ from application.services.simulation_registry import SimulationRegistry
 from application.services.simulation_session import SimulationSession
 from application.services.strategy_runtime import StrategyRuntime, StrategyRuntimeError
 from strategies_v2.utils import (
-    InputPortfolioDataPoint,
     InputOhlcDataPoint,
     InputTrainedModelParams,
     Ohlc,
@@ -434,6 +433,7 @@ class StrategySimulateCommandHandler:
         base_scale: str,
         sim_scale: str,
         ind_specs: list[Any],
+        trained_model_input: InputTrainedModelParams | None,
     ) -> None:
         if sim_scale != base_scale:
             raise ValueError(
@@ -553,6 +553,7 @@ class StrategySimulateCommandHandler:
             max_leverage=max_leverage,
         )
         last_prices: dict[str, float] = {}
+        pending_initial_points = [trained_model_input] if trained_model_input is not None else []
 
         sess.emit(simulation_event("status", status="running", strategy_scale=base_scale))
         sess.emit(simulation_event("speed", bps=float(cmd.initial_speed_bps)))
@@ -640,10 +641,16 @@ class StrategySimulateCommandHandler:
 
             if step_points and in_active_window:
                 portfolio.equity(last_prices)
+                points = [
+                    portfolio.to_portfolio_datapoint(),
+                    *pending_initial_points,
+                    *step_points,
+                ]
+                pending_initial_points = []
                 out = rt.send(
                     StrategyInput(
                         unixtime=base_unix,
-                        points=[portfolio.to_portfolio_datapoint(), *step_points],
+                        points=points,
                     )
                 )
                 orders = [
@@ -705,16 +712,8 @@ class StrategySimulateCommandHandler:
         rt: StrategyRuntime | None = None
         try:
             rt = StrategyRuntime(workspace, entry_script=self._strategy_entry_script)
-            initial_points = [InputPortfolioDataPoint(positions=[])]
             trained_model_input = _trained_model_params_input_from_workspace(workspace)
-            if trained_model_input is not None:
-                initial_points.append(trained_model_input)
-            startup = rt.start(
-                initial_input=StrategyInput(
-                    unixtime=0,
-                    points=initial_points,
-                )
-            )
+            startup = rt.start()
             startup = assign_subscription_ids(startup)
             tickers, base_scale = _subscribed_tickers_and_base_scale(startup)
             ticker = tickers[0]
@@ -747,6 +746,7 @@ class StrategySimulateCommandHandler:
                     base_scale=base_scale,
                     sim_scale=sim_scale,
                     ind_specs=ind_specs,
+                    trained_model_input=trained_model_input,
                 )
                 return
             padding = _padding_days_for_indicator_subscriptions(ind_specs)
@@ -857,6 +857,7 @@ class StrategySimulateCommandHandler:
                 ticker=ticker,
                 max_leverage=max_leverage,
             )
+            pending_initial_points = [trained_model_input] if trained_model_input is not None else []
             sess.emit(
                 simulation_event(
                     "status", status="running", strategy_scale=base_scale
@@ -918,6 +919,17 @@ class StrategySimulateCommandHandler:
                         step,
                         portfolio_provider=portfolio.to_portfolio_datapoint,
                     ):
+                        if pending_initial_points:
+                            line = line.model_copy(
+                                update={
+                                    "points": [
+                                        line.points[0],
+                                        *pending_initial_points,
+                                        *line.points[1:],
+                                    ]
+                                }
+                            )
+                            pending_initial_points = []
                         out = rt.send(line)
                         for item in out.root:
                             if isinstance(item, OutputMarketTradeOrder):

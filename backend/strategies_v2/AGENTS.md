@@ -34,19 +34,20 @@ The host may merge runtime overrides into `params.json` before process start. Do
 
 ## Runtime I/O
 
-- stdin is one JSON `StrategyInput` per line: top-level `unixtime` plus `points` containing `ohlc`, `indicator`, `portfolio`, `renko`, and/or `trained_model_params`. `unixtime` is strictly increasing.
+- stdin is one JSON `StrategyInput` per line after startup: top-level `unixtime` plus `points` containing `ohlc`, `indicator`, `portfolio`, `renko`, and/or `trained_model_params`. `unixtime` is a real simulation/event timestamp and is strictly increasing. The host does not send a synthetic `unixtime=0` bootstrap input.
 - stdout is one JSON `StrategyOutput` per line containing subscription outputs, optional `indicator_series_catalog`, indicator values, market orders, charts, trained model params, and/or `time_ack`.
 - Match all shapes to the Pydantic contracts in `utils.py`.
 
-For every stdin line read, print exactly one stdout line containing exactly one `OutputTimeAck` with the same `unixtime`. This is required even for portfolio-only lines, warm-up bars, partial updates, lines with no trades, and Renko event lines. If there is nothing else to emit, output only the ack. Missing or delayed acks deadlock the host.
+For every stdin line read, print exactly one stdout line containing exactly one `OutputTimeAck` with the same `unixtime`. This is required even for portfolio-only lines, early bars with no indicator values, partial updates, lines with no trades, and Renko event lines. If there is nothing else to emit, output only the ack. Missing or delayed acks deadlock the host.
 
 ## Standard Strategy Flow
 
-1. Before reading stdin, emit all `ticker_subscription` and `indicator_subscription` outputs, optionally followed by one `OutputIndicatorSeriesCatalog`.
-2. In the stdin loop, process `portfolio` and `trained_model_params` before acting on market data for that step.
-3. Dispatch `ohlc`, `indicator`, and `renko` points by `point.id`, not by order, ticker/name heuristics, or repeated subscription kind.
-4. Update durable histories only from `closed: true` data. Use `closed: false` data only for live intra-bar checks.
-5. Emit `market_order`, custom `OutputIndicatorDataPoint`, or `OutputChart` items only when useful, then include the required `time_ack`.
+1. Before reading stdin, emit all `ticker_subscription` and `indicator_subscription` outputs, optionally followed by one `OutputIndicatorSeriesCatalog`. The first stdout line is the startup contract; do not read stdin before printing it.
+2. After startup, read stdin in a loop. The first stdin line is the first timestamped simulation/event input at or after `params.json.start_date`; it includes the current `portfolio` snapshot before market data. If saved `trained_model_params` are available, they are included on that first timestamped input before market data.
+3. In the stdin loop, process `portfolio` and `trained_model_params` before acting on market data for that step.
+4. Dispatch `ohlc`, `indicator`, and `renko` points by `point.id`, not by order, ticker/name heuristics, or repeated subscription kind.
+5. Update durable histories only from `closed: true` data. Use `closed: false` data only for live intra-bar checks.
+6. Emit `market_order`, custom `OutputIndicatorDataPoint`, or `OutputChart` items only when useful, then include the required `time_ack`.
 
 Do not re-emit raw subscribed OHLC or built-in indicator values as custom chart data; the UI already renders subscribed prices and indicators.
 
@@ -84,7 +85,7 @@ Renko is not supported in multi-ticker simulations; use a single ticker when sub
 
 ## Portfolio
 
-`portfolio` points contain authoritative open positions: `{ "ticker", "order_type", "deposit_ratio", "volume_weighted_avg_entry_price" }`. The host may send a portfolio point at startup and after trades. Refresh internal position state from it before making price-based decisions.
+`portfolio` points contain authoritative open positions: `{ "ticker", "order_type", "deposit_ratio", "volume_weighted_avg_entry_price" }`. The host includes a portfolio point on every timestamped input it sends to the strategy, including the first market input. Refresh internal position state from it before making price-based decisions.
 
 ## Market Orders
 

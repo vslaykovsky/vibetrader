@@ -27,21 +27,18 @@ class StrategyRuntime:
         entry_script: str = "strategy.py",
         startup_timeout_seconds: float = 60.0,
         response_timeout_seconds: float = 5.0,
-        initial_response_timeout_seconds: float = 0.25,
         python_executable: str | None = None,
     ) -> None:
         self.workspace = Path(workspace).resolve()
         self.entry_script = entry_script
         self.startup_timeout_seconds = startup_timeout_seconds
         self.response_timeout_seconds = response_timeout_seconds
-        self.initial_response_timeout_seconds = initial_response_timeout_seconds
         self.python_executable = python_executable or sys.executable
         self._proc: subprocess.Popen[str] | None = None
         self._out_q: queue.Queue[str | None] = queue.Queue()
         self._reader_thread: threading.Thread | None = None
         self._recorded_inputs: list[str] = []
         self._recorded_outputs: list[str] = []
-        self._initial_response: StrategyOutput | None = None
 
     @property
     def recorded_inputs(self) -> list[str]:
@@ -50,10 +47,6 @@ class StrategyRuntime:
     @property
     def recorded_outputs(self) -> list[str]:
         return list(self._recorded_outputs)
-
-    @property
-    def initial_response(self) -> StrategyOutput | None:
-        return self._initial_response
 
     def write_io_files(
         self,
@@ -91,7 +84,7 @@ class StrategyRuntime:
         finally:
             self._out_q.put(None)
 
-    def start(self, *, initial_input: StrategyInput | None = None) -> StrategyOutput:
+    def start(self) -> StrategyOutput:
         script = self.workspace / self.entry_script
         if not script.is_file():
             raise StrategyRuntimeError(f"Strategy script not found: {script}")
@@ -111,20 +104,6 @@ class StrategyRuntime:
             raise StrategyRuntimeError("stdout not available")
         self._reader_thread = threading.Thread(target=self._stdout_reader, daemon=True)
         self._reader_thread.start()
-
-        if initial_input is not None:
-            if self._proc.stdin is None:
-                raise StrategyRuntimeError("stdin not available")
-            try:
-                line_out = initial_input.model_dump_json()
-                self._recorded_inputs.append(line_out)
-                self._proc.stdin.write(line_out + "\n")
-                self._proc.stdin.flush()
-            except BrokenPipeError as exc:
-                err = self._drain_stderr()
-                raise StrategyRuntimeError(
-                    f"Broken pipe writing initial input to strategy. stderr={err!r}"
-                ) from exc
 
         logger.info(
             "await_strategy_first_stdout cwd=%s entry=%s pid=%s timeout_s=%s",
@@ -149,23 +128,7 @@ class StrategyRuntime:
         except Exception as exc:
             err = self._drain_stderr()
             raise StrategyRuntimeError(f"Invalid startup JSON: {exc!s}; stderr={err!r}") from exc
-        if initial_input is not None:
-            self._initial_response = self._read_optional_initial_response()
         return startup
-
-    def _read_optional_initial_response(self) -> StrategyOutput | None:
-        try:
-            line = self._out_q.get(timeout=max(0.0, self.initial_response_timeout_seconds))
-        except queue.Empty:
-            return None
-        if line is None:
-            return None
-        try:
-            self._recorded_outputs.append(line.strip())
-            return StrategyOutput.model_validate_json(line.strip())
-        except Exception as exc:
-            err = self._drain_stderr()
-            raise StrategyRuntimeError(f"Invalid initial response JSON: {exc!s}; stderr={err!r}") from exc
 
     def send(self, step: StrategyInput) -> StrategyOutput:
         if self._proc is None or self._proc.stdin is None:

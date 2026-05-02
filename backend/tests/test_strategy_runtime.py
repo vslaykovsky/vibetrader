@@ -5,7 +5,6 @@ import pytest
 from application.services.strategy_runtime import StrategyRuntime, StrategyRuntimeError
 from strategies_v2.utils import (
     InputOhlcDataPoint,
-    InputPortfolioDataPoint,
     Ohlc,
     StrategyInput,
     StrategyOutput,
@@ -90,18 +89,14 @@ def test_strategy_runtime_finalize_collects_eda_chart_after_eof():
         rt.close()
 
 
-def test_strategy_runtime_start_with_initial_portfolio_line():
+def test_strategy_runtime_start_does_not_write_stdin_before_subscriptions():
     rt = StrategyRuntime(FIXTURES_DIR, entry_script="echo_strategy.py")
     try:
-        startup = rt.start(
-            initial_input=StrategyInput(
-                unixtime=0,
-                points=[InputPortfolioDataPoint(positions=[])],
-            )
-        )
+        startup = rt.start()
         assert isinstance(startup, StrategyOutput)
         kinds = [p.kind for p in startup.root]
         assert "ticker_subscription" in kinds
+        assert rt.recorded_inputs == []
         step = StrategyInput(
             unixtime=1_700_000_000,
             points=[

@@ -584,13 +584,7 @@ def main(argv: list[str]) -> int:
             )
             session.commit()
 
-        initial_portfolio = _portfolio_snapshot_from_alpaca(client)
-        initial_input = StrategyInput(
-            unixtime=int(time.time()),
-            points=[initial_portfolio],
-        )
-        _log_strategy_input(initial_input)
-        startup = rt.start(initial_input=initial_input)
+        startup = rt.start()
         startup = assign_subscription_ids(startup)
         _log_strategy_output(startup)
 

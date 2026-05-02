@@ -48,7 +48,6 @@ from application.use_cases.strategy_simulate import (
 )
 from application.services import backtest_data as backtest_utils
 from strategies_v2.utils import (
-    InputPortfolioDataPoint,
     InputOhlcDataPoint,
     InputRenkoDataPoint,
     InputTrainedModelParams,
@@ -482,10 +481,8 @@ def simulate(
     bars_query = HistoricalBarsQuery()
     rt = StrategyRuntime(workspace, entry_script=entry_script)
     strategy_subprocess_secs = 0.0
-    initial_points = [InputPortfolioDataPoint(positions=[])]
     trained_model_input = _trained_model_params_input_from_workspace(workspace)
-    if trained_model_input is not None:
-        initial_points.append(trained_model_input)
+    pending_initial_points = [trained_model_input] if trained_model_input is not None else []
 
     def _call_strategy(fn, *args, **kwargs):
         nonlocal strategy_subprocess_secs
@@ -496,13 +493,7 @@ def simulate(
             strategy_subprocess_secs += time.perf_counter() - t0
 
     try:
-        startup = _call_strategy(
-            rt.start,
-            initial_input=StrategyInput(
-                unixtime=0,
-                points=initial_points,
-            ),
-        )
+        startup = _call_strategy(rt.start)
         startup = assign_subscription_ids(startup)
         logger.info(
             "subscriptions_from_strategy %s",
@@ -847,6 +838,17 @@ def simulate(
                         step,
                         portfolio_provider=portfolio.to_portfolio_datapoint,
                     ):
+                        if pending_initial_points:
+                            line = line.model_copy(
+                                update={
+                                    "points": [
+                                        line.points[0],
+                                        *pending_initial_points,
+                                        *line.points[1:],
+                                    ]
+                                }
+                            )
+                            pending_initial_points = []
                         for pt in line.points:
                             if isinstance(pt, InputRenkoDataPoint):
                                 renko_bricks.setdefault(
@@ -1003,7 +1005,12 @@ def simulate(
                 if fired and in_requested_window:
                     if last_prices:
                         portfolio.equity(last_prices)
-                    points_all: list = [portfolio.to_portfolio_datapoint()] + step_points
+                    points_all: list = [
+                        portfolio.to_portfolio_datapoint(),
+                        *pending_initial_points,
+                        *step_points,
+                    ]
+                    pending_initial_points = []
                     step_input = StrategyInput(unixtime=base_unix, points=points_all)
                     out = _call_strategy(rt.send, step_input)
                     _apply_outputs(out, step_unixtime=base_unix, fills=fills)

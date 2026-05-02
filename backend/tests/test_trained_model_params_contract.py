@@ -3,7 +3,7 @@ from strategies_v2.utils import StrategyInput, StrategyOutput
 
 def test_trained_model_params_contract_round_trips():
     raw_input = {
-        "unixtime": 0,
+        "unixtime": 1_700_000_000,
         "points": [
             {
                 "kind": "trained_model_params",
