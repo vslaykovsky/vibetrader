@@ -1370,8 +1370,7 @@ export function StrategyPage() {
     let detachCrosshair;
     let detachChartDnD;
     try {
-      const runKey = `${threadId}:${viewingRunId || liveStrategyRunId || 'live'}`;
-      const rendered = renderCharts(root, chartData, { chartOrderStorageBase: runKey, timeZone });
+      const rendered = renderCharts(root, chartData, { chartOrderStorageBase: threadId, timeZone });
       detachChartDnD = rendered.detachChartDnD;
       detachSync = attachSyncedTimeScales(rendered.lwCharts);
       detachCrosshair = attachSyncedCrosshair(rendered.lwCrosshairBindings);
@@ -1385,7 +1384,7 @@ export function StrategyPage() {
       detachCrosshair?.();
       mount.innerHTML = '';
     };
-  }, [displayOutput, threadId, viewingRunId, liveStrategyRunId, timeZone]);
+  }, [displayOutput, threadId, timeZone]);
 
   async function handleSubmit(event, messageFromField) {
     if (event && typeof event.preventDefault === 'function') {

@@ -59,6 +59,8 @@ def _padding_days_for_indicator_subscriptions(subs: list[Any]) -> int:
             max_bars = max(max_bars, int(s.period) * 3)
         elif k == "atr":
             max_bars = max(max_bars, int(s.period) * 3)
+        elif k == "renko" and getattr(s, "brick_size_mode", "fixed") == "atr":
+            max_bars = max(max_bars, int(s.atr_period) * 3)
         elif k == "bb":
             max_bars = max(max_bars, int(s.period) * 3)
         elif k == "stochastic":

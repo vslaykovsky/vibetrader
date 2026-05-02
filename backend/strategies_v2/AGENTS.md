@@ -124,7 +124,12 @@ When `simulation_scale == scale` there is one driver bar per base bar and the st
 
 ## Renko subscriptions (`kind: "renko"`)
 
-Ask for renko bricks by emitting an `OutputIndicatorSubscriptionOrder` wrapping a `RenkoIndicatorSubscription(ticker, scale, brick_size, partial=True, update_scale=...)`. Bricks are close-based (a new brick prints whenever the running close crosses `anchor ± brick_size`; the first firing bar only seeds the anchor and emits no brick). The anchor persists across bars; reversals require one full `brick_size` move (no 2× rule). Set `partial=True` if you want bricks as soon as they form at the `update_scale` cadence; `partial=False` limits detection to base-scale closes.
+Ask for renko bricks by emitting an `OutputIndicatorSubscriptionOrder` wrapping a `RenkoIndicatorSubscription(ticker, scale, partial=True, update_scale=...)`. Bricks are close-based (a new brick prints whenever the running close crosses `anchor ± brick_size`; the first firing bar only seeds the anchor and emits no brick). The anchor persists across bars; reversals require one full current brick size move (no 2× rule). Set `partial=True` if you want bricks as soon as they form at the `update_scale` cadence; `partial=False` limits detection to base-scale closes.
+
+Renko supports two brick-size modes:
+
+- `brick_size_mode="fixed"` (default): set a positive `brick_size`; every brick uses that constant size.
+- `brick_size_mode="atr"`: set `atr_period` (default `14`) and `atr_multiplier` (default `1.0`); each firing update uses `ATR(atr_period) * atr_multiplier` from the current base-scale OHLC state. ATR mode waits until ATR is available before seeding the anchor or emitting bricks.
 
 **Stream semantics — line-per-event.** Renko bricks are emitted on their own `StrategyInput` lines, not bundled with the regular ticker/indicator update:
 
@@ -136,7 +141,7 @@ Consequences your `strategy.py` must respect:
 
 - Treat `InputRenkoDataPoint` as a fully-formed, final event (`closed: true` always). There is no partial brick.
 - Within one driver bar, brick lines arrive in strict formation order (`up` bricks from low to high anchor, `down` bricks from high to low); their `unixtime`s are strictly increasing. Across bars, the contract "next line's `unixtime` > current line's `unixtime`" is preserved.
-- On an `InputRenkoDataPoint`, `open` and `close` are the brick's edges (`direction="up"` ⇒ `close == open + brick_size`, `"down"` ⇒ `close == open - brick_size`); `brick_size` matches `params.json`'s renko config.
+- On an `InputRenkoDataPoint`, `open` and `close` are the brick's edges (`direction="up"` ⇒ `close == open + brick_size`, `"down"` ⇒ `close == open - brick_size`); `brick_size` is the actual fixed or ATR-derived size used for that brick.
 - If you render bricks on a `LightweightChartsChart`, feed each brick as a candlestick with `time = unixtime_of_that_line` (seconds, intraday). Because the host already guarantees distinct unixtimes per brick, Lightweight-Charts accepts them directly and spaces them on a non-uniform x-axis that still synchronises with price / equity panes via shared time.
 - Market orders emitted on a brick line fill at the running close of the originating driver bar (same rule as mid-bar fills on `closed: false` points).
 

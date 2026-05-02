@@ -371,9 +371,18 @@ class RenkoIndicatorSubscription(BaseModel):
     id: str | None = None
     ticker: str
     scale: str
-    brick_size: float = Field(gt=0)
+    brick_size_mode: Literal["fixed", "atr"] = "fixed"
+    brick_size: float | None = Field(default=None, gt=0)
+    atr_period: int = Field(default=14, ge=1)
+    atr_multiplier: float = Field(default=1.0, gt=0)
     update_scale: str | None = None
     partial: bool = False
+
+    @model_validator(mode="after")
+    def _renko_brick_size_config(self) -> RenkoIndicatorSubscription:
+        if self.brick_size_mode == "fixed" and self.brick_size is None:
+            raise ValueError("brick_size is required when brick_size_mode is 'fixed'")
+        return self
 
 
 IndicatorSubscriptionSpec = Annotated[

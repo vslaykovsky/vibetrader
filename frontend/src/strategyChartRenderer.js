@@ -162,18 +162,19 @@ function createChartDndRow(srcIdx) {
   row.className = 'strategy-chart-dnd-row';
   row.dataset.srcIdx = String(srcIdx);
 
-  const handle = document.createElement('div');
-  handle.className = 'strategy-chart-dnd-handle';
-  handle.draggable = true;
-  handle.title = 'Drag to reorder panels';
-  handle.setAttribute('aria-label', 'Drag to reorder panels');
-
   const inner = document.createElement('div');
   inner.className = 'strategy-chart-dnd-inner';
 
-  row.appendChild(handle);
   row.appendChild(inner);
   return row;
+}
+
+function enableChartDndHeader(row) {
+  const header = row.querySelector('.strategy-chart-summary');
+  if (!header) return;
+  header.classList.add('strategy-chart-dnd-handle');
+  header.draggable = true;
+  header.title = 'Drag to reorder panels';
 }
 
 function setupChartPanelDnD(dndRoot, storageKey, n, signal, allPanelIds = null) {
@@ -189,8 +190,9 @@ function setupChartPanelDnD(dndRoot, storageKey, n, signal, allPanelIds = null) 
   let draggedSrc = null;
 
   const onDragStart = (e) => {
-    const handle = e.target;
-    if (!handle?.classList?.contains?.('strategy-chart-dnd-handle')) return;
+    if (e.target?.closest?.('button, a, input, select, textarea')) return;
+    const handle = e.target?.closest?.('.strategy-chart-dnd-handle');
+    if (!handle || !dndRoot.contains(handle)) return;
     const row = handle.closest('.strategy-chart-dnd-row');
     if (!row) return;
     draggedSrc = Number(row.dataset.srcIdx);
@@ -1062,6 +1064,7 @@ export function renderCharts(container, dataJson, options) {
           if (!spec) continue;
           collectResult(renderOneChartPanel(inner, spec, openStore, srcIdx, catalogMap, timeZone, onCrosshairMove, onRowHover, onRowLeave, removePanel));
         }
+        enableChartDndHeader(row);
       }
       dndSignal = new AbortController();
       setupChartPanelDnD(list, storageKey, panelCount, dndSignal.signal, order);

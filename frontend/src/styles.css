@@ -2852,10 +2852,6 @@ html[data-theme='dark'] .canvas-header-action.is-active {
 }
 
 .strategy-chart-dnd-row {
-  display: flex;
-  flex-direction: row;
-  align-items: stretch;
-  gap: 6px;
   margin-bottom: 8px;
 }
 
@@ -2864,39 +2860,12 @@ html[data-theme='dark'] .canvas-header-action.is-active {
   min-width: 0;
 }
 
-.strategy-chart-dnd-handle {
-  flex: 0 0 16px;
-  min-height: 48px;
+.strategy-chart-summary.strategy-chart-dnd-handle {
   cursor: grab;
-  border-radius: 6px;
-  border: 1px solid transparent;
-  align-self: stretch;
-  position: relative;
-  color: #6b707c;
   touch-action: none;
 }
 
-.strategy-chart-dnd-handle::before {
-  content: '';
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: 4px;
-  height: 16px;
-  background: repeating-linear-gradient(
-    to bottom,
-    currentColor 0 2px,
-    transparent 2px 5px
-  );
-}
-
-.strategy-chart-dnd-handle:hover {
-  border-color: #363a45;
-  background: #1a1d26;
-}
-
-.strategy-chart-dnd-handle:active {
+.strategy-chart-summary.strategy-chart-dnd-handle:active {
   cursor: grabbing;
 }
 

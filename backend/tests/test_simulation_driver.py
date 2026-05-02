@@ -199,6 +199,54 @@ def test_iter_simulation_steps_emits_multiple_renko_bricks_on_big_move():
     assert snap_ohlc.ohlc.close == 108.0
 
 
+def test_iter_simulation_steps_uses_atr_renko_brick_size():
+    idx = pd.date_range("2024-01-01 00:00", periods=4, freq="1h", tz="UTC")
+    driver = pd.DataFrame(
+        {
+            "open": [100.0, 100.0, 103.0, 109.0],
+            "high": [101.0, 104.0, 110.0, 109.0],
+            "low": [99.0, 100.0, 103.0, 99.0],
+            "close": [100.0, 103.0, 109.0, 99.0],
+        },
+        index=idx,
+    )
+    base = aggregate_to_base(driver, "1h")
+    startup = StrategyOutput(
+        [
+            OutputTickerSubscription(ticker="X", scale="1h"),
+            OutputIndicatorSubscriptionOrder(
+                indicator=RenkoIndicatorSubscription(
+                    ticker="X",
+                    scale="1h",
+                    brick_size_mode="atr",
+                    atr_period=2,
+                    atr_multiplier=1.0,
+                )
+            ),
+        ]
+    )
+    ticker_subs, ind_subs, renko_subs = compile_subscriptions(startup, "1h", "1h")
+    eng = IndicatorEngine([s.source for s in ind_subs])
+    eng.fit(base)
+    steps = list(
+        iter_simulation_steps(
+            driver_df=driver,
+            base_df=base,
+            base_scale="1h",
+            simulation_scale="1h",
+            ticker_subs=ticker_subs,
+            indicator_subs=ind_subs,
+            indicator_engine=eng,
+            renko_subs=renko_subs,
+        )
+    )
+    bricks = [b for s in steps for b in s.renko_points]
+    assert [b.direction for b in bricks] == ["up", "down"]
+    assert [b.brick_size for b in bricks] == [5.0, 7.5]
+    assert [b.open for b in bricks] == [103.0, 108.0]
+    assert [b.close for b in bricks] == [108.0, 100.5]
+
+
 def test_expand_step_to_lines_splits_renko_bricks_into_monotonic_lines():
     idx = pd.date_range("2024-01-01 00:00", periods=5, freq="1h", tz="UTC")
     driver = pd.DataFrame(

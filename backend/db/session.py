@@ -25,7 +25,22 @@ DATABASE_URL = os.getenv("DATABASE_URL", "").strip() or DEFAULT_DATABASE_URL
 import logging
 logger = logging.getLogger(__name__)
 
-engine = create_engine(DATABASE_URL, future=True)
+
+def _pool_recycle_seconds() -> int:
+    value = os.getenv("DB_POOL_RECYCLE_SECONDS", "1800").strip()
+    try:
+        seconds = int(value)
+    except ValueError:
+        return 1800
+    return max(seconds, 1)
+
+
+engine = create_engine(
+    DATABASE_URL,
+    future=True,
+    pool_pre_ping=True,
+    pool_recycle=_pool_recycle_seconds(),
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 

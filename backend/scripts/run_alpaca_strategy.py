@@ -53,6 +53,7 @@ from application.services.simulation_driver import (
     assign_subscription_ids,
     compile_subscriptions,
     expand_step_to_lines,
+    renko_brick_size_for_update,
 )
 from application.services.scale_utils import floor_ts_to_scale
 from application.services.strategy_runtime import StrategyRuntime
@@ -283,7 +284,11 @@ def _step_from_driver_index(
         if not _fires_on(driver_ts, next_ts, rspec.update_scale):
             continue
         src = rspec.source
-        brick_size = float(getattr(src, "brick_size", 0.0))
+        brick_size = renko_brick_size_for_update(
+            src, base_df, base_row, running, is_base_close
+        )
+        if brick_size is None:
+            continue
         st = renko_states[ri]
         price = running.close
         if st.anchor is None:

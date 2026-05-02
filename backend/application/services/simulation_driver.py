@@ -14,6 +14,7 @@ from typing import Callable, Iterator, Sequence
 
 import pandas as pd
 
+from application.services import indicator_series as ind
 from application.services.indicators import IndicatorEngine
 from application.services.scale_utils import (
     floor_ts_to_scale,
@@ -313,6 +314,35 @@ def _fires_on(driver_ts: pd.Timestamp, next_ts: pd.Timestamp | None, update_scal
     return nxt != cur
 
 
+def renko_brick_size_for_update(
+    src: RenkoIndicatorSubscription,
+    base_df: pd.DataFrame,
+    base_row: int,
+    running: RunningBar,
+    is_base_close: bool,
+) -> float | None:
+    if src.brick_size_mode == "fixed":
+        brick_size = float(src.brick_size or 0.0)
+        return brick_size if brick_size > 0 else None
+    if base_row < 0 or base_row >= len(base_df.index):
+        return None
+    high = base_df["high"].astype(float).copy()
+    low = base_df["low"].astype(float).copy()
+    close = base_df["close"].astype(float).copy()
+    if not is_base_close:
+        high.iloc[base_row] = float(running.high)
+        low.iloc[base_row] = float(running.low)
+        close.iloc[base_row] = float(running.close)
+    atr = ind.atr_series(high, low, close, int(src.atr_period))
+    value = atr.iloc[base_row]
+    if pd.isna(value):
+        return None
+    brick_size = float(value) * float(src.atr_multiplier)
+    if brick_size <= 0:
+        return None
+    return brick_size
+
+
 def iter_simulation_steps(
     *,
     driver_df: pd.DataFrame,
@@ -464,7 +494,11 @@ def iter_simulation_steps(
                 continue
             src = rspec.source
             assert isinstance(src, RenkoIndicatorSubscription)
-            brick_size = float(src.brick_size)
+            brick_size = renko_brick_size_for_update(
+                src, bdf, base_row, running, is_base_close
+            )
+            if brick_size is None:
+                continue
             st = renko_states[ri]
             price = running.close
             if st.anchor is None:

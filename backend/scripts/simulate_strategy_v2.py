@@ -188,7 +188,7 @@ def _build_subscription_charts(
     markers: list[backtest_utils.LwcMarker],
     output_indicator_points: dict[str, list[tuple[int, float]]],
     renko_specs: list[RenkoIndicatorSubscription],
-    renko_bricks: dict[tuple[str, float], list[tuple[int, float, float, str]]],
+    renko_bricks: dict[str, list[tuple[int, float, float, str, float]]],
 ) -> list[backtest_utils.LightweightChartsChart]:
     win_start = pd.Timestamp(start_d, tz="UTC")
     win_end = pd.Timestamp(end_d, tz="UTC") + pd.Timedelta(days=1)
@@ -324,11 +324,11 @@ def _build_subscription_charts(
     win_start_unix = int(win_start.timestamp())
     win_end_unix = int(win_end.timestamp())
     for spec in renko_specs:
-        key = (spec.ticker, float(spec.brick_size))
+        key = str(spec.id)
         bricks = renko_bricks.get(key, [])
         filtered = [
-            (ut, o, c, d)
-            for (ut, o, c, d) in bricks
+            (ut, o, c, d, bs)
+            for (ut, o, c, d, bs) in bricks
             if win_start_unix <= ut < win_end_unix
         ]
         if not filtered:
@@ -341,11 +341,21 @@ def _build_subscription_charts(
                 low=float(min(o, c)),
                 close=float(c),
             )
-            for (ut, o, c, _d) in filtered
+            for (ut, o, c, _d, _bs) in filtered
         ]
+        if spec.brick_size_mode == "atr":
+            title = (
+                f"{spec.ticker} renko bricks "
+                f"(ATR {spec.atr_period} x {spec.atr_multiplier:g}, scale={spec.scale})"
+            )
+        else:
+            title = (
+                f"{spec.ticker} renko bricks "
+                f"(brick_size={spec.brick_size}, scale={spec.scale})"
+            )
         charts.append(
             backtest_utils.LightweightChartsChart(
-                title=f"{spec.ticker} renko bricks (brick_size={spec.brick_size}, scale={spec.scale})",
+                title=title,
                 series=[
                     backtest_utils.LwcCandlestickSeries(
                         label=f"{spec.ticker} renko",
@@ -574,7 +584,7 @@ def simulate(
         bench_first_close: float | None = None
         strategy_charts: list[dict] = []
         output_indicator_points: dict[str, list[tuple[int, float]]] = {}
-        renko_bricks: dict[tuple[str, float], list[tuple[int, float, float, str]]] = {}
+        renko_bricks: dict[str, list[tuple[int, float, float, str, float]]] = {}
 
         def _collect_strategy_charts(output: StrategyOutput) -> None:
             for item in output.root:
@@ -650,21 +660,27 @@ def simulate(
                     ]
                 ),
             )
+            renko_log_rows: list[dict] = []
+            for s in renko_subs:
+                src = s.source
+                brick_size = getattr(src, "brick_size", None)
+                renko_log_rows.append(
+                    {
+                        "id": s.id,
+                        "ticker": s.ticker,
+                        "scale": s.scale,
+                        "update_scale": s.update_scale,
+                        "brick_size_mode": getattr(src, "brick_size_mode", "fixed"),
+                        "brick_size": float(brick_size)
+                        if brick_size is not None
+                        else None,
+                        "atr_period": getattr(src, "atr_period", None),
+                        "atr_multiplier": getattr(src, "atr_multiplier", None),
+                    }
+                )
             logger.info(
                 "subscriptions_compiled_renko %s",
-                json.dumps(
-                    [
-                        {
-                            "ticker": s.ticker,
-                            "scale": s.scale,
-                            "update_scale": s.update_scale,
-                            "brick_size": float(
-                                getattr(s.source, "brick_size", 0.0)
-                            ),
-                        }
-                        for s in renko_subs
-                    ]
-                ),
+                json.dumps(renko_log_rows),
             )
             for step in iter_simulation_steps(
                 driver_df=driver_df,
@@ -686,13 +702,14 @@ def simulate(
                         for pt in line.points:
                             if isinstance(pt, InputRenkoDataPoint):
                                 renko_bricks.setdefault(
-                                    (pt.ticker, float(pt.brick_size)), []
+                                    str(pt.id), []
                                 ).append(
                                     (
                                         int(line.unixtime),
                                         float(pt.open),
                                         float(pt.close),
                                         str(pt.direction),
+                                        float(pt.brick_size),
                                     )
                                 )
                         out = _call_strategy(rt.send, line)
@@ -955,9 +972,10 @@ def simulate(
 
     strategy_name = _read_strategy_name(workspace)
 
+    startup_with_ids = assign_subscription_ids(startup)
     renko_specs: list[RenkoIndicatorSubscription] = [
         p.indicator
-        for p in startup.root
+        for p in startup_with_ids.root
         if isinstance(p, OutputIndicatorSubscriptionOrder)
         and isinstance(p.indicator, RenkoIndicatorSubscription)
     ]
