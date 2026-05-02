@@ -43,9 +43,10 @@ Workflow
 * To modify code, call update_strategy with the task string the coding agent will execute. Write it in English. The coding agent does not see the chat—only this task—so preserve the user's requirements in full: when they paste a detailed strategy (rules, indicators, parameters, entry/exit logic, sizing, constraints, edge cases, instruments, dates), include all of it in the task; do not compress it into a short summary. For small follow-up edits, a concise change list is enough.
 * If the user only tweaks existing parameters (different ticker, dates, thresholds, deposit, etc.), call run_backtest instead of update_strategy; pass parameters_json as a JSON string so the tool recursively merges into params.json before the run (do not use a --params CLI flag or teach strategies to accept one).
 * If the user asks for exploratory data analysis, market research, or charts **without** defining a tradable strategy (no signals, no rules backtest), use `update_strategy` for the analysis path, then run_backtest. That path should not emit market_order outputs or write params-hyperopt.json.
-* If the user asks for training/hyperparameter optimization, ensure via update_strategy that the strategy workspace writes params-hyperopt.json (authored as a static file per the workspace AGENTS.md), then run_hyperopt (not run_backtest). To adjust the study without editing files—how many strategy parameters are tuned, their optimisation ranges and bounds, regimes or other study-only config—pass parameters_hyperopt_json on run_hyperopt to merge into params-hyperopt.json before the run.
+* If the user asks for ordinary strategy-parameter training/hyperparameter optimization, ensure via update_strategy that the strategy workspace writes params-hyperopt.json (authored as a static file per the workspace AGENTS.md), then run_hyperopt (not run_backtest). To adjust the study without editing files—how many strategy parameters are tuned, their optimisation ranges and bounds, regimes or other study-only config—pass parameters_hyperopt_json on run_hyperopt to merge into params-hyperopt.json before the run.
+* Only ask the coding agent to implement trained model parameters for genuinely trainable models (for example neural networks or boosting/tree models). Simple indicator/rule strategies keep all tunable knobs in params.json and params-hyperopt.json. Trainable strategies use params.json run_mode ("train" or "test") as exclusive modes: strategy.py must either train or test in a given run, never both. To train and evaluate a model, run the simulator twice with run_backtest parameters_json overrides: first with run_mode="train" and start_date/end_date set to the training period, then with run_mode="test" and start_date/end_date set to the out-of-sample testing period. Train runs emit OutputTrainedModelParams only at EOF and never emit orders. Test runs require the trained_model_params input object, never retrain, never emit OutputTrainedModelParams, and are the only trained-model runs that may trade.
 * Always respond in the user's language.
-* After each successful update_strategy, call run_backtest or run_hyperopt so results match the change. Only briefly summarize strategy performance based on the output of that tool call, don't make up numbers. The user already sees all the charts and metrics.
+* After each successful update_strategy, call run_backtest or run_hyperopt so results match the change. For trainable model strategies, use the two-run train/test sequence described above instead of one combined full-period backtest. Only briefly summarize strategy performance based on the output of that tool call, don't make up numbers. The user already sees all the charts and metrics.
 * If a backtest completes with zero trades, say that no trades were executed. Do not call update_strategy just to force trades unless the strategy code contradicts the user's rules or the user asks to change signal sensitivity.
 * Canvas: The right-hand canvas shows the latest run output—interactive price and indicator charts (and any tables or other panels the strategy emits). Users pan along time by dragging the chart, zoom with scroll wheel or pinch where supported, collapse or expand each chart block using its section header, remove a chart block with the "x" beside the title, and reorder chart panels by dragging the handle. Removed/collapsed/reordered chart UI state is saved locally for that run output. When the strategy supplies per-chart help, hovering the "?" beside the title shows it. If the user needs more overlays or diagnostics than what is visible, invite them to ask you to add more indicators, series, or chart panels via the strategy output.
 * If the user asks to hide or remove a chart panel, tell them they can collapse it by clicking the section header or remove it with the "x" beside the chart title—no code change needed.
@@ -53,7 +54,7 @@ Workflow
 * If the user asks to improve chart alignment or spacing, explain that the layout is already rendered at its best and changes to the strategy code are very unlikely to affect visual alignment.
 
 Notes
-* The workspace follows strategies_v2 conventions (see AGENTS.md there): strategy.py is a streaming process that reads params.json, emits ticker_subscription and indicator_subscription on startup, then processes StrategyInput lines from stdin and emits market_order / indicator / time_ack outputs on stdout. utils.py and hyperopt.py are fixed and must not be edited.
+* The workspace follows strategies_v2 conventions (see AGENTS.md there): strategy.py is a streaming process that reads params.json, emits ticker_subscription and indicator_subscription on startup, then processes StrategyInput lines from stdin and emits market_order / indicator / trained_model_params / time_ack outputs on stdout. utils.py and hyperopt.py are fixed and must not be edited.
 * update_strategy edits strategy.py, params.json, and (for trading strategies) params-hyperopt.json via the coding agent; layout and run contract follow AGENTS.md in that workspace.
 * run_backtest runs the historical simulator (scripts/simulate_strategy_v2.py): it fetches OHLC bars for the ticker/scale across start_date..end_date from params.json, streams them to strategy.py, and refreshes backtest.json (charts) and metrics.json (scalar metrics, including num_trades).
 * run_hyperopt runs the random-search hyperparameter study in the workspace, which invokes the same simulator per trial and rewrites params.json with the best trial before a final simulator run.
@@ -722,6 +723,7 @@ CANVAS_OUTPUT_FILES: frozenset[str] = frozenset(
         "backtest.json",
         "metrics.json",
         "params-hyperopt.json",
+        "trained_model_params.json",
     }
 )
 
@@ -1469,6 +1471,13 @@ def _strategy_help_for_workspace(workspace: Path) -> str:
             metrics_text = metrics_path.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
             metrics_text = ""
+    trained_path = workspace / "trained_model_params.json"
+    trained_text = ""
+    if trained_path.is_file():
+        try:
+            trained_text = trained_path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            trained_text = ""
     hyperopt_section = (
         f"\nThe current strategy supports hyperparameter optimization. The params-hyperopt.json file contains the optimization configuration:\n{hyperopt_parameters}\n"
         if hyperopt_parameters
@@ -1479,16 +1488,21 @@ def _strategy_help_for_workspace(workspace: Path) -> str:
         if metrics_text
         else ""
     )
+    trained_section = (
+        f"\nThe current strategy has trained model parameters in trained_model_params.json. Test-mode trainable strategies receive these as an initial trained_model_params input object:\n{trained_text}\n"
+        if trained_text
+        else ""
+    )
     if params_path.is_file():
         return f"""Strategy inputs are read from params.json (overrides: pass parameters_json on run_backtest or run_hyperopt to merge into this file). On run_hyperopt, optional parameters_hyperopt_json merges into params-hyperopt.json (which params are optimised, ranges, regimes, study budget—not ticker/dates from params.json).
 {strategy_parameters}
-{hyperopt_section}{metrics_section}"""
+{hyperopt_section}{trained_section}{metrics_section}"""
     return f"""Note: params.json hasn't been created yet. Need to run update_strategy first.
 
 Current params.json (may be empty or missing):
 {strategy_parameters}
 On run_hyperopt, optional parameters_hyperopt_json merges into params-hyperopt.json (study definition: optimised params, ranges, regimes—not params.json backtest inputs).
-{hyperopt_section}{metrics_section}"""
+{hyperopt_section}{trained_section}{metrics_section}"""
 
 
 def _aimessage_plain_text(msg: AIMessage) -> str:

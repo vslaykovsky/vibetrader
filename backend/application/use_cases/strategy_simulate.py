@@ -37,11 +37,13 @@ from application.services.strategy_runtime import StrategyRuntime, StrategyRunti
 from strategies_v2.utils import (
     InputPortfolioDataPoint,
     InputOhlcDataPoint,
+    InputTrainedModelParams,
     Ohlc,
     OutputIndicatorSeriesCatalog,
     OutputIndicatorSubscriptionOrder,
     OutputMarketTradeOrder,
     OutputTickerSubscription,
+    OutputTrainedModelParams,
     StrategyInput,
     StrategyOutput,
 )
@@ -88,6 +90,18 @@ def _padding_days_for_indicator_subscriptions(subs: list[Any]) -> int:
         elif k == "fibonacci":
             max_bars = max(max_bars, int(s.lookback) * 3)
     return max(30, min(500, max_bars))
+
+
+def _trained_model_params_input_from_workspace(workspace: Path) -> InputTrainedModelParams | None:
+    path = workspace / "trained_model_params.json"
+    if not path.is_file():
+        return None
+    raw = path.read_text(encoding="utf-8")
+    try:
+        out = OutputTrainedModelParams.model_validate_json(raw)
+        return InputTrainedModelParams(name=out.name, data=out.data)
+    except Exception:
+        return InputTrainedModelParams.model_validate_json(raw)
 
 
 def _ticker_and_scale_from_startup(startup: StrategyOutput) -> tuple[str, str]:
@@ -683,10 +697,14 @@ class StrategySimulateCommandHandler:
         rt: StrategyRuntime | None = None
         try:
             rt = StrategyRuntime(workspace, entry_script=self._strategy_entry_script)
+            initial_points = [InputPortfolioDataPoint(positions=[])]
+            trained_model_input = _trained_model_params_input_from_workspace(workspace)
+            if trained_model_input is not None:
+                initial_points.append(trained_model_input)
             startup = rt.start(
                 initial_input=StrategyInput(
                     unixtime=0,
-                    points=[InputPortfolioDataPoint(positions=[])],
+                    points=initial_points,
                 )
             )
             startup = assign_subscription_ids(startup)

@@ -439,6 +439,17 @@ function strategyNameFromOutput(output) {
   return typeof name === 'string' && name.trim() ? name.trim() : '';
 }
 
+function canvasPayloadsEqual(a, b) {
+  if (a === b) {
+    return true;
+  }
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
+
 
 export function StrategyPage() {
   const { threadId } = useParams();
@@ -585,6 +596,11 @@ export function StrategyPage() {
     return fetch(url, { ...options, headers });
   }, [getAccessToken]);
 
+  const setCanvasIfChanged = useCallback((nextCanvas) => {
+    const normalized = nextCanvas && typeof nextCanvas === 'object' ? nextCanvas : {};
+    setCanvas((prev) => (canvasPayloadsEqual(prev, normalized) ? prev : normalized));
+  }, []);
+
   const openTradingSettingsWindow = useCallback(() => {
     const base = window.location.origin || '';
     window.open(`${base}/dashboard/settings`, '_blank', 'noopener,noreferrer');
@@ -657,7 +673,7 @@ export function StrategyPage() {
         return;
       }
       setMessages(payload.messages || []);
-      setCanvas(payload.canvas || {});
+      setCanvasIfChanged(payload.canvas);
       if (typeof payload.id === 'string') {
         setLiveStrategyRunId(payload.id);
       }
@@ -671,7 +687,7 @@ export function StrategyPage() {
       mergeStrategyNameFromPayload(payload);
     } catch {
     }
-  }, [threadId, signedInUserId, authFetch, mergeStrategyNameFromPayload]);
+  }, [threadId, signedInUserId, authFetch, mergeStrategyNameFromPayload, setCanvasIfChanged]);
 
   const prevJobStatusRef = useRef(null);
 
@@ -950,7 +966,7 @@ export function StrategyPage() {
       }
       const next = await refreshed.json();
       setMessages(next.messages || []);
-      setCanvas(next.canvas || {});
+      setCanvasIfChanged(next.canvas);
       setLiveStrategyRunId(typeof next.id === 'string' ? next.id : '');
       setLiveStrategyAlgorithm(typeof next.algorithm === 'string' ? next.algorithm : '');
       setServerJob({
@@ -1048,7 +1064,7 @@ export function StrategyPage() {
         }
         const msgs = payload.messages || [];
         setMessages(msgs);
-        setCanvas(payload.canvas || {});
+        setCanvasIfChanged(payload.canvas);
         setLiveStrategyRunId(typeof payload.id === 'string' ? payload.id : '');
         setLiveStrategyAlgorithm(typeof payload.algorithm === 'string' ? payload.algorithm : '');
         setServerJob({
@@ -1079,7 +1095,7 @@ export function StrategyPage() {
     loadThreads();
     loadThread();
     return () => controller.abort();
-  }, [threadId, signedInUserId, mergeStrategyNameFromPayload]);
+  }, [threadId, signedInUserId, mergeStrategyNameFromPayload, setCanvasIfChanged]);
 
   useEffect(() => {
     homePromptAutoSubmitRef.current = false;
@@ -1280,7 +1296,7 @@ export function StrategyPage() {
         try {
           const payload = JSON.parse(event.data);
           setMessages(payload.messages || []);
-          setCanvas(payload.canvas || {});
+          setCanvasIfChanged(payload.canvas);
           if (typeof payload.id === 'string') {
             setLiveStrategyRunId(payload.id);
           }
@@ -1312,7 +1328,7 @@ export function StrategyPage() {
       cancelled = true;
       evtSource?.close();
     };
-  }, [threadId, serverJob.status, getAccessToken, syncLiveStrategyFromServer, mergeStrategyNameFromPayload]);
+  }, [threadId, serverJob.status, getAccessToken, syncLiveStrategyFromServer, mergeStrategyNameFromPayload, setCanvasIfChanged]);
 
   useEffect(() => {
     if (skipNextChatEndScrollRef.current) {
@@ -1441,7 +1457,7 @@ export function StrategyPage() {
           }
         }
         if (payload.canvas) {
-          setCanvas(payload.canvas || {});
+          setCanvasIfChanged(payload.canvas);
         }
         if (payload.status != null || payload.status_text != null) {
           setServerJob({
@@ -1455,7 +1471,7 @@ export function StrategyPage() {
 
       optimisticUserContentRef.current = null;
       setMessages(payload.messages || []);
-      setCanvas(payload.canvas || {});
+      setCanvasIfChanged(payload.canvas);
       if (typeof payload.id === 'string') {
         setLiveStrategyRunId(payload.id);
       }

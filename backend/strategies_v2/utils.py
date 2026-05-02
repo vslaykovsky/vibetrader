@@ -160,11 +160,19 @@ class InputRenkoDataPoint(BaseModel):
     closed: bool = True
 
 
+class InputTrainedModelParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["trained_model_params"] = "trained_model_params"
+    name: str
+    data: dict[str, Any]
+
+
 InputDataPoint = Annotated[
     InputOhlcDataPoint
     | InputIndicatorDataPoint
     | InputPortfolioDataPoint
-    | InputRenkoDataPoint,
+    | InputRenkoDataPoint
+    | InputTrainedModelParams,
     Field(discriminator="kind"),
 ]
 
@@ -418,6 +426,13 @@ class OutputChart(BaseModel):
     chart: Chart
 
 
+class OutputTrainedModelParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["trained_model_params"] = "trained_model_params"
+    name: str
+    data: dict[str, Any]
+
+
 OutputDataPoint = Annotated[
     OutputIndicatorDataPoint
     | OutputIndicatorSeriesCatalog
@@ -425,7 +440,8 @@ OutputDataPoint = Annotated[
     | OutputTickerSubscription
     | OutputIndicatorSubscriptionOrder
     | OutputTimeAck
-    | OutputChart,
+    | OutputChart
+    | OutputTrainedModelParams,
     Field(discriminator="kind"),
 ]
 

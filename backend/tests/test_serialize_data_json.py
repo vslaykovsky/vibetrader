@@ -98,12 +98,14 @@ def test_serialize_data_json():
             {
                 "type": "plotly",
                 "title": "PnL Distribution",
+                "description": "",
                 "data": [{"type": "histogram", "x": [1.2, -0.5, 3.1], "marker": {"color": "#26a69a"}}],
                 "layout": {"xaxis": {"title": "Return %"}, "yaxis": {"title": "Count"}},
             },
             {
                 "type": "table",
                 "title": "Trades",
+                "description": "",
                 "rows": [
                     {"entry_time": "2024-01-15", "exit_time": "2024-02-10", "pnl": 3.1, "comment": "EMA cross up"},
                     {"entry_time": "2024-03-02", "exit_time": "2024-03-20", "pnl": -1.2, "comment": "Signal flip"},

@@ -50,6 +50,7 @@ from strategies_v2.utils import (
     InputPortfolioDataPoint,
     InputOhlcDataPoint,
     InputRenkoDataPoint,
+    InputTrainedModelParams,
     Ohlc,
     OutputChart,
     OutputIndicatorDataPoint,
@@ -57,6 +58,7 @@ from strategies_v2.utils import (
     OutputIndicatorSubscriptionOrder,
     OutputMarketTradeOrder,
     OutputTickerSubscription,
+    OutputTrainedModelParams,
     RenkoIndicatorSubscription,
     StrategyInput,
     StrategyOutput,
@@ -422,6 +424,18 @@ def _read_strategy_name(workspace: Path) -> str:
     return workspace.name
 
 
+def _trained_model_params_input_from_workspace(workspace: Path) -> InputTrainedModelParams | None:
+    path = workspace / "trained_model_params.json"
+    if not path.is_file():
+        return None
+    raw = path.read_text(encoding="utf-8")
+    try:
+        out = OutputTrainedModelParams.model_validate_json(raw)
+        return InputTrainedModelParams(name=out.name, data=out.data)
+    except Exception:
+        return InputTrainedModelParams.model_validate_json(raw)
+
+
 def simulate(
     *,
     workspace: Path,
@@ -431,10 +445,18 @@ def simulate(
     provider: str | None,
     entry_script: str,
     simulation_scale: str | None = None,
-) -> tuple[backtest_utils.DataJson, list[dict[str, str]] | None]:
+) -> tuple[
+    backtest_utils.DataJson,
+    list[dict[str, str]] | None,
+    OutputTrainedModelParams | None,
+]:
     bars_query = HistoricalBarsQuery()
     rt = StrategyRuntime(workspace, entry_script=entry_script)
     strategy_subprocess_secs = 0.0
+    initial_points = [InputPortfolioDataPoint(positions=[])]
+    trained_model_input = _trained_model_params_input_from_workspace(workspace)
+    if trained_model_input is not None:
+        initial_points.append(trained_model_input)
 
     def _call_strategy(fn, *args, **kwargs):
         nonlocal strategy_subprocess_secs
@@ -449,7 +471,7 @@ def simulate(
             rt.start,
             initial_input=StrategyInput(
                 unixtime=0,
-                points=[InputPortfolioDataPoint(positions=[])],
+                points=initial_points,
             ),
         )
         startup = assign_subscription_ids(startup)
@@ -611,11 +633,18 @@ def simulate(
         strategy_charts: list[dict] = []
         output_indicator_points: dict[str, list[tuple[int, float]]] = {}
         renko_bricks: dict[str, list[tuple[int, float, float, str, float]]] = {}
+        trained_model_params: OutputTrainedModelParams | None = None
 
         def _collect_strategy_charts(output: StrategyOutput) -> None:
             for item in output.root:
                 if isinstance(item, OutputChart):
                     strategy_charts.append(item.chart.model_dump(mode="json"))
+
+        def _collect_trained_model_params(output: StrategyOutput) -> None:
+            nonlocal trained_model_params
+            for item in output.root:
+                if isinstance(item, OutputTrainedModelParams):
+                    trained_model_params = item
 
         def _record_new_trades(first_trade_index: int, t_ax: str | int) -> None:
             for trade in portfolio.trades[first_trade_index:]:
@@ -664,6 +693,7 @@ def simulate(
             fills: dict[str, float],
         ) -> None:
             _collect_strategy_charts(out)
+            _collect_trained_model_params(out)
             for item in out.root:
                 if isinstance(item, OutputIndicatorDataPoint):
                     output_indicator_points.setdefault(item.name, []).append(
@@ -687,6 +717,7 @@ def simulate(
             )
 
         _collect_strategy_charts(startup)
+        _collect_trained_model_params(startup)
 
         if not multi_ticker:
             driver_df = per_driver_df[primary_ticker]
@@ -959,6 +990,7 @@ def simulate(
             logger.warning("strategy finalize failed: %s", exc)
             final_output = StrategyOutput([])
         _collect_strategy_charts(final_output)
+        _collect_trained_model_params(final_output)
         logger.info("strategy_subprocess_seconds=%.3f", strategy_subprocess_secs)
     finally:
         try:
@@ -1077,6 +1109,7 @@ def simulate(
             metrics=metrics,
         ),
         catalog_json_for_backtest,
+        trained_model_params,
     )
 
 
@@ -1085,6 +1118,7 @@ def _write_workspace_outputs(
     workspace: Path,
     *,
     indicator_series_catalog: list[dict[str, str]] | None = None,
+    trained_model_params: OutputTrainedModelParams | None = None,
 ) -> tuple[Path, Path | None]:
     serialized = doc.model_dump(mode="json", exclude_none=True)
     if indicator_series_catalog:
@@ -1096,6 +1130,11 @@ def _write_workspace_outputs(
     backtest_path.write_text(
         json.dumps(serialized, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    if trained_model_params is not None:
+        (workspace / "trained_model_params.json").write_text(
+            trained_model_params.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
+        )
     if metrics is None:
         try:
             metrics_path.unlink()
@@ -1166,7 +1205,7 @@ def main(argv: list[str]) -> int:
         simulation_scale,
     )
 
-    doc, indicator_catalog = simulate(
+    doc, indicator_catalog, trained_model_params = simulate(
         workspace=workspace,
         start_d=start_d,
         end_d=end_d,
@@ -1179,6 +1218,7 @@ def main(argv: list[str]) -> int:
         doc,
         workspace,
         indicator_series_catalog=indicator_catalog,
+        trained_model_params=trained_model_params,
     )
     print(f"wrote {backtest_path}", file=sys.stderr)
     if metrics_path is not None:

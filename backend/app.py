@@ -51,8 +51,6 @@ def create_app() -> Flask:
         },
     )
 
-    init_database(engine)
-
     app.register_blueprint(strategy_blueprint)
     app.register_blueprint(simulation_blueprint)
     app.register_blueprint(live_blueprint)
@@ -190,8 +188,11 @@ app = create_app()
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", action="store_true", help="enable Flask debug mode")
+    parser.add_argument("--init-database", action="store_true", help="initialize database schema before serving")
 
     args = parser.parse_args()
+    if args.init_database:
+        init_database(engine)
     if args.debug:
         configure_logging("INFO", gcp=False)
     else:
