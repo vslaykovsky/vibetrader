@@ -92,7 +92,7 @@ def serialize_strategy(
         messages = _messages_with_admin_extras(messages, strategy)
     else:
         messages = _messages_without_admin_extras(messages)
-    return {
+    payload = {
         "id": strategy.id,
         "thread_id": strategy.thread_id,
         "messages": messages,
@@ -105,6 +105,9 @@ def serialize_strategy(
         "language": strategy.language or "",
         "created_at": strategy.created_at.isoformat() if strategy.created_at else None,
     }
+    if is_admin:
+        payload["python_code"] = strategy.code or ""
+    return payload
 
 
 @strategy_blueprint.get("/threads")

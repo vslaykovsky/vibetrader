@@ -2629,6 +2629,55 @@ html[data-theme='dark'] .canvas-header-action.is-active {
   color: var(--text);
 }
 
+.canvas-text-block-pseudocode .canvas-python-code {
+  overflow-x: auto;
+  white-space: pre;
+  word-break: normal;
+}
+
+.canvas-python-code code {
+  font-family: inherit;
+}
+
+.canvas-python-code .hljs-keyword,
+.canvas-python-code .hljs-selector-tag {
+  color: #c084fc;
+}
+
+.canvas-python-code .hljs-built_in,
+.canvas-python-code .hljs-type {
+  color: #38bdf8;
+}
+
+.canvas-python-code .hljs-string {
+  color: #86efac;
+}
+
+.canvas-python-code .hljs-number,
+.canvas-python-code .hljs-literal {
+  color: #fbbf24;
+}
+
+.canvas-python-code .hljs-comment {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.canvas-python-code .hljs-meta {
+  color: #f472b6;
+}
+
+.canvas-python-code .hljs-title,
+.canvas-python-code .hljs-title.function_ {
+  color: #67e8f9;
+}
+
+.canvas-python-code .hljs-params,
+.canvas-python-code .hljs-variable,
+.canvas-python-code .hljs-attr {
+  color: var(--text);
+}
+
 .canvas-algorithm-spinner {
   margin: 14px 0 0;
 }

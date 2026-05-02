@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import hljs from 'highlight.js/lib/core';
+import python from 'highlight.js/lib/languages/python';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { randomUUID } from '../randomUUID.js';
@@ -12,6 +14,8 @@ import { useTimeZone } from '../TimeZoneContext.jsx';
 import { dateKeyFromIso as zonedDateKeyFromIso, parseIsoInstant, todayDateKey } from '../lib/dateTime.js';
 import { ProfileMenu } from '../ProfileMenu';
 import { SimulationPanel } from '../components/SimulationPanel.jsx';
+
+hljs.registerLanguage('python', python);
 
 function ChatProcessingSpinner({ label }) {
   const text =
@@ -94,6 +98,34 @@ function CanvasPanelCopyButton({ text, ariaLabel, disabled }) {
         </svg>
       )}
     </button>
+  );
+}
+
+function escapeHtml(code) {
+  const source = typeof code === 'string' ? code : '';
+  return source
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function highlightedPythonHtml(code) {
+  const source = typeof code === 'string' ? code : '';
+  try {
+    return hljs.highlight(source, { language: 'python', ignoreIllegals: true }).value;
+  } catch {
+    return escapeHtml(source);
+  }
+}
+
+function PythonSourceCode({ code }) {
+  const highlighted = useMemo(() => highlightedPythonHtml(code), [code]);
+  return (
+    <pre className="canvas-pseudocode canvas-python-code">
+      <code dangerouslySetInnerHTML={{ __html: highlighted }} />
+    </pre>
   );
 }
 
@@ -496,6 +528,8 @@ export function StrategyPage() {
   const [liveStrategyRunId, setLiveStrategyRunId] = useState('');
   const [liveStrategyAlgorithm, setLiveStrategyAlgorithm] = useState('');
   const [historicalStrategyAlgorithm, setHistoricalStrategyAlgorithm] = useState('');
+  const [liveStrategyPythonCode, setLiveStrategyPythonCode] = useState('');
+  const [historicalStrategyPythonCode, setHistoricalStrategyPythonCode] = useState('');
   const [algorithmLoading, setAlgorithmLoading] = useState(false);
   const [reverting, setReverting] = useState(false);
   const [isNarrow, setIsNarrow] = useState(false);
@@ -680,6 +714,7 @@ export function StrategyPage() {
       if (typeof payload.algorithm === 'string') {
         setLiveStrategyAlgorithm(payload.algorithm);
       }
+      setLiveStrategyPythonCode(typeof payload.python_code === 'string' ? payload.python_code : '');
       setServerJob({
         status: payload.status ?? null,
         statusText: payload.status_text || '',
@@ -723,6 +758,10 @@ export function StrategyPage() {
     () => (viewingRunId ? historicalStrategyAlgorithm : liveStrategyAlgorithm) || '',
     [viewingRunId, historicalStrategyAlgorithm, liveStrategyAlgorithm],
   );
+  const displayPythonCodeText = useMemo(
+    () => (viewingRunId ? historicalStrategyPythonCode : liveStrategyPythonCode) || '',
+    [viewingRunId, historicalStrategyPythonCode, liveStrategyPythonCode],
+  );
 
   useEffect(() => {
     algorithmFetchAbortRef.current?.abort();
@@ -736,6 +775,7 @@ export function StrategyPage() {
         setViewingRunId(null);
         setHistoricalCanvas(null);
         setHistoricalStrategyAlgorithm('');
+        setHistoricalStrategyPythonCode('');
         appliedHashKeyRef.current = '';
         navigate(
           { pathname: location.pathname, search: location.search, hash: '' },
@@ -752,6 +792,9 @@ export function StrategyPage() {
         setHistoricalCanvas(payload.canvas || {});
         setHistoricalStrategyAlgorithm(
           typeof payload.algorithm === 'string' ? payload.algorithm : '',
+        );
+        setHistoricalStrategyPythonCode(
+          typeof payload.python_code === 'string' ? payload.python_code : '',
         );
         mergeStrategyNameFromPayload(payload);
         setViewingRunId(runId);
@@ -828,6 +871,8 @@ export function StrategyPage() {
     setLiveStrategyRunId('');
     setLiveStrategyAlgorithm('');
     setHistoricalStrategyAlgorithm('');
+    setLiveStrategyPythonCode('');
+    setHistoricalStrategyPythonCode('');
     setAlgorithmLoading(false);
     algorithmFetchAbortRef.current?.abort();
     algorithmFetchAbortRef.current = null;
@@ -938,6 +983,7 @@ export function StrategyPage() {
     }
     setViewingRunId(null);
     setHistoricalCanvas(null);
+    setHistoricalStrategyPythonCode('');
     const ok = window.confirm(
       'Revert this thread to this agent message? This will delete all later strategy runs for this thread.',
     );
@@ -969,6 +1015,7 @@ export function StrategyPage() {
       setCanvasIfChanged(next.canvas);
       setLiveStrategyRunId(typeof next.id === 'string' ? next.id : '');
       setLiveStrategyAlgorithm(typeof next.algorithm === 'string' ? next.algorithm : '');
+      setLiveStrategyPythonCode(typeof next.python_code === 'string' ? next.python_code : '');
       setServerJob({
         status: next.status ?? null,
         statusText: next.status_text || '',
@@ -1067,6 +1114,7 @@ export function StrategyPage() {
         setCanvasIfChanged(payload.canvas);
         setLiveStrategyRunId(typeof payload.id === 'string' ? payload.id : '');
         setLiveStrategyAlgorithm(typeof payload.algorithm === 'string' ? payload.algorithm : '');
+        setLiveStrategyPythonCode(typeof payload.python_code === 'string' ? payload.python_code : '');
         setServerJob({
           status: payload.status ?? null,
           statusText: payload.status_text || '',
@@ -1303,6 +1351,7 @@ export function StrategyPage() {
           if (typeof payload.algorithm === 'string') {
             setLiveStrategyAlgorithm(payload.algorithm);
           }
+          setLiveStrategyPythonCode(typeof payload.python_code === 'string' ? payload.python_code : '');
           setServerJob({
             status: payload.status ?? null,
             statusText: payload.status_text || '',
@@ -1421,6 +1470,7 @@ export function StrategyPage() {
     setError('');
     setViewingRunId(null);
     setHistoricalCanvas(null);
+    setHistoricalStrategyPythonCode('');
     navigate(
       { pathname: location.pathname, search: location.search, hash: '' },
       { replace: true },
@@ -1478,6 +1528,7 @@ export function StrategyPage() {
       if (typeof payload.algorithm === 'string') {
         setLiveStrategyAlgorithm(payload.algorithm);
       }
+      setLiveStrategyPythonCode(typeof payload.python_code === 'string' ? payload.python_code : '');
       setServerJob({
         status: payload.status ?? null,
         statusText: payload.status_text || '',
@@ -1608,6 +1659,7 @@ export function StrategyPage() {
   const paramsHyperoptJsonText = paramsHyperoptJsonFromOutput(output);
   const showHyperoptParamsPanel = paramsHyperoptJsonText != null;
   const showMetricsPanel = metricsJsonFromOutput(output) != null;
+  const showPythonCodePanel = String(displayPythonCodeText || '').trim().length > 0;
   const hasAnyCanvasData =
     showCliDescription ||
     showParamsPanel ||
@@ -2068,6 +2120,19 @@ export function StrategyPage() {
                 </ReactMarkdown>
               </div>
             )}
+          </details>
+        ) : null}
+        {showPythonCodePanel ? (
+          <details
+            key={`source:${displayStrategyRunId}`}
+            className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details"
+          >
+            <summary className="canvas-pseudocode-summary">Python Source Code</summary>
+            <CanvasPanelCopyButton
+              text={displayPythonCodeText}
+              ariaLabel="Copy Python source code"
+            />
+            <PythonSourceCode code={displayPythonCodeText} />
           </details>
         ) : null}
         {chartError ? <p className="canvas-chart-error">{chartError}</p> : null}
