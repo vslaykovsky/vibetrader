@@ -572,6 +572,8 @@ class StrategySimulateCommandHandler:
             )
 
         for ts in all_ts_sorted:
+            base_unix = int(ts.timestamp())
+            in_active_window = base_unix >= sim_start_unix
             if sess.stop_requested:
                 sess.emit(simulation_event("status", status="stopped"))
                 return
@@ -588,7 +590,6 @@ class StrategySimulateCommandHandler:
                 sess.emit(simulation_event("status", status="stopped"))
                 return
 
-            base_unix = int(ts.timestamp())
             step_points: list = []
             fills: dict[str, float] = {}
             primary_bar: tuple[float, float, float, float, float] | None = None
@@ -637,7 +638,7 @@ class StrategySimulateCommandHandler:
                 for pt in eng.values_at_row_for_subscription(local_idx, row):
                     step_points.append(pt.model_copy(update={"id": str(ind_sub.id)}))
 
-            if step_points:
+            if step_points and in_active_window:
                 portfolio.equity(last_prices)
                 out = rt.send(
                     StrategyInput(
@@ -645,22 +646,21 @@ class StrategySimulateCommandHandler:
                         points=[portfolio.to_portfolio_datapoint(), *step_points],
                     )
                 )
-                if base_unix >= sim_start_unix:
-                    orders = [
-                        item for item in out.root if isinstance(item, OutputMarketTradeOrder)
-                    ]
-                    if orders:
-                        first_trade = len(portfolio.trades)
-                        portfolio.apply_market_orders(
-                            orders,
-                            prices=fills,
-                            unixtime=base_unix,
-                            reason="strategy",
-                        )
-                        for trade in portfolio.trades[first_trade:]:
-                            sess.emit(_trade_event_payload(trade, base_unix))
+                orders = [
+                    item for item in out.root if isinstance(item, OutputMarketTradeOrder)
+                ]
+                if orders:
+                    first_trade = len(portfolio.trades)
+                    portfolio.apply_market_orders(
+                        orders,
+                        prices=fills,
+                        unixtime=base_unix,
+                        reason="strategy",
+                    )
+                    for trade in portfolio.trades[first_trade:]:
+                        sess.emit(_trade_event_payload(trade, base_unix))
 
-            if last_prices and base_unix >= sim_start_unix:
+            if last_prices and in_active_window:
                 portfolio.record_equity(base_unix, last_prices)
 
             if (
@@ -909,32 +909,18 @@ class StrategySimulateCommandHandler:
                     return
 
                 fill_price = step.running.close
-                # Padding/warmup bars are *before* ``sim_start_i``: feed them to the
-                # strategy runtime so indicators warm up, but do NOT book or emit
-                # trades for them — those would appear left of the user's start date.
                 in_active_window = (
                     step.base_row >= sim_start_i
                     and int(step.unixtime) >= sim_start_unix
                 )
-                if step.fired:
+                if step.fired and in_active_window:
                     for line in expand_step_to_lines(
                         step,
                         portfolio_provider=portfolio.to_portfolio_datapoint,
                     ):
                         out = rt.send(line)
-                        if not in_active_window:
-                            continue
                         for item in out.root:
                             if isinstance(item, OutputMarketTradeOrder):
-                                if int(line.unixtime) < sim_start_unix:
-                                    logger.warning(
-                                        "skip pre-start trade unixtime=%s sim_start_unix=%s base_row=%s sim_start_i=%s",
-                                        line.unixtime,
-                                        sim_start_unix,
-                                        step.base_row,
-                                        sim_start_i,
-                                    )
-                                    continue
                                 first_trade = len(portfolio.trades)
                                 portfolio.apply_market_order(
                                     ticker=item.ticker,

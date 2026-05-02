@@ -937,7 +937,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
             position: 'inBar',
             color: '#9e9e9e',
             shape: 'circle',
-            text: tr.reason ? `INVALID: ${tr.reason}` : 'INVALID',
+            text: 'ERROR',
           };
         }
         return {

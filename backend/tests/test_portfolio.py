@@ -102,6 +102,30 @@ def test_portfolio_apply_market_orders_uses_batch_cash_for_buys():
         "max_leverage exceeded",
     ]
 
+    p5 = Portfolio(initial_deposit=10_000.0, ticker="SPY")
+    p5.apply_market_order(direction="buy", deposit_ratio=1.0, price=100.0, unixtime=1)
+    p5.apply_market_orders(
+        [
+            OutputMarketTradeOrder(ticker="SPY", direction="sell", deposit_ratio=1.0),
+            OutputMarketTradeOrder(ticker="SPY", direction="sell", deposit_ratio=1.0),
+        ],
+        prices={"SPY": 100.0},
+        unixtime=2,
+    )
+    assert p5.cash == pytest.approx(20_000.0)
+    assert p5.position_qty == pytest.approx(-100.0)
+    assert [t.action for t in p5.trades] == ["buy", "sell", "sell_short"]
+    assert [t.position_before_order for t in p5.trades] == [
+        pytest.approx(0.0),
+        pytest.approx(100.0),
+        pytest.approx(0.0),
+    ]
+    assert [t.position_after_order_filled for t in p5.trades] == [
+        pytest.approx(100.0),
+        pytest.approx(0.0),
+        pytest.approx(-100.0),
+    ]
+
 
 def test_portfolio_max_leverage_prevents_margin_but_allows_opt_in_and_reductions():
     p = Portfolio(initial_deposit=10_000.0, ticker="SPY")

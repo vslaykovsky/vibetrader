@@ -27,18 +27,21 @@ class StrategyRuntime:
         entry_script: str = "strategy.py",
         startup_timeout_seconds: float = 60.0,
         response_timeout_seconds: float = 5.0,
+        initial_response_timeout_seconds: float = 0.25,
         python_executable: str | None = None,
     ) -> None:
         self.workspace = Path(workspace).resolve()
         self.entry_script = entry_script
         self.startup_timeout_seconds = startup_timeout_seconds
         self.response_timeout_seconds = response_timeout_seconds
+        self.initial_response_timeout_seconds = initial_response_timeout_seconds
         self.python_executable = python_executable or sys.executable
         self._proc: subprocess.Popen[str] | None = None
         self._out_q: queue.Queue[str | None] = queue.Queue()
         self._reader_thread: threading.Thread | None = None
         self._recorded_inputs: list[str] = []
         self._recorded_outputs: list[str] = []
+        self._initial_response: StrategyOutput | None = None
 
     @property
     def recorded_inputs(self) -> list[str]:
@@ -47,6 +50,10 @@ class StrategyRuntime:
     @property
     def recorded_outputs(self) -> list[str]:
         return list(self._recorded_outputs)
+
+    @property
+    def initial_response(self) -> StrategyOutput | None:
+        return self._initial_response
 
     def write_io_files(
         self,
@@ -138,10 +145,27 @@ class StrategyRuntime:
             raise StrategyRuntimeError(f"Empty startup line from strategy. stderr={err!r}")
         try:
             self._recorded_outputs.append(line.strip())
-            return StrategyOutput.model_validate_json(line.strip())
+            startup = StrategyOutput.model_validate_json(line.strip())
         except Exception as exc:
             err = self._drain_stderr()
             raise StrategyRuntimeError(f"Invalid startup JSON: {exc!s}; stderr={err!r}") from exc
+        if initial_input is not None:
+            self._initial_response = self._read_optional_initial_response()
+        return startup
+
+    def _read_optional_initial_response(self) -> StrategyOutput | None:
+        try:
+            line = self._out_q.get(timeout=max(0.0, self.initial_response_timeout_seconds))
+        except queue.Empty:
+            return None
+        if line is None:
+            return None
+        try:
+            self._recorded_outputs.append(line.strip())
+            return StrategyOutput.model_validate_json(line.strip())
+        except Exception as exc:
+            err = self._drain_stderr()
+            raise StrategyRuntimeError(f"Invalid initial response JSON: {exc!s}; stderr={err!r}") from exc
 
     def send(self, step: StrategyInput) -> StrategyOutput:
         if self._proc is None or self._proc.stdin is None:
@@ -169,10 +193,23 @@ class StrategyRuntime:
             )
         try:
             self._recorded_outputs.append(line.strip())
-            return StrategyOutput.model_validate_json(line.strip())
+            output = StrategyOutput.model_validate_json(line.strip())
         except Exception as exc:
             err = self._drain_stderr()
             raise StrategyRuntimeError(f"Invalid response JSON: {exc!s}; stderr={err!r}") from exc
+        self._validate_time_ack(output, step.unixtime)
+        return output
+
+    def _validate_time_ack(self, output: StrategyOutput, expected_unixtime: int) -> None:
+        acks = [p for p in output.root if getattr(p, "kind", None) == "time_ack"]
+        if len(acks) != 1:
+            raise StrategyRuntimeError(
+                f"Expected exactly one time_ack for unixtime={expected_unixtime}, got {len(acks)}"
+            )
+        if acks[0].unixtime != expected_unixtime:
+            raise StrategyRuntimeError(
+                f"Expected time_ack unixtime={expected_unixtime}, got {acks[0].unixtime}"
+            )
 
     def finalize(self, *, timeout_seconds: float = 60.0) -> StrategyOutput:
         """Close stdin and drain any remaining stdout lines until the process exits.

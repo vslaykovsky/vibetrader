@@ -705,7 +705,7 @@ def simulate(
                             if is_invalid
                             else ("arrowUp" if is_buy else "arrowDown")
                         ),
-                        text=trade.reason if is_invalid else trade.label,
+                        text="ERROR" if is_invalid else trade.label,
                     )
                 )
                 table_rows.append(
@@ -841,7 +841,8 @@ def simulate(
             ):
                 fill_price = step.running.close
                 pre_trade_count = len(portfolio.trades)
-                if step.fired:
+                in_requested_window = start_i <= step.base_row <= end_i
+                if step.fired and in_requested_window:
                     for line in expand_step_to_lines(
                         step,
                         portfolio_provider=portfolio.to_portfolio_datapoint,
@@ -866,9 +867,10 @@ def simulate(
                             fills={primary_ticker: fill_price},
                         )
                 marks = {primary_ticker: fill_price}
-                portfolio.record_equity(step.unixtime, marks)
+                if in_requested_window:
+                    portfolio.record_equity(step.unixtime, marks)
 
-                if step.is_base_close and start_i <= step.base_row <= end_i:
+                if step.is_base_close and in_requested_window:
                     completed_units += 1
                     if total_units > 0:
                         pct = int((completed_units * 100) // total_units)
@@ -928,6 +930,8 @@ def simulate(
                 tickers,
             )
             primary_row_map = ts_to_row[primary_ticker]
+            start_ts = pd.Timestamp(start_d).tz_localize("UTC")
+            end_excl = pd.Timestamp(end_d).tz_localize("UTC") + pd.Timedelta(days=1)
             last_prices: dict[str, float] = {}
             total_units = sum(
                 1
@@ -993,9 +997,10 @@ def simulate(
                         )
                 fired = bool(step_points)
                 primary_row = primary_row_map.get(ts)
+                in_requested_window = start_ts <= ts < end_excl
 
                 pre_trade_count = len(portfolio.trades)
-                if fired:
+                if fired and in_requested_window:
                     if last_prices:
                         portfolio.equity(last_prices)
                     points_all: list = [portfolio.to_portfolio_datapoint()] + step_points
@@ -1004,7 +1009,7 @@ def simulate(
                     _apply_outputs(out, step_unixtime=base_unix, fills=fills)
 
                 primary_close = fills.get(primary_ticker)
-                if last_prices:
+                if last_prices and in_requested_window:
                     portfolio.record_equity(base_unix, last_prices)
 
                 if (

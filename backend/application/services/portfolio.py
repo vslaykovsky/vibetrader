@@ -323,26 +323,53 @@ class Portfolio:
         unixtime: int,
         reason: str = "",
     ) -> None:
-        sell_orders = []
-        buy_orders = []
+        pending_buy_orders = []
+
+        def flush_pending_buy_orders() -> None:
+            nonlocal pending_buy_orders
+            if not pending_buy_orders:
+                return
+            batch_cash = self.cash
+            total_spend = sum(float(item.deposit_ratio) * batch_cash for item, _ in pending_buy_orders)
+            buy_batch_exceeds_cash = total_spend > self.cash + 1e-9
+            if buy_batch_exceeds_cash:
+                for item, px in pending_buy_orders:
+                    dr = float(item.deposit_ratio)
+                    self._record_invalid_order_from_item(
+                        item,
+                        price=px,
+                        unixtime=unixtime,
+                        reason="market_order buy batch exceeds available cash",
+                        qty=(dr * batch_cash) / px,
+                    )
+            else:
+                for item, px in pending_buy_orders:
+                    self.apply_market_order(
+                        ticker=str(item.ticker).strip(),
+                        direction=item.direction,
+                        deposit_ratio=item.deposit_ratio,
+                        price=px,
+                        unixtime=unixtime,
+                        reason=str(getattr(item, "short_explanation", "") or reason),
+                        cash_basis=batch_cash,
+                    )
+            pending_buy_orders = []
+
         for item in orders:
             d = str(item.direction).lower().strip()
-            if d == "sell":
-                sell_orders.append(item)
-            elif d == "buy":
-                buy_orders.append(item)
-            else:
+            t = str(item.ticker).strip()
+            px = prices.get(t)
+            if d not in {"buy", "sell"}:
+                flush_pending_buy_orders()
                 self._record_invalid_order_from_item(
                     item,
                     price=0.0,
                     unixtime=unixtime,
                     reason=f"Unsupported direction: {item.direction!r}",
                 )
-
-        for item in sell_orders:
-            t = str(item.ticker).strip()
-            px = prices.get(t)
+                continue
             if px is None:
+                flush_pending_buy_orders()
                 self._record_invalid_order_from_item(
                     item,
                     price=0.0,
@@ -350,34 +377,9 @@ class Portfolio:
                     reason=f"no fill price available for ticker {t!r}",
                 )
                 continue
-            self.apply_market_order(
-                ticker=t,
-                direction=item.direction,
-                deposit_ratio=item.deposit_ratio,
-                price=px,
-                unixtime=unixtime,
-                reason=str(getattr(item, "short_explanation", "") or reason),
-            )
-
-        batch_cash = self.cash
-        initially_short_tickers = {
-            t for t, pos in self.positions.items() if pos.qty < 0
-        }
-        valid_buy_orders = []
-        total_spend = 0.0
-        for item in buy_orders:
-            t = str(item.ticker).strip()
-            px = prices.get(t)
             dr = float(item.deposit_ratio)
-            if px is None:
-                self._record_invalid_order_from_item(
-                    item,
-                    price=0.0,
-                    unixtime=unixtime,
-                    reason=f"no fill price available for ticker {t!r}",
-                )
-                continue
             if dr <= 0 or dr > 1:
+                flush_pending_buy_orders()
                 self._record_invalid_order_from_item(
                     item,
                     price=px,
@@ -385,28 +387,11 @@ class Portfolio:
                     reason="deposit_ratio must be in (0, 1]",
                 )
                 continue
-            valid_buy_orders.append((item, px))
-            if t not in initially_short_tickers:
-                total_spend += dr * batch_cash
-        buy_batch_exceeds_cash = total_spend > self.cash + 1e-9
-        if buy_batch_exceeds_cash:
-            for item, px in valid_buy_orders:
-                t = str(item.ticker).strip()
-                if t in initially_short_tickers:
-                    continue
-                dr = float(item.deposit_ratio)
-                self._record_invalid_order_from_item(
-                    item,
-                    price=px,
-                    unixtime=unixtime,
-                    reason="market_order buy batch exceeds available cash",
-                    qty=(dr * batch_cash) / px,
-                )
-        for item, px in valid_buy_orders:
-            t = str(item.ticker).strip()
-            if buy_batch_exceeds_cash and t not in initially_short_tickers:
+            pos = self.positions.get(t)
+            if d == "buy" and not (pos is not None and pos.qty < 0):
+                pending_buy_orders.append((item, px))
                 continue
-            cash_basis = None if t in initially_short_tickers else batch_cash
+            flush_pending_buy_orders()
             self.apply_market_order(
                 ticker=t,
                 direction=item.direction,
@@ -414,8 +399,8 @@ class Portfolio:
                 price=px,
                 unixtime=unixtime,
                 reason=str(getattr(item, "short_explanation", "") or reason),
-                cash_basis=cash_basis,
             )
+        flush_pending_buy_orders()
 
     def _exceeds_max_leverage(
         self, *, ticker: str, projected_qty: float, price: float
