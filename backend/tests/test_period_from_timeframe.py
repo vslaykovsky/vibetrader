@@ -1,7 +1,7 @@
 import pytest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
-from strategies import utils
+from application.services import backtest_data as utils
 
 
 def test_period_from_timeframe():

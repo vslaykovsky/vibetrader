@@ -16,7 +16,7 @@ from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from application.services.simulation_limits import CHUNK_BAR_BUDGET, plan_display_bars_fetch_chunks
 from db.models import Candle, CandleTimeframe
 from db.session import SessionLocal, engine
-from strategies import utils
+from application.services import backtest_data as utils
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ class _CacheEntry:
 
 
 class HistoricalBarsQuery:
-    """Loads OHLCV history via existing ``strategies.utils`` market data helpers.
+    """Loads OHLCV history via existing ``application.services.backtest_data`` market data helpers.
 
     In-memory cache (default TTL 10 minutes) keyed by fetch arguments to avoid duplicate provider calls.
     Also uses a Postgres-backed candles cache (``candle`` table) as best-effort read-through/write-through.

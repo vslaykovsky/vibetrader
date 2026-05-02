@@ -45,7 +45,7 @@ from application.use_cases.strategy_simulate import (
     _read_simulation_scale,
     _simulation_row_range,
 )
-from strategies import utils as backtest_utils
+from application.services import backtest_data as backtest_utils
 from strategies_v2.utils import (
     InputPortfolioDataPoint,
     InputOhlcDataPoint,
@@ -173,6 +173,27 @@ def _sharpe_ratio(equity: list[float], *, scale: str) -> float | None:
         return None
     ann = _periods_per_year(scale) ** 0.5
     return ann * mean / (var**0.5)
+
+
+def _trade_win_rate(trades: list) -> float | None:
+    long_entries = []
+    short_entries = []
+    wins = 0
+    closed = 0
+    for trade in trades:
+        if trade.action == "buy":
+            long_entries.append(trade)
+        elif trade.action == "sell" and long_entries:
+            entry = long_entries.pop(0)
+            wins += 1 if trade.price > entry.price else 0
+            closed += 1
+        elif trade.action == "sell_short":
+            short_entries.append(trade)
+        elif trade.action == "buy_to_cover" and short_entries:
+            entry = short_entries.pop(0)
+            wins += 1 if trade.price < entry.price else 0
+            closed += 1
+    return (wins / closed) if closed > 0 else None
 
 
 def _build_subscription_charts(
@@ -598,14 +619,27 @@ def simulate(
 
         def _record_new_trades(first_trade_index: int, t_ax: str | int) -> None:
             for trade in portfolio.trades[first_trade_index:]:
-                is_buy = trade.direction == "buy"
+                is_invalid = not trade.valid
+                is_buy = trade.action in {"buy", "buy_to_cover"}
                 markers.setdefault(trade.ticker, []).append(
                     backtest_utils.LwcMarker(
                         time=t_ax,
-                        position="belowBar" if is_buy else "aboveBar",
-                        color="#26a69a" if is_buy else "#ef5350",
-                        shape="arrowUp" if is_buy else "arrowDown",
-                        text=("BUY" if is_buy else "SELL"),
+                        position=(
+                            "inBar"
+                            if is_invalid
+                            else ("belowBar" if is_buy else "aboveBar")
+                        ),
+                        color=(
+                            "#9e9e9e"
+                            if is_invalid
+                            else ("#26a69a" if is_buy else "#ef5350")
+                        ),
+                        shape=(
+                            "circle"
+                            if is_invalid
+                            else ("arrowUp" if is_buy else "arrowDown")
+                        ),
+                        text=trade.reason if is_invalid else trade.label,
                     )
                 )
                 table_rows.append(
@@ -614,10 +648,11 @@ def simulate(
                             trade.unixtime, unit="s", tz="UTC"
                         ).isoformat(),
                         "ticker": trade.ticker,
-                        "direction": trade.direction,
+                        "direction": trade.label,
                         "price": round(trade.price, 6),
                         "qty": round(trade.qty, 6),
                         "deposit_ratio": round(trade.deposit_ratio, 6),
+                        "status": "invalid" if is_invalid else "filled",
                         "comment": trade.reason or "strategy signal",
                     }
                 )
@@ -943,18 +978,13 @@ def simulate(
         }
     )
 
-    is_eda = len(portfolio.trades) == 0
     equity_series_values = [p.value for p in equity_points]
     final_equity = equity_series_values[-1] if equity_series_values else initial_deposit
     total_return = final_equity / initial_deposit - 1.0
     max_dd = _max_drawdown(equity_series_values)
     sharpe = _sharpe_ratio(equity_series_values, scale=base_scale)
 
-    buys = [t for t in portfolio.trades if t.direction == "buy"]
-    sells = [t for t in portfolio.trades if t.direction == "sell"]
-    paired = min(len(buys), len(sells))
-    wins = sum(1 for b, s in zip(buys, sells) if s.price > b.price)
-    win_rate = (wins / paired) if paired > 0 else None
+    win_rate = _trade_win_rate(portfolio.trades)
 
     strategy_name = _read_strategy_name(workspace)
 
@@ -990,22 +1020,6 @@ def simulate(
                 ]
             break
 
-    if is_eda:
-        logger.info(
-            "done eda strategy_name=%s strategy_charts=%s subscription_charts=%s",
-            strategy_name,
-            len(strategy_charts),
-            len(subscription_charts),
-        )
-        return (
-            backtest_utils.DataJson(
-                strategy_name=strategy_name,
-                charts=[*subscription_charts, *strategy_charts],
-                metrics=None,
-            ),
-            catalog_json_for_backtest,
-        )
-
     equity_chart = backtest_utils.LightweightChartsChart(
         title="Equity curve vs buy & hold",
         series=[
@@ -1014,7 +1028,14 @@ def simulate(
                 label="Strategy equity",
                 options={"color": "#2962ff", "lineWidth": 2},
                 data=equity_points,
-                markers=markers or None,
+                markers=(
+                    [
+                        marker
+                        for ticker_markers in markers.values()
+                        for marker in ticker_markers
+                    ]
+                    or None
+                ),
             ),
             backtest_utils.LwcTimeValueSeries(
                 type="Line",
@@ -1031,7 +1052,7 @@ def simulate(
         sharpe_ratio=(float(sharpe) if sharpe is not None else None),
         max_drawdown=float(max_dd) * 100.0,
         win_rate=(float(win_rate) * 100.0 if win_rate is not None else None),
-        num_trades=len(portfolio.trades),
+        num_trades=sum(1 for trade in portfolio.trades if trade.valid),
         final_equity=float(final_equity),
     )
 
@@ -1162,8 +1183,6 @@ def main(argv: list[str]) -> int:
     print(f"wrote {backtest_path}", file=sys.stderr)
     if metrics_path is not None:
         print(f"wrote {metrics_path}", file=sys.stderr)
-    else:
-        print("skipped metrics.json (EDA run)", file=sys.stderr)
     return 0
 
 

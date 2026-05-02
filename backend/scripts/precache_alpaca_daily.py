@@ -19,7 +19,7 @@ from alpaca.trading.enums import AssetClass, AssetStatus
 from alpaca.trading.requests import GetAssetsRequest
 
 from application.queries.historical_bars import HistoricalBarsQuery
-from strategies import utils
+from application.services import backtest_data as utils
 
 logger = logging.getLogger(__name__)
 

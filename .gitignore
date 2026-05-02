@@ -5,8 +5,7 @@ node_modules
 __pycache__
 dist
 package-lock.json
-backend/strategies/*/
-!backend/strategies/*.*
+backend/strategies/
 .leegheid.md
 .cursor/
 test.ipynb

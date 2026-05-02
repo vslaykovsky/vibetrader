@@ -165,7 +165,7 @@ sudo usermod -aG docker $USER && newgrp docker
 
 - **`frontend/`**: React + Vite chat UI.
 - **`backend/`**: Flask API that powers the chat workflow and persists thread state.
-- **`backend/strategies/`**: Per-thread strategy workspaces at `backend/strategies/<THREAD_UUID>/` (seeded from `backend/strategies/AGENTS.md`).
+- **`backend/strategies_v2/`**: Shared strategy templates plus per-thread workspaces at `backend/strategies_v2/<THREAD_UUID>/` (seeded from `backend/strategies_v2/AGENTS.md`).
 
 ## Docs
 

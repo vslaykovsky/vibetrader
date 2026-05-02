@@ -1,4 +1,4 @@
-from strategies.utils import _is_http_429_exception
+from application.services.backtest_data import _is_http_429_exception
 
 
 class _ExcWithStatus(Exception):

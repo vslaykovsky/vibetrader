@@ -3,12 +3,12 @@
 You implement **`strategy.py`** and keep **`params.json`** up to date. Do not embed tunable values (ticker, scale, periods, thresholds, sizing, renko brick size, etc.) as literals in `strategy.py` — define them in `params.json` and read them after load (see **`params.json`**). Author **`params-hyperopt.json`** as a static config whenever the strategy emits `market_order` outputs. Do not replace or hand-edit **`utils.py`** or **`hyperopt.py`** in the workspace — they are copied from **`backend/strategies_v2/`** and define the JSON contracts; the platform updates those templates when output shapes change.
 Always import everything from utils with: `from utils import *`
 
-Two workspace flavours are supported:
+Two output styles are supported and can be combined:
 
-- **Trading strategy** — `strategy.py` emits `market_order` outputs; the host auto-generates a price chart with buy/sell markers, an equity curve vs. buy-and-hold, a trades table, and `metrics.json`. You may additionally emit `OutputChart` items (see **EDA / custom analytics** below) to prepend custom analytics before those host charts.
-- **EDA strategy** — `strategy.py` emits no `market_order` outputs. It subscribes to inputs, accumulates them during the stream, runs its analysis at stdin EOF, and emits a final batch of `OutputChart` items. The host writes only those charts into `backtest.json`, skips `metrics.json`, and you skip `params-hyperopt.json`.
+- `market_order` outputs: the host records trades, buy/sell markers, an equity curve vs. buy-and-hold, a trades table, and `metrics.json`. If no orders execute, the run still completes with zero trades in `metrics.json`.
+- Custom analytics outputs: `strategy.py` may emit `OutputChart` items at any step or after stdin EOF. These charts are appended to `backtest.json` alongside the host charts.
 
-Do not run `strategy.py` or `hyperopt.py` here — the platform runs them through the historical simulator (`scripts/simulate_strategy_v2.py`) after your changes. The simulator fetches OHLC bars for the ticker/scale in `params.json` across `start_date..end_date`, streams them to your `strategy.py`, and writes `backtest.json` (strategy name + charts) and, for trading strategies, `metrics.json` (scalar metrics) into the workspace.
+Do not run `strategy.py` or `hyperopt.py` here — the platform runs them through the historical simulator (`scripts/simulate_strategy_v2.py`) after your changes. The simulator fetches OHLC bars for the ticker/scale in `params.json` across `start_date..end_date`, streams them to your `strategy.py`, and writes `backtest.json` (strategy name + charts) and `metrics.json` (scalar metrics, including `num_trades`) into the workspace.
 
 ## `params.json`
 
@@ -156,8 +156,9 @@ Renko subscriptions are not supported in multi-ticker simulations yet — use a 
 ## Market orders (`kind: "market_order"`)
 
 - **`deposit_ratio`** defaults to **`1.0`** when omitted (matches `utils.py`).
-- **`deposit_ratio` on `buy`** — fraction of **cash** spent (read the fraction from your top-level buy-size key in `params.json`, default **`1`**).
-- **`deposit_ratio` on `sell`** — fraction of **open size** closed, not cash; use **`1.0`** for a full exit. Reusing the same buy-fraction top-level tunable on sells is a partial exit; keep “in position” in sync with **`portfolio`** if you do that.
+- **`direction="buy"`** — opens/adds to a long position when flat/long, or buys to cover an existing short. When opening/adding long, `deposit_ratio` is the fraction of **cash** spent (read the fraction from your top-level buy-size key in `params.json`, default **`1`**). When covering short, `deposit_ratio` is the fraction of the open short size to cover; use **`1.0`** for a full cover.
+- **`direction="sell"`** — sells/closes an existing long, or sells short when flat/short. When closing long, `deposit_ratio` is the fraction of **open long size** closed; use **`1.0`** for a full exit. When opening/adding short, `deposit_ratio` sizes the short exposure as a fraction of account equity.
+- Trade markers and trade tables are labeled by position effect: long entry `BUY`, long exit `SELL`, short entry `SELL SHORT`, and short exit `BUY TO COVER`.
 
 The fill price is the running close at the time of the update that triggered the order (intraday mid-bar price when `closed: false`, closed-bar close when `closed: true`).
 
@@ -170,18 +171,18 @@ The fill price is the running close at the time of the update that triggered the
 
 Keep logic clear and small; put all subscription and signal rules in `strategy.py`. Prefer shorter code over readability. Do not create functions or classes unless absolutely necessary for reusability.
 
-## EDA / custom analytics (`kind: "chart"`)
+## Custom Analytics (`kind: "chart"`)
 
-An EDA strategy (or a trading strategy that wants extra analytics alongside the host's auto-generated charts) emits final charts to stdout as `OutputChart` items wrapping one of `LightweightChartsChart`, `PlotlyChart`, or `TableChart` defined in `utils.py`. The host validates them and appends them to `backtest.json` under `charts`.
+A strategy can emit charts to stdout as `OutputChart` items wrapping one of `LightweightChartsChart`, `PlotlyChart`, or `TableChart` defined in `utils.py`. The host validates them and appends them to `backtest.json` under `charts`.
 
-Pattern for pure EDA:
+Pattern for chart-only analysis:
 
-1. In startup, emit subscription outputs for every input you need (`ticker_subscription`, `indicator_subscription`), and optionally `OutputIndicatorSeriesCatalog` after them. Same as a trading strategy.
+1. In startup, emit subscription outputs for every input you need (`ticker_subscription`, `indicator_subscription`), and optionally `OutputIndicatorSeriesCatalog` after them.
 2. Only after you have emitted subscriptions, read stdin with `for raw in sys.stdin:` — when the host closes stdin, the loop exits.
-3. On each step, if `point.closed`, push the values you need into long-lived lists (returns, indicator series, labels, etc.). On partial points do nothing unless you specifically need intra-bar stats. On every stdin line, emit the required `time_ack` (same rule as trading strategies; see **I/O**).
+3. On each step, if `point.closed`, push the values you need into long-lived lists (returns, indicator series, labels, etc.). On partial points do nothing unless you specifically need intra-bar stats. On every stdin line, emit the required `time_ack` (see **I/O**).
 4. After the loop, run your analysis, build a list of `OutputChart` items, print `StrategyOutput(items).model_dump_json()` on a single line, flush, and exit.
 
-A trading strategy can emit `OutputChart` items in the same line as `market_order` / `time_ack`, at any step. All collected `OutputChart` items are rendered before the host's price / equity / trades charts.
+A strategy can emit `OutputChart` items in the same line as `market_order` / `time_ack`, at any step. All collected `OutputChart` items are rendered before the host's price / equity / trades charts.
 
 Constraints:
 
@@ -190,11 +191,11 @@ Constraints:
 - Do not use matplotlib, yfinance, or any market-data fetch from within `strategy.py`. All bars arrive through stdin subscriptions.
 - For lightweight-charts `time` values follow the same rule as v1: `"YYYY-MM-DD"` for daily/weekly bars, ISO 8601 UTC datetime or unix epoch seconds for intraday. Pick one format per chart and use it for every series point and every marker in that chart.
 - Every series / bar / line must be clearly labeled. Use readable-contrast colors.
-- Pure EDA strategies must not ship `params-hyperopt.json` and must not emit `market_order` outputs (the host decides EDA vs. trading by the presence of any executed trade).
+- Chart-only analysis should not ship `params-hyperopt.json` and should not emit `market_order` outputs.
 
-## `params-hyperopt.json` (required for trading strategies)
+## `params-hyperopt.json` (required for market-order strategies)
 
-If your `strategy.py` emits `market_order` outputs (a tradable strategy, not pure EDA), ship a static `params-hyperopt.json` next to `params.json` so `python hyperopt.py` can optimize.
+If your `strategy.py` emits `market_order` outputs, ship a static `params-hyperopt.json` next to `params.json` so `python hyperopt.py` can optimize.
 
 The file must match the **`ParamsHyperopt`** model in **`utils.py`** (field names, types, defaults, and `search_space` entries as **`HyperoptIntSpec`**, **`HyperoptFloatSpec`**, or **`HyperoptCategoricalSpec`** per the `type` discriminator). Treat those Pydantic models as the single source of truth; do not restate their shape here.
 

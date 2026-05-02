@@ -1,7 +1,7 @@
 import pandas as pd
 from alpaca.data.timeframe import TimeFrame
 
-from strategies import utils
+from application.services import backtest_data as utils
 
 
 def _sample_df() -> pd.DataFrame:

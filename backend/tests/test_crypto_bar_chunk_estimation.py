@@ -1,7 +1,7 @@
 import pandas as pd
 from alpaca.data.timeframe import TimeFrame
 
-from strategies import utils
+from application.services import backtest_data as utils
 
 
 def test_estimate_crypto_bars_between():

@@ -1,4 +1,4 @@
-from services.agent import redact_secret_json_values_for_user
+from services.agent import _coding_agent_usage_limit_error, redact_secret_json_values_for_user
 
 
 def test_redact_secret_json_values_for_user():
@@ -25,3 +25,10 @@ def test_redact_secret_json_values_for_user():
     assert '"OPENAI_API_KEY": ""' in out["output"]["params.json"]
     assert "secret" not in out["output"]["params.json"]
     assert "SPY" in out["output"]["params.json"]
+
+
+def test_coding_agent_usage_limit_error():
+    assert _coding_agent_usage_limit_error(
+        "ERROR: You've hit your usage limit. To get more access now, send a request to your admin or try again at 3:55 PM."
+    )
+    assert not _coding_agent_usage_limit_error("ERROR: syntax check failed")

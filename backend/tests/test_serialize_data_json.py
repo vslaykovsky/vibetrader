@@ -1,6 +1,6 @@
 import json
 
-from strategies import utils
+from application.services import backtest_data as utils
 
 
 def test_serialize_data_json():
@@ -68,6 +68,7 @@ def test_serialize_data_json():
             {
                 "type": "lightweight-charts",
                 "title": "Price and EMA(50)",
+                "description": "",
                 "series": [
                     {
                         "type": "Candlestick",

@@ -177,10 +177,10 @@ class StrategyRuntime:
     def finalize(self, *, timeout_seconds: float = 60.0) -> StrategyOutput:
         """Close stdin and drain any remaining stdout lines until the process exits.
 
-        EDA strategies detect stdin EOF and then emit a final stdout line with
-        ``OutputChart`` items (accumulated analytics). Call this once after the last
-        ``send`` to collect those final outputs. Non-EDA strategies that emit nothing
-        after EOF return an empty ``StrategyOutput``.
+        Chart-only strategies can detect stdin EOF and then emit a final stdout
+        line with ``OutputChart`` items. Call this once after the last ``send`` to
+        collect those final outputs. Strategies that emit nothing after EOF return
+        an empty ``StrategyOutput``.
         """
         if self._proc is None:
             return StrategyOutput([])

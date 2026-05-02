@@ -3,7 +3,7 @@ from datetime import date
 import pandas as pd
 
 from scripts.simulate_strategy_v2 import _build_subscription_charts
-from strategies import utils as backtest_utils
+from application.services import backtest_data as backtest_utils
 from strategies_v2.utils import RenkoIndicatorSubscription
 
 

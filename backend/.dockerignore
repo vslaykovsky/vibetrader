@@ -8,11 +8,6 @@ __pycache__
 .env
 .env.*
 
-# Exclude per-thread strategy workspaces from Docker build context
-strategies/*
-!strategies/AGENTS.md
-!strategies/CLAUDE.md
-!strategies/strategy.py
-!strategies/utils.py
-!strategies/hyperopt.py
+# Exclude legacy per-thread strategy workspaces from Docker build context
+strategies/
 

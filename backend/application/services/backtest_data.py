@@ -22,7 +22,7 @@ from moexalgo import session as moex_session
 from moexalgo import Ticker
 
 
-WORKSPACE_DIR = Path(__file__).resolve().parent
+WORKSPACE_DIR = Path.cwd()
 PARAMS_PATH = WORKSPACE_DIR / "params.json"
 BACKTEST_PATH = WORKSPACE_DIR / "backtest.json"
 METRICS_PATH = WORKSPACE_DIR / "metrics.json"
@@ -207,7 +207,7 @@ def save_backtest_json(document: DataJson, path: Path | None = None) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     save_json(target, serialize_data_json(document))
 
- 
+
 
 def period_from_timeframe(tf: TimeFrame) -> int:
     """MOEX candle period in minutes (except daily=24, weekly=7 per moexalgo convention)."""

@@ -1,18 +1,18 @@
 # Vibetrader — agent context
 
-Chat UI + Flask API. An agent edits per-thread Python under `backend/strategies/<thread_id>/`, runs `strategy.py`, and the client renders chart JSON from the saved run.
+Chat UI + Flask API. An agent edits per-thread Python under `backend/strategies_v2/<thread_id>/`, runs it through the historical simulator, and the client renders chart JSON from the saved run.
 
 ## Architecture
 
 - **Frontend** (`frontend/`): React/Vite, Supabase session, calls the API with a Bearer JWT.
 - **Backend** (`backend/`): Flask app in `app.py`; HTTP in `api/routes.py`; auth in `auth.py`; DB models/session in `db/`.
 - **Agent** (`services/agent.py`): LLM + tools; invokes Codex on the thread workspace and subprocess runs with cwd set to that folder. Thread state is persisted as `Strategy` rows (messages, canvas, code, status, etc.); strategy source on disk is the workspace for that `thread_id`.
-- **Strategy contract** (schemas, run contract, params/output JSON): **`backend/strategies/AGENTS.md`** — templates (`strategy.py`, `utils.py`, `hyperopt.py`, same `AGENTS.md`) are copied into each new workspace; change the template under `backend/strategies/`, not only one thread directory.
+- **Strategy contract** (schemas, run contract, params/output JSON): **`backend/strategies_v2/AGENTS.md`** — templates (`strategy.py`, `utils.py`, `hyperopt.py`, `params.json`, same `AGENTS.md`) are copied into each new workspace; change the template under `backend/strategies_v2/`, not only one thread directory.
 
 ## Simulation (historical replay)
 
 - **Purpose**: Run the shared workspace **`backend/strategies_v2/`** (see `strategies_v2/AGENTS.md`) on fetched OHLC, one bar at a time with pacing, and stream events to the UI.
-- **Python layer**: `backend/application/` — `use_cases/strategy_simulate.py` (orchestration), `services/` (`strategy_runtime` subprocess, `portfolio`, `speed_clock`, `indicators`), `queries/historical_bars.py` (wraps `strategies.utils.fetch_stock_bars` with a short TTL in-memory cache).
+- **Python layer**: `backend/application/` — `use_cases/strategy_simulate.py` (orchestration), `services/` (`strategy_runtime` subprocess, `portfolio`, `speed_clock`, `indicators`), `queries/historical_bars.py` (wraps `application.services.backtest_data.fetch_stock_bars` with a short TTL in-memory cache).
 - **HTTP**: `backend/api/simulation_routes.py` — `POST /simulation/init|pause|play|speed|stop`, `GET /simulation/stream` (SSE: `bar`, `trade`, `pnl`, `status`, `speed`, keepalive), `GET /simulation/display_bars` (optional OHLC at a finer `scale` for chart-only replay, same ticker/dates as the form; strategy logic unchanged). Start validates date span and an estimated bar-count ceiling against `strategies_v2/params.json` `scale`.
 - **UI**: `frontend/src/pages/StrategyPage.jsx` (Strategy | Simulation tabs; last tab per `thread_id` in `localStorage`), `frontend/src/components/SimulationPanel.jsx` + `SimulationCharts.jsx`, client OHLC resample in `frontend/src/lib/ohlcResample.js`.
 
@@ -24,7 +24,7 @@ The app uses SQLAlchemy 2.x (see `backend/db/session.py`): a module-level `engin
 
 Try the already fully configured `@modelcontextprotocol/server-postgres` MCP tool when the user asks to access, query, or inspect the database at runtime (real data, ad-hoc SQL, or schema verification against a live instance). Do not check configuration, do not explore files, database url, credentials. MCP tool is ready for you to use immediately. 
 
-When analysing chat threads use database as a source of truth, not local backend/strategies/<thread_id> folder! 
+When analysing chat threads use database as a source of truth, not local backend/strategies_v2/<thread_id> folder! 
 Check `strategy` table, every record is a single run in the chat thread. It contains all messages as well as code and canvas outputs. Additionally it links to langsmith_trace that contains execution logs accessible with langsmith MCP tool. 
 
 ## Where to look first
@@ -34,6 +34,6 @@ Check `strategy` table, every record is a single run in the chat thread. It cont
 - Agent, tools, Codex, runs → `backend/services/agent.py`
 - LLM client → `langchain_openrouter.ChatOpenRouter` (see `backend/services/agent.py`)
 - UI thread + canvas → `frontend/src/pages/StrategyPage.jsx`, `frontend/src/strategyChartRenderer.js`
-- Chart/output JSON spec → `backend/strategies/AGENTS.md`
+- Chart/output JSON spec → `backend/strategies_v2/AGENTS.md`
 
 Details (exact paths, env names, observability) live in code and deployment config; read them when the task touches that layer.

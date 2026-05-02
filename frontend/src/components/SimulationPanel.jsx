@@ -594,15 +594,19 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
           const bucket = tu > 0 ? bucketStart(tu, chartTfRef.current) : 0;
           const bIso = bucket > 0 ? formatUnixDateTime(bucket, timeZone) : '?';
           appendLog(
-            `[trade-event] dir=${payload.direction} price=${payload.price} ` +
+            `[trade-event] dir=${payload.direction} action=${payload.action || ''} price=${payload.price} ` +
               `unixtime=${tu} (${tIso}) bucket@${chartTfRef.current}=${bucket} (${bIso})`,
           );
           setTrades((prev) => {
             const row = {
               unixtime: payload.unixtime,
               direction: payload.direction,
+              action: payload.action,
+              label: payload.label,
               price: payload.price,
               deposit_ratio: payload.deposit_ratio,
+              reason: payload.reason,
+              valid: payload.valid !== false,
             };
             const next = [...prev, row];
             return next.length > MAX_TRADES ? next.slice(-MAX_TRADES) : next;
@@ -907,19 +911,39 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     }
     return visible
       .map((tr) => {
-        const buy = String(tr.direction || '').toLowerCase() === 'buy';
+        const action = String(tr.action || tr.direction || '').toLowerCase();
+        const invalid = tr.valid === false || action === 'invalid';
+        const buy = action === 'buy' || action === 'buy_to_cover';
+        const label =
+          tr.label ||
+          {
+            buy: 'BUY',
+            sell: 'SELL',
+            sell_short: 'SELL SHORT',
+            buy_to_cover: 'BUY TO COVER',
+          }[action] ||
+          (buy ? 'BUY' : 'SELL');
         const dep =
           typeof tr.deposit_ratio === 'number' && Number.isFinite(tr.deposit_ratio)
             ? `${Math.round(tr.deposit_ratio * 100)}`
             : '?';
         const pr =
           typeof tr.price === 'number' && Number.isFinite(tr.price) ? tr.price.toFixed(2) : '?';
+        if (invalid) {
+          return {
+            time: bucketStart(tr.unixtime, chartTf),
+            position: 'inBar',
+            color: '#9e9e9e',
+            shape: 'circle',
+            text: tr.reason ? `INVALID: ${tr.reason}` : 'INVALID',
+          };
+        }
         return {
           time: bucketStart(tr.unixtime, chartTf),
           position: buy ? 'belowBar' : 'aboveBar',
           color: buy ? '#26a69a' : '#ef5350',
           shape: buy ? 'arrowUp' : 'arrowDown',
-          text: `${buy ? 'BUY' : 'SELL'} @ ${pr} (${dep}% dep.)`,
+          text: `${label} @ ${pr} (${dep}% dep.)`,
         };
       })
       .sort((a, b) => a.time - b.time);

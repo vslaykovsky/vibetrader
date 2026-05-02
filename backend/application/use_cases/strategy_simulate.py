@@ -47,6 +47,21 @@ from strategies_v2.utils import (
 )
 
 
+def _trade_event_payload(trade: Any, unixtime: int) -> dict[str, Any]:
+    return simulation_event(
+        "trade",
+        unixtime=unixtime,
+        ticker=trade.ticker,
+        direction=trade.direction,
+        action=trade.action,
+        label=trade.label,
+        price=trade.price,
+        deposit_ratio=trade.deposit_ratio,
+        reason=trade.reason or "strategy",
+        valid=trade.valid,
+    )
+
+
 def _padding_days_for_indicator_subscriptions(subs: list[Any]) -> int:
     max_bars = 5
     for s in subs:
@@ -621,17 +636,7 @@ class StrategySimulateCommandHandler:
                             reason="strategy",
                         )
                         for trade in portfolio.trades[first_trade:]:
-                            sess.emit(
-                                simulation_event(
-                                    "trade",
-                                    unixtime=base_unix,
-                                    ticker=trade.ticker,
-                                    direction=trade.direction,
-                                    price=trade.price,
-                                    deposit_ratio=trade.deposit_ratio,
-                                    reason="strategy",
-                                )
-                            )
+                            sess.emit(_trade_event_payload(trade, base_unix))
 
             if last_prices and base_unix >= sim_start_unix:
                 portfolio.record_equity(base_unix, last_prices)
@@ -899,24 +904,19 @@ class StrategySimulateCommandHandler:
                                         sim_start_i,
                                     )
                                     continue
+                                first_trade = len(portfolio.trades)
                                 portfolio.apply_market_order(
+                                    ticker=item.ticker,
                                     direction=item.direction,
                                     deposit_ratio=item.deposit_ratio,
                                     price=fill_price,
                                     unixtime=line.unixtime,
                                     reason="strategy",
                                 )
-                                sess.emit(
-                                    simulation_event(
-                                        "trade",
-                                        unixtime=line.unixtime,
-                                        ticker=item.ticker,
-                                        direction=item.direction,
-                                        price=fill_price,
-                                        deposit_ratio=item.deposit_ratio,
-                                        reason="strategy",
-                                    )
-                                )
+                                if len(portfolio.trades) == first_trade:
+                                    continue
+                                trade = portfolio.trades[-1]
+                                sess.emit(_trade_event_payload(trade, line.unixtime))
                 if in_active_window:
                     portfolio.record_equity(step.unixtime, fill_price)
 

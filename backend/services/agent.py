@@ -42,10 +42,11 @@ Workflow
 * Do not add hyperparameter search loops inside strategy.py by default; optimization is driven by the fixed workspace script hyperopt.py when the user asks for it.
 * To modify code, call update_strategy with the task string the coding agent will execute. Write it in English. The coding agent does not see the chat—only this task—so preserve the user's requirements in full: when they paste a detailed strategy (rules, indicators, parameters, entry/exit logic, sizing, constraints, edge cases, instruments, dates), include all of it in the task; do not compress it into a short summary. For small follow-up edits, a concise change list is enough.
 * If the user only tweaks existing parameters (different ticker, dates, thresholds, deposit, etc.), call run_backtest instead of update_strategy; pass parameters_json as a JSON string so the tool recursively merges into params.json before the run (do not use a --params CLI flag or teach strategies to accept one).
-* If the user asks for exploratory data analysis, market research, or charts **without** defining a tradable strategy (no signals, no rules backtest), use `update_strategy` for the analysis path, then run_backtest. That path must not write metrics.json or params-hyperopt.json.
+* If the user asks for exploratory data analysis, market research, or charts **without** defining a tradable strategy (no signals, no rules backtest), use `update_strategy` for the analysis path, then run_backtest. That path should not emit market_order outputs or write params-hyperopt.json.
 * If the user asks for training/hyperparameter optimization, ensure via update_strategy that the strategy workspace writes params-hyperopt.json (authored as a static file per the workspace AGENTS.md), then run_hyperopt (not run_backtest). To adjust the study without editing files—how many strategy parameters are tuned, their optimisation ranges and bounds, regimes or other study-only config—pass parameters_hyperopt_json on run_hyperopt to merge into params-hyperopt.json before the run.
 * Always respond in the user's language.
 * After each successful update_strategy, call run_backtest or run_hyperopt so results match the change. Only briefly summarize strategy performance based on the output of that tool call, don't make up numbers. The user already sees all the charts and metrics.
+* If a backtest completes with zero trades, say that no trades were executed. Do not call update_strategy just to force trades unless the strategy code contradicts the user's rules or the user asks to change signal sensitivity.
 * Canvas: The right-hand canvas shows the latest run output—interactive price and indicator charts (and any tables or other panels the strategy emits). Users pan along time by dragging the chart, zoom with scroll wheel or pinch where supported, collapse or expand each chart block using its section header, remove a chart block with the "x" beside the title, and reorder chart panels by dragging the handle. Removed/collapsed/reordered chart UI state is saved locally for that run output. When the strategy supplies per-chart help, hovering the "?" beside the title shows it. If the user needs more overlays or diagnostics than what is visible, invite them to ask you to add more indicators, series, or chart panels via the strategy output.
 * If the user asks to hide or remove a chart panel, tell them they can collapse it by clicking the section header or remove it with the "x" beside the chart title—no code change needed.
 * If the user asks to reorder chart panels, tell them they can drag and drop panels in the canvas UI—no code change needed.
@@ -54,7 +55,7 @@ Workflow
 Notes
 * The workspace follows strategies_v2 conventions (see AGENTS.md there): strategy.py is a streaming process that reads params.json, emits ticker_subscription and indicator_subscription on startup, then processes StrategyInput lines from stdin and emits market_order / indicator / time_ack outputs on stdout. utils.py and hyperopt.py are fixed and must not be edited.
 * update_strategy edits strategy.py, params.json, and (for trading strategies) params-hyperopt.json via the coding agent; layout and run contract follow AGENTS.md in that workspace.
-* run_backtest runs the historical simulator (scripts/simulate_strategy_v2.py): it fetches OHLC bars for the ticker/scale across start_date..end_date from params.json, streams them to strategy.py, and refreshes backtest.json (charts) and metrics.json (scalar metrics).
+* run_backtest runs the historical simulator (scripts/simulate_strategy_v2.py): it fetches OHLC bars for the ticker/scale across start_date..end_date from params.json, streams them to strategy.py, and refreshes backtest.json (charts) and metrics.json (scalar metrics, including num_trades).
 * run_hyperopt runs the random-search hyperparameter study in the workspace, which invokes the same simulator per trial and rewrites params.json with the best trial before a final simulator run.
 * Market data providers: use Alpaca for all non-Russian markets; use MOEX (moexalgo/Algopack) for Russian instruments/markets.
 * Alpaca historical market data starts in 2016; there is no data before 2016.
@@ -91,6 +92,7 @@ RUN_HYPEROPT_TOOL_NAME = "run_hyperopt"
 UPDATE_STRATEGY_TOOL_MESSAGE_MAX_JSON = 1024
 RUN_EXECUTION_TOOL_MESSAGE_MAX_JSON = 4096
 ANALYSE_CODE_TOOL_NAME = "analyse_code"
+INTERNAL_LIMITS_MESSAGE = "Internal limits were hit. Please try again later."
 
 ProgressCallback = Callable[[str], None] | None
 
@@ -515,6 +517,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                 "Run a single backtest in this thread's workspace (no coding agent, no code edits). "
                 "Dispatches to scripts/simulate_strategy_v2.py: fetches OHLC bars for the ticker/scale across "
                 "start_date..end_date from params.json, streams them to strategy.py, and refreshes backtest.json and metrics.json. "
+                "If metrics show num_trades=0, tell the user no trades were executed; do not assume that is a code bug. "
                 "Optional parameters_json (a JSON string) is recursively merged into params.json before the run."
             ),
             "parameters": {
@@ -572,16 +575,16 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": ANALYSE_CODE_TOOL_NAME,
             "description": (
-                "Answer a question about the current strategy's code (strategy.py, utils.py, hyperopt.py) "
-                "and params in this thread. "
-                "Use for quick code comprehension without modifying files."
+                "Answer a question about the current strategy.py logic and params in this thread. "
+                "Use only for quick strategy-code comprehension without modifying files. "
+                "Do not ask this tool about simulator, portfolio, fills, metrics generation, or platform behavior."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "question": {
                         "type": "string",
-                        "description": "A natural-language question about the current strategy code.",
+                        "description": "A natural-language question about the current strategy.py logic or params only.",
                     }
                 },
                 "required": ["question"],
@@ -644,7 +647,10 @@ def run_analyse_code(
 
     analysis_system = (
         "You are a code analyst for a trading strategy project. "
-        "Answer the user's question using ONLY the provided strategy code, utils.py, and params. "
+        "Answer only questions about the provided strategy.py logic and params. "
+        "Use utils.py only to understand data models imported by strategy.py. "
+        "Do not infer simulator, portfolio, fills, metrics generation, or platform behavior; "
+        "if the question asks about those, say it is outside this tool's context. "
         "Be concise: 1-4 sentences. If the answer cannot be determined, say what is missing."
     )
     context = (
@@ -1010,6 +1016,18 @@ def read_strategy_name_from_workspace(root: Path) -> str:
     return ""
 
 
+def _coding_agent_usage_limit_error(text: str) -> bool:
+    s = (text or "").lower()
+    if "usage limit" not in s:
+        return False
+    return (
+        "try again" in s
+        or "request to your admin" in s
+        or "more access" in s
+        or "hit your usage limit" in s
+    )
+
+
 @traceable(name="run_update_strategy")
 def run_update_strategy(
     thread_id: str, task: str, on_progress: ProgressCallback = None
@@ -1034,7 +1052,12 @@ def run_update_strategy(
         "ok": codegen.returncode == 0,
     }
     if codegen.returncode != 0:
-        result["error"] = "claude code failed" if runner == "claude" else "codex exec failed"
+        combined_output = f"{codegen.stdout or ''}\n{codegen.stderr or ''}"
+        if _coding_agent_usage_limit_error(combined_output):
+            result["error"] = INTERNAL_LIMITS_MESSAGE
+            result["terminal"] = True
+        else:
+            result["error"] = "claude code failed" if runner == "claude" else "codex exec failed"
     else:
         result["strategy_name"] = read_strategy_name_from_workspace(root)
     return result
@@ -1590,6 +1613,13 @@ def build_agent_reply(
                         },
                     )
                     tool_payload = {"ok": False, "error": f"tool execution failed: {type(e).__name__}: {e}"}
+            if isinstance(tool_payload, dict) and tool_payload.get("terminal"):
+                return {
+                    "message": str(tool_payload.get("error") or INTERNAL_LIMITS_MESSAGE),
+                    "canvas": canvas_with_output(existing_canvas, thread_id),
+                    "reply_duration_ms": _reply_duration_ms(),
+                    "strategy_name": last_strategy_name,
+                }
             if (
                 name == UPDATE_STRATEGY_TOOL_NAME
                 and isinstance(tool_payload, dict)
