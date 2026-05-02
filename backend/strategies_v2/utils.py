@@ -219,6 +219,7 @@ class OutputMarketTradeOrder(BaseModel):
     ticker: str
     direction: Literal["buy", "sell"]
     deposit_ratio: float = Field(default=1.0, ge=0, le=1)
+    short_explanation: str = Field(default="", max_length=200)
 
 
 class OutputTickerSubscription(BaseModel):

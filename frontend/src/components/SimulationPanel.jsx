@@ -605,6 +605,8 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
               label: payload.label,
               price: payload.price,
               deposit_ratio: payload.deposit_ratio,
+              position_before_order: payload.position_before_order,
+              position_after_order_filled: payload.position_after_order_filled,
               reason: payload.reason,
               valid: payload.valid !== false,
             };
@@ -912,7 +914,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     return visible
       .map((tr) => {
         const action = String(tr.action || tr.direction || '').toLowerCase();
-        const invalid = tr.valid === false || action === 'invalid';
+        const invalid = tr.valid === false || tr.status === 'invalid';
         const buy = action === 'buy' || action === 'buy_to_cover';
         const label =
           tr.label ||

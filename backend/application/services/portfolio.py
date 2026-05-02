@@ -17,6 +17,8 @@ class Trade:
     price: float
     qty: float
     deposit_ratio: float
+    position_before_order: float
+    position_after_order_filled: float
     reason: str = ""
     valid: bool = True
 
@@ -64,6 +66,10 @@ class Portfolio:
         pos = self.positions.get(self.ticker)
         return None if pos is None else pos.avg_entry_price
 
+    def _position_qty(self, ticker: str) -> float:
+        pos = self.positions.get(ticker)
+        return 0.0 if pos is None else pos.qty
+
     def equity(self, mark_price: float | dict[str, float]) -> float:
         if isinstance(mark_price, dict):
             marks = {str(k).strip(): float(v) for k, v in mark_price.items()}
@@ -98,6 +104,7 @@ class Portfolio:
                 price=price,
                 unixtime=unixtime,
                 reason="ticker is required",
+                explanation=reason,
             )
             return
         d = direction.lower().strip()
@@ -110,6 +117,7 @@ class Portfolio:
                 price=price,
                 unixtime=unixtime,
                 reason="deposit_ratio must be in (0, 1]",
+                explanation=reason,
             )
             return
         if price <= 0:
@@ -120,10 +128,12 @@ class Portfolio:
                 price=price,
                 unixtime=unixtime,
                 reason="price must be positive",
+                explanation=reason,
             )
             return
         if d == "buy":
             pos = self.positions.get(t)
+            before_qty = self._position_qty(t)
             if pos is not None and pos.qty < 0:
                 qty = abs(pos.qty) * dr
                 spend = qty * price
@@ -135,14 +145,18 @@ class Portfolio:
                         price=price,
                         unixtime=unixtime,
                         reason="insufficient cash for market_order batch",
+                        explanation=reason,
+                        qty=qty,
                     )
                     return
                 pnl_leg = qty * (pos.avg_entry_price - price)
                 self.realized_pnl += pnl_leg
                 self.cash -= spend
                 pos.qty += qty
+                after_qty = pos.qty
                 if abs(pos.qty) <= 1e-12:
                     self.positions.pop(t, None)
+                    after_qty = 0.0
                 self.trades.append(
                     Trade(
                         unixtime=unixtime,
@@ -152,6 +166,8 @@ class Portfolio:
                         price=price,
                         qty=qty,
                         deposit_ratio=dr,
+                        position_before_order=before_qty,
+                        position_after_order_filled=after_qty,
                         reason=reason,
                     )
                 )
@@ -169,6 +185,8 @@ class Portfolio:
                     price=price,
                     unixtime=unixtime,
                     reason="insufficient cash for market_order batch",
+                    explanation=reason,
+                    qty=spend / price,
                 )
                 return
             qty = spend / price
@@ -180,6 +198,7 @@ class Portfolio:
                     pos.avg_entry_price * pos.qty + price * qty
                 ) / total_qty
                 pos.qty = total_qty
+            after_qty = self._position_qty(t)
             self.cash -= spend
             self.trades.append(
                 Trade(
@@ -190,11 +209,14 @@ class Portfolio:
                     price=price,
                     qty=qty,
                     deposit_ratio=dr,
+                    position_before_order=before_qty,
+                    position_after_order_filled=after_qty,
                     reason=reason,
                 )
             )
         elif d == "sell":
             pos = self.positions.get(t)
+            before_qty = self._position_qty(t)
             if pos is not None and pos.qty > 0:
                 qty = pos.qty * dr
                 proceeds = qty * price
@@ -202,8 +224,10 @@ class Portfolio:
                 self.realized_pnl += pnl_leg
                 self.cash += proceeds
                 pos.qty -= qty
+                after_qty = pos.qty
                 if pos.qty <= 1e-12:
                     self.positions.pop(t, None)
+                    after_qty = 0.0
                 self.trades.append(
                     Trade(
                         unixtime=unixtime,
@@ -213,6 +237,8 @@ class Portfolio:
                         price=price,
                         qty=qty,
                         deposit_ratio=dr,
+                        position_before_order=before_qty,
+                        position_after_order_filled=after_qty,
                         reason=reason,
                     )
                 )
@@ -231,6 +257,7 @@ class Portfolio:
                 total_qty = open_qty + qty
                 pos.avg_entry_price = (pos.avg_entry_price * open_qty + price * qty) / total_qty
                 pos.qty -= qty
+            after_qty = self._position_qty(t)
             self.trades.append(
                 Trade(
                     unixtime=unixtime,
@@ -240,6 +267,8 @@ class Portfolio:
                     price=price,
                     qty=qty,
                     deposit_ratio=dr,
+                    position_before_order=before_qty,
+                    position_after_order_filled=after_qty,
                     reason=reason,
                 )
             )
@@ -251,6 +280,7 @@ class Portfolio:
                 price=price,
                 unixtime=unixtime,
                 reason=f"Unsupported direction: {direction!r}",
+                explanation=reason,
             )
 
     def apply_market_orders(
@@ -294,10 +324,13 @@ class Portfolio:
                 deposit_ratio=item.deposit_ratio,
                 price=px,
                 unixtime=unixtime,
-                reason=reason,
+                reason=str(getattr(item, "short_explanation", "") or reason),
             )
 
         batch_cash = self.cash
+        initially_short_tickers = {
+            t for t, pos in self.positions.items() if pos.qty < 0
+        }
         valid_buy_orders = []
         total_spend = 0.0
         for item in buy_orders:
@@ -321,26 +354,35 @@ class Portfolio:
                 )
                 continue
             valid_buy_orders.append((item, px))
-            total_spend += dr * batch_cash
-        if total_spend > self.cash + 1e-9:
+            if t not in initially_short_tickers:
+                total_spend += dr * batch_cash
+        buy_batch_exceeds_cash = total_spend > self.cash + 1e-9
+        if buy_batch_exceeds_cash:
             for item, px in valid_buy_orders:
+                t = str(item.ticker).strip()
+                if t in initially_short_tickers:
+                    continue
+                dr = float(item.deposit_ratio)
                 self._record_invalid_order_from_item(
                     item,
                     price=px,
                     unixtime=unixtime,
                     reason="market_order buy batch exceeds available cash",
+                    qty=(dr * batch_cash) / px,
                 )
-            return
         for item, px in valid_buy_orders:
             t = str(item.ticker).strip()
+            if buy_batch_exceeds_cash and t not in initially_short_tickers:
+                continue
+            cash_basis = None if t in initially_short_tickers else batch_cash
             self.apply_market_order(
                 ticker=t,
                 direction=item.direction,
                 deposit_ratio=item.deposit_ratio,
                 price=px,
                 unixtime=unixtime,
-                reason=reason,
-                cash_basis=batch_cash,
+                reason=str(getattr(item, "short_explanation", "") or reason),
+                cash_basis=cash_basis,
             )
 
     def _record_invalid_order_from_item(
@@ -350,6 +392,7 @@ class Portfolio:
         price: float,
         unixtime: int,
         reason: str,
+        qty: float = 0.0,
     ) -> None:
         self._record_invalid_order(
             ticker=getattr(item, "ticker", self.ticker),
@@ -358,6 +401,8 @@ class Portfolio:
             price=price,
             unixtime=unixtime,
             reason=reason,
+            explanation=str(getattr(item, "short_explanation", "")),
+            qty=qty,
         )
 
     def _record_invalid_order(
@@ -369,8 +414,14 @@ class Portfolio:
         price: float,
         unixtime: int,
         reason: str,
+        explanation: str = "",
+        qty: float = 0.0,
     ) -> None:
         t = str(ticker or self.ticker).strip()
+        expl = str(explanation or "").strip()
+        if expl:
+            reason = f"{expl}: {reason}"
+        position_qty = self._position_qty(t or self.ticker)
         self.trades.append(
             Trade(
                 unixtime=unixtime,
@@ -378,8 +429,10 @@ class Portfolio:
                 direction=str(direction).lower().strip(),
                 action="invalid",
                 price=float(price) if price > 0 else 0.0,
-                qty=0.0,
+                qty=float(qty) if qty > 0 else 0.0,
                 deposit_ratio=float(deposit_ratio),
+                position_before_order=position_qty,
+                position_after_order_filled=position_qty,
                 reason=reason,
                 valid=False,
             )

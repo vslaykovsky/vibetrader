@@ -3,6 +3,8 @@
 You implement **`strategy.py`** and keep **`params.json`** up to date. Do not embed tunable values (ticker, scale, periods, thresholds, sizing, renko brick size, etc.) as literals in `strategy.py` — define them in `params.json` and read them after load (see **`params.json`**). Author **`params-hyperopt.json`** as a static config whenever the strategy emits `market_order` outputs. Trainable model strategies may also emit **`trained_model_params.json`** through the `OutputTrainedModelParams` contract below. Do not replace or hand-edit **`utils.py`** or **`hyperopt.py`** in the workspace — they are copied from **`backend/strategies_v2/`** and define the JSON contracts; the platform updates those templates when output shapes change.
 Always import everything from utils with: `from utils import *`
 
+Fail fast: do not add unauthorized fallbacks, fake or synthetic data, broad catch-and-continue handlers, silent default substitutions, mock results, or "graceful degradation" that hides a broken dependency or violated invariant. If required data, params, subscriptions, files, or model artifacts are missing or invalid, raise an explicit error instead of fabricating a result.
+
 Two output styles are supported and can be combined:
 
 - `market_order` outputs: the host records trades, buy/sell markers, an equity curve vs. buy-and-hold, a trades table, and `metrics.json`. If no orders execute, the run still completes with zero trades in `metrics.json`.
@@ -180,6 +182,7 @@ Ordinary strategy parameters, model hyperparameters selected before training, th
 - **`deposit_ratio`** defaults to **`1.0`** when omitted (matches `utils.py`).
 - **`direction="buy"`** — opens/adds to a long position when flat/long, or buys to cover an existing short. When opening/adding long, `deposit_ratio` is the fraction of **cash** spent (read the fraction from your top-level buy-size key in `params.json`, default **`1`**). When covering short, `deposit_ratio` is the fraction of the open short size to cover; use **`1.0`** for a full cover.
 - **`direction="sell"`** — sells/closes an existing long, or sells short when flat/short. When closing long, `deposit_ratio` is the fraction of **open long size** closed; use **`1.0`** for a full exit. When opening/adding short, `deposit_ratio` sizes the short exposure as a fraction of account equity.
+- **`short_explanation`** — optional concise reason for the order, shown in the Trades table **Comment** column. Prefer a short signal description such as `"RSI crossed below oversold threshold"` over repeating raw code conditions.
 - Trade markers and trade tables are labeled by position effect: long entry `BUY`, long exit `SELL`, short entry `SELL SHORT`, and short exit `BUY TO COVER`.
 
 The fill price is the running close at the time of the update that triggered the order (intraday mid-bar price when `closed: false`, closed-bar close when `closed: true`).

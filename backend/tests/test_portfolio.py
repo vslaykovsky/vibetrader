@@ -17,7 +17,12 @@ def test_portfolio_apply_market_orders_uses_batch_cash_for_buys():
     p = Portfolio(initial_deposit=10_000.0, ticker="SPY")
     p.apply_market_orders(
         [
-            OutputMarketTradeOrder(ticker="SPY", direction="buy", deposit_ratio=0.25),
+            OutputMarketTradeOrder(
+                ticker="SPY",
+                direction="buy",
+                deposit_ratio=0.25,
+                short_explanation="momentum breakout",
+            ),
             OutputMarketTradeOrder(ticker="AAPL", direction="buy", deposit_ratio=0.25),
         ],
         prices={"SPY": 100.0, "AAPL": 50.0},
@@ -26,13 +31,19 @@ def test_portfolio_apply_market_orders_uses_batch_cash_for_buys():
     assert p.cash == pytest.approx(5000.0)
     assert p.position_qty == pytest.approx(25.0)
     assert p.positions["AAPL"].qty == pytest.approx(50.0)
+    assert p.trades[0].reason == "momentum breakout"
     assert p.equity({"SPY": 100.0, "AAPL": 50.0}) == pytest.approx(10_000.0)
 
     p2 = Portfolio(initial_deposit=10_000.0, ticker="SPY")
     p2.apply_market_orders(
         [
             OutputMarketTradeOrder(ticker="SPY", direction="buy", deposit_ratio=0.75),
-            OutputMarketTradeOrder(ticker="AAPL", direction="buy", deposit_ratio=0.75),
+            OutputMarketTradeOrder(
+                ticker="AAPL",
+                direction="buy",
+                deposit_ratio=0.75,
+                short_explanation="second entry",
+            ),
         ],
         prices={"SPY": 100.0, "AAPL": 50.0},
         unixtime=1,
@@ -40,6 +51,37 @@ def test_portfolio_apply_market_orders_uses_batch_cash_for_buys():
     assert p2.cash == pytest.approx(10_000.0)
     assert p2.positions == {}
     assert [t.action for t in p2.trades] == ["invalid", "invalid"]
+    assert [t.qty for t in p2.trades] == [pytest.approx(75.0), pytest.approx(150.0)]
+    assert [t.position_before_order for t in p2.trades] == [pytest.approx(0.0), pytest.approx(0.0)]
+    assert [t.position_after_order_filled for t in p2.trades] == [pytest.approx(0.0), pytest.approx(0.0)]
+    assert [t.reason for t in p2.trades] == [
+        "market_order buy batch exceeds available cash",
+        "second entry: market_order buy batch exceeds available cash",
+    ]
+
+    p3 = Portfolio(initial_deposit=10_000.0, ticker="SPY")
+    p3.apply_market_order(direction="sell", deposit_ratio=1.0, price=100.0, unixtime=1)
+    p3.apply_market_orders(
+        [
+            OutputMarketTradeOrder(ticker="SPY", direction="buy", deposit_ratio=1.0),
+            OutputMarketTradeOrder(ticker="SPY", direction="buy", deposit_ratio=1.0),
+        ],
+        prices={"SPY": 100.0},
+        unixtime=2,
+    )
+    assert p3.cash == pytest.approx(0.0)
+    assert p3.position_qty == pytest.approx(100.0)
+    assert [t.action for t in p3.trades] == ["sell_short", "buy_to_cover", "buy"]
+    assert [t.position_before_order for t in p3.trades] == [
+        pytest.approx(0.0),
+        pytest.approx(-100.0),
+        pytest.approx(0.0),
+    ]
+    assert [t.position_after_order_filled for t in p3.trades] == [
+        pytest.approx(-100.0),
+        pytest.approx(0.0),
+        pytest.approx(100.0),
+    ]
 
 
 def test_portfolio_sell_partial_realized_pnl():
@@ -80,13 +122,23 @@ def test_portfolio_record_equity():
 
 def test_portfolio_records_invalid_bad_deposit():
     p = Portfolio(initial_deposit=100.0, ticker="X")
-    p.apply_market_order(direction="buy", deposit_ratio=0.0, price=1.0, unixtime=1)
+    p.apply_market_order(
+        direction="buy",
+        deposit_ratio=0.0,
+        price=1.0,
+        unixtime=1,
+        reason="bad size",
+    )
     assert p.cash == pytest.approx(100.0)
     assert p.position_qty == 0.0
     assert len(p.trades) == 1
+    assert p.trades[0].direction == "buy"
     assert p.trades[0].action == "invalid"
     assert p.trades[0].label == "INVALID"
     assert p.trades[0].valid is False
+    assert p.trades[0].reason == "bad size: deposit_ratio must be in (0, 1]"
+    assert p.trades[0].position_before_order == pytest.approx(0.0)
+    assert p.trades[0].position_after_order_filled == pytest.approx(0.0)
 
 
 def test_portfolio_rejects_nonpositive_deposit_init():

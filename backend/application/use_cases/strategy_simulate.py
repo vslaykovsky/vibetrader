@@ -59,6 +59,8 @@ def _trade_event_payload(trade: Any, unixtime: int) -> dict[str, Any]:
         label=trade.label,
         price=trade.price,
         deposit_ratio=trade.deposit_ratio,
+        position_before_order=trade.position_before_order,
+        position_after_order_filled=trade.position_after_order_filled,
         reason=trade.reason or "strategy",
         valid=trade.valid,
     )
@@ -929,7 +931,7 @@ class StrategySimulateCommandHandler:
                                     deposit_ratio=item.deposit_ratio,
                                     price=fill_price,
                                     unixtime=line.unixtime,
-                                    reason="strategy",
+                                    reason=item.short_explanation,
                                 )
                                 if len(portfolio.trades) == first_trade:
                                     continue

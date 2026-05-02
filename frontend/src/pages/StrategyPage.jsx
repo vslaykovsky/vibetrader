@@ -1960,7 +1960,7 @@ export function StrategyPage() {
                   aria-disabled={deployDisabled}
                   title={deployTitle}
                 >
-                  Live
+                  🚀 Live 🚀
                 </button>
               </span>
               <button

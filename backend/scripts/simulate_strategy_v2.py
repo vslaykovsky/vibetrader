@@ -198,6 +198,33 @@ def _trade_win_rate(trades: list) -> float | None:
     return (wins / closed) if closed > 0 else None
 
 
+def _build_position_value_chart(
+    position_value_points: dict[str, list[backtest_utils.LwcTimeValuePoint]],
+) -> backtest_utils.LightweightChartsChart | None:
+    series = []
+    for idx, ticker in enumerate(sorted(position_value_points)):
+        points = position_value_points[ticker]
+        if not points:
+            continue
+        series.append(
+            backtest_utils.LwcTimeValueSeries(
+                type="Line",
+                label=f"{ticker} position value",
+                options={
+                    "color": _INDICATOR_COLORS[idx % len(_INDICATOR_COLORS)],
+                    "lineWidth": 2,
+                },
+                data=points,
+            )
+        )
+    if not series:
+        return None
+    return backtest_utils.LightweightChartsChart(
+        title="Current position value",
+        series=series,
+    )
+
+
 def _build_subscription_charts(
     *,
     tickers: list[str],
@@ -632,6 +659,8 @@ def simulate(
         bench_first_close: float | None = None
         strategy_charts: list[dict] = []
         output_indicator_points: dict[str, list[tuple[int, float]]] = {}
+        traded_tickers: set[str] = set()
+        position_value_points: dict[str, list[backtest_utils.LwcTimeValuePoint]] = {}
         renko_bricks: dict[str, list[tuple[int, float, float, str, float]]] = {}
         trained_model_params: OutputTrainedModelParams | None = None
 
@@ -649,6 +678,8 @@ def simulate(
         def _record_new_trades(first_trade_index: int, t_ax: str | int) -> None:
             for trade in portfolio.trades[first_trade_index:]:
                 is_invalid = not trade.valid
+                if trade.valid:
+                    traded_tickers.add(trade.ticker)
                 is_buy = trade.action in {"buy", "buy_to_cover"}
                 markers.setdefault(trade.ticker, []).append(
                     backtest_utils.LwcMarker(
@@ -677,13 +708,30 @@ def simulate(
                             trade.unixtime, unit="s", tz="UTC"
                         ).isoformat(),
                         "ticker": trade.ticker,
-                        "direction": trade.label,
+                        "direction": trade.direction,
                         "price": round(trade.price, 6),
                         "qty": round(trade.qty, 6),
                         "deposit_ratio": round(trade.deposit_ratio, 6),
+                        "position_before_order": round(trade.position_before_order, 6),
+                        "position_after_order_filled": round(
+                            trade.position_after_order_filled, 6
+                        ),
                         "status": "invalid" if is_invalid else "filled",
                         "comment": trade.reason or "strategy signal",
                     }
+                )
+
+        def _record_position_values(t_ax: str | int, marks: dict[str, float]) -> None:
+            for ticker in sorted(traded_tickers):
+                pos = portfolio.positions.get(ticker)
+                px = marks.get(ticker)
+                if px is None:
+                    px = portfolio.last_marks.get(
+                        ticker, pos.avg_entry_price if pos is not None else 0.0
+                    )
+                value = 0.0 if pos is None else float(pos.qty) * float(px)
+                position_value_points.setdefault(ticker, []).append(
+                    backtest_utils.LwcTimeValuePoint(time=t_ax, value=value)
                 )
 
         def _apply_outputs(
@@ -845,6 +893,7 @@ def simulate(
                         backtest_utils.LwcTimeValuePoint(time=t_ax, value=float(bench_val))
                     )
                     _record_new_trades(pre_trade_count, t_ax)
+                    _record_position_values(t_ax, marks)
         else:
             ticker_sub_order: list[OutputTickerSubscription] = [
                 p for p in startup.root if isinstance(p, OutputTickerSubscription)
@@ -984,6 +1033,7 @@ def simulate(
                         backtest_utils.LwcTimeValuePoint(time=t_ax, value=float(bench_val))
                     )
                     _record_new_trades(pre_trade_count, t_ax)
+                    _record_position_values(t_ax, last_prices)
         try:
             final_output = _call_strategy(rt.finalize)
         except StrategyRuntimeError as exc:
@@ -1077,6 +1127,7 @@ def simulate(
             ),
         ],
     )
+    position_value_chart = _build_position_value_chart(position_value_points)
     trades_chart = backtest_utils.TableChart(title="Trades", rows=table_rows)
 
     metrics = backtest_utils.Metrics(
@@ -1104,6 +1155,7 @@ def simulate(
                 *subscription_charts,
                 *strategy_charts,
                 equity_chart,
+                *([position_value_chart] if position_value_chart is not None else []),
                 trades_chart,
             ],
             metrics=metrics,
