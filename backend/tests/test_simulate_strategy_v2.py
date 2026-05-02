@@ -3,6 +3,7 @@ from datetime import date
 import pandas as pd
 
 from scripts.simulate_strategy_v2 import _build_subscription_charts
+from strategies import utils as backtest_utils
 from strategies_v2.utils import RenkoIndicatorSubscription
 
 
@@ -19,6 +20,13 @@ def test_build_subscription_charts_handles_atr_renko_bricks():
         index=idx,
     )
     brick_time = int(pd.Timestamp("2024-01-01", tz="UTC").timestamp())
+    marker = backtest_utils.LwcMarker(
+        time="2024-01-01",
+        position="belowBar",
+        color="#26a69a",
+        shape="arrowUp",
+        text="BUY",
+    )
     charts = _build_subscription_charts(
         tickers=["X"],
         base_scale="1d",
@@ -28,7 +36,7 @@ def test_build_subscription_charts_handles_atr_renko_bricks():
         primary_ticker="X",
         start_d=date(2024, 1, 1),
         end_d=date(2024, 1, 2),
-        markers=[],
+        markers={"X": [marker]},
         output_indicator_points={},
         renko_specs=[
             RenkoIndicatorSubscription(
@@ -49,3 +57,4 @@ def test_build_subscription_charts_handles_atr_renko_bricks():
     ]
     assert charts[1].series[0].data[0].open == 100.0
     assert charts[1].series[0].data[0].close == 102.5
+    assert charts[0].series[0].markers == [marker]

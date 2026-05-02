@@ -15,6 +15,7 @@ FibonacciOutputKey = Literal[
     "fib_0p618",
     "fib_0p786",
 ]
+Scale = Literal["1m", "15m", "1h", "4h", "1d", "1w"]
 
 
 def fibonacci_output_retracement_ratio(key: FibonacciOutputKey) -> float:
@@ -208,7 +209,7 @@ class OutputMarketTradeOrder(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["market_order"] = "market_order"
     ticker: str
-    direction: str
+    direction: Literal["buy", "sell"]
     deposit_ratio: float = Field(default=1.0, ge=0, le=1)
 
 
@@ -217,8 +218,8 @@ class OutputTickerSubscription(BaseModel):
     kind: Literal["ticker_subscription"] = "ticker_subscription"
     id: str | None = None
     ticker: str
-    scale: str
-    update_scale: str | None = None
+    scale: Scale
+    update_scale: Scale | None = None
     partial: bool = False
 
 
@@ -227,9 +228,9 @@ class SmaIndicatorSubscription(BaseModel):
     kind: Literal["sma"] = "sma"
     id: str | None = None
     ticker: str
-    scale: str
+    scale: Scale
     period: int
-    update_scale: str | None = None
+    update_scale: Scale | None = None
     partial: bool = False
 
 
@@ -238,9 +239,9 @@ class EmaIndicatorSubscription(BaseModel):
     kind: Literal["ema"] = "ema"
     id: str | None = None
     ticker: str
-    scale: str
+    scale: Scale
     period: int
-    update_scale: str | None = None
+    update_scale: Scale | None = None
     partial: bool = False
 
 
@@ -249,14 +250,14 @@ class MacdIndicatorSubscription(BaseModel):
     kind: Literal["macd"] = "macd"
     id: str | None = None
     ticker: str
-    scale: str
+    scale: Scale
     fast_period: int
     slow_period: int
     signal_period: int
     outputs: list[MacdOutputKey] = Field(
         default_factory=lambda: ["macd", "signal", "histogram"]
     )
-    update_scale: str | None = None
+    update_scale: Scale | None = None
     partial: bool = False
 
     @model_validator(mode="after")
@@ -273,9 +274,9 @@ class RsiIndicatorSubscription(BaseModel):
     kind: Literal["rsi"] = "rsi"
     id: str | None = None
     ticker: str
-    scale: str
+    scale: Scale
     period: int
-    update_scale: str | None = None
+    update_scale: Scale | None = None
     partial: bool = False
 
 
@@ -284,9 +285,9 @@ class AtrIndicatorSubscription(BaseModel):
     kind: Literal["atr"] = "atr"
     id: str | None = None
     ticker: str
-    scale: str
+    scale: Scale
     period: int
-    update_scale: str | None = None
+    update_scale: Scale | None = None
     partial: bool = False
 
 
@@ -295,13 +296,13 @@ class BollingerBandsIndicatorSubscription(BaseModel):
     kind: Literal["bb"] = "bb"
     id: str | None = None
     ticker: str
-    scale: str
+    scale: Scale
     period: int = Field(default=20, ge=1)
     std_dev: float = Field(default=2.0, gt=0)
     outputs: list[BbOutputKey] = Field(
         default_factory=lambda: ["bb_middle", "bb_upper", "bb_lower"]
     )
-    update_scale: str | None = None
+    update_scale: Scale | None = None
     partial: bool = False
 
     @model_validator(mode="after")
@@ -318,14 +319,14 @@ class StochasticIndicatorSubscription(BaseModel):
     kind: Literal["stochastic"] = "stochastic"
     id: str | None = None
     ticker: str
-    scale: str
+    scale: Scale
     k_period: int = Field(default=14, ge=1)
     k_slowing: int = Field(default=3, ge=1)
     d_period: int = Field(default=3, ge=1)
     outputs: list[StochasticOutputKey] = Field(
         default_factory=lambda: ["stoch_k", "stoch_d"]
     )
-    update_scale: str | None = None
+    update_scale: Scale | None = None
     partial: bool = False
 
     @model_validator(mode="after")
@@ -342,7 +343,7 @@ class FibonacciIndicatorSubscription(BaseModel):
     kind: Literal["fibonacci"] = "fibonacci"
     id: str | None = None
     ticker: str
-    scale: str
+    scale: Scale
     lookback: int = Field(default=50, ge=2)
     outputs: list[FibonacciOutputKey] = Field(
         default_factory=lambda: [
@@ -353,7 +354,7 @@ class FibonacciIndicatorSubscription(BaseModel):
             "fib_0p786",
         ]
     )
-    update_scale: str | None = None
+    update_scale: Scale | None = None
     partial: bool = False
 
     @model_validator(mode="after")
@@ -370,12 +371,12 @@ class RenkoIndicatorSubscription(BaseModel):
     kind: Literal["renko"] = "renko"
     id: str | None = None
     ticker: str
-    scale: str
+    scale: Scale
     brick_size_mode: Literal["fixed", "atr"] = "fixed"
     brick_size: float | None = Field(default=None, gt=0)
     atr_period: int = Field(default=14, ge=1)
     atr_multiplier: float = Field(default=1.0, gt=0)
-    update_scale: str | None = None
+    update_scale: Scale | None = None
     partial: bool = False
 
     @model_validator(mode="after")

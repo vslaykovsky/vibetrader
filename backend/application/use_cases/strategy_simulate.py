@@ -36,6 +36,8 @@ from application.services.simulation_session import SimulationSession
 from application.services.strategy_runtime import StrategyRuntime, StrategyRuntimeError
 from strategies_v2.utils import (
     InputPortfolioDataPoint,
+    InputOhlcDataPoint,
+    Ohlc,
     OutputIndicatorSeriesCatalog,
     OutputIndicatorSubscriptionOrder,
     OutputMarketTradeOrder,
@@ -78,6 +80,28 @@ def _ticker_and_scale_from_startup(startup: StrategyOutput) -> tuple[str, str]:
         if isinstance(p, OutputTickerSubscription):
             return p.ticker, p.scale
     raise ValueError("Strategy startup did not include ticker_subscription")
+
+
+def _subscribed_tickers_and_base_scale(startup: StrategyOutput) -> tuple[list[str], str]:
+    rows: list[tuple[str, str]] = []
+    for p in startup.root:
+        if isinstance(p, OutputTickerSubscription):
+            rows.append((p.ticker.strip(), normalize_scale(p.scale)))
+    if not rows:
+        for spec in _indicator_subscriptions_from_startup(startup):
+            t = getattr(spec, "ticker", None)
+            s = getattr(spec, "scale", None)
+            if isinstance(t, str) and t.strip() and isinstance(s, str) and s.strip():
+                rows.append((t.strip(), normalize_scale(s)))
+    if not rows:
+        raise ValueError("Strategy startup did not include ticker_subscription")
+    scales = {s for _, s in rows}
+    if len(scales) != 1:
+        raise ValueError(
+            "All ticker_subscription entries must use the same scale; "
+            f"got {[(t, s) for t, s in rows]}"
+        )
+    return list(dict.fromkeys(t for t, _ in rows)), next(iter(scales))
 
 
 def _indicator_subscriptions_from_startup(startup: StrategyOutput) -> list[Any]:
@@ -366,6 +390,285 @@ class StrategySimulateCommandHandler:
         )
         return strategy_scale
 
+    def _run_multi_ticker_simulation_worker(
+        self,
+        *,
+        sess: SimulationSession,
+        cmd: InitSimulationCommand,
+        workspace: Path,
+        rt: StrategyRuntime,
+        startup: StrategyOutput,
+        tickers: list[str],
+        base_scale: str,
+        sim_scale: str,
+        ind_specs: list[Any],
+    ) -> None:
+        if sim_scale != base_scale:
+            raise ValueError(
+                f"multi-ticker simulation requires simulation_scale ({sim_scale!r}) == scale ({base_scale!r})"
+            )
+        if any(getattr(s, "kind", None) == "renko" for s in ind_specs):
+            raise ValueError("multi-ticker simulation does not support renko subscriptions yet")
+        ticker_set = set(tickers)
+        for spec in ind_specs:
+            st = getattr(spec, "ticker", None)
+            if isinstance(st, str) and st.strip() and st.strip() not in ticker_set:
+                raise ValueError(
+                    f"Indicator subscription ticker {st!r} not in subscribed tickers {tickers!r}"
+                )
+        for p in startup.root:
+            if isinstance(p, OutputTickerSubscription) and p.partial:
+                raise ValueError(
+                    f"multi-ticker simulation does not support partial ticker_subscription (ticker={p.ticker!r})"
+                )
+            if isinstance(p, OutputIndicatorSubscriptionOrder) and getattr(
+                p.indicator, "partial", False
+            ):
+                raise ValueError(
+                    "multi-ticker simulation does not support partial indicator subscriptions"
+                )
+
+        padding = _padding_days_for_indicator_subscriptions(ind_specs)
+        scale_for_fetch = read_strategy_scale(workspace / "params.json")
+        fetch_end = min_calendar_end_covering_bar_count(
+            cmd.start_date,
+            scale_for_fetch,
+            LOOKAHEAD_BASE_BARS + 50,
+        )
+        per_base_df: dict[str, pd.DataFrame] = {}
+        per_engine: dict[str, IndicatorEngine] = {}
+        per_engine_ind_subs: dict[str, list] = {}
+        for t in tickers:
+            driver_df_t, _ = self._bars.fetch_chunked_merge(
+                t,
+                sim_scale,
+                cmd.start_date,
+                fetch_end,
+                padding_days=padding,
+                provider=None,
+            )
+            if driver_df_t.empty:
+                logger.warning("simulation got empty OHLC for ticker=%s", t)
+                continue
+            base_df_t = driver_df_t if sim_scale == base_scale else aggregate_to_base(
+                driver_df_t, base_scale
+            )
+            if base_df_t.empty:
+                continue
+            per_base_df[t] = base_df_t
+            ind_for_t = [
+                s
+                for s in ind_specs
+                if getattr(s, "ticker", None) == t
+                and getattr(s, "kind", None) != "renko"
+            ]
+            per_engine_ind_subs[t] = ind_for_t
+            engine = IndicatorEngine(ind_for_t)
+            engine.fit(base_df_t)
+            per_engine[t] = engine
+        if not per_base_df:
+            sess.emit(
+                simulation_event(
+                    "status",
+                    status="done",
+                    message=(
+                        "Provider returned no OHLC for the requested range — "
+                        "try an earlier start date or a different ticker."
+                    ),
+                )
+            )
+            return
+
+        primary_ticker = tickers[0] if tickers[0] in per_base_df else next(iter(per_base_df))
+        primary_base_df = per_base_df[primary_ticker]
+        try:
+            sim_start_i = _sim_start_base_row(primary_base_df, cmd.start_date)
+        except ValueError:
+            sess.emit(
+                simulation_event(
+                    "status",
+                    status="done",
+                    message=(
+                        "No market bars available at or after the chosen "
+                        "start date — try an earlier start."
+                    ),
+                )
+            )
+            return
+        sim_start_unix = int(pd.Timestamp(cmd.start_date).tz_localize("UTC").timestamp())
+
+        ticker_sub_order: list[OutputTickerSubscription] = [
+            p for p in startup.root if isinstance(p, OutputTickerSubscription)
+        ]
+        indicator_sub_order = [
+            p.indicator for p in startup.root if isinstance(p, OutputIndicatorSubscriptionOrder)
+        ]
+        ts_to_row: dict[str, dict[pd.Timestamp, int]] = {}
+        for t, df in per_base_df.items():
+            row_map: dict[pd.Timestamp, int] = {}
+            for i, ts in enumerate(df.index):
+                ts_utc = pd.Timestamp(ts)
+                if ts_utc.tzinfo is None:
+                    ts_utc = ts_utc.tz_localize("UTC")
+                row_map[ts_utc] = i
+            ts_to_row[t] = row_map
+        all_ts_sorted = sorted({ts for row_map in ts_to_row.values() for ts in row_map})
+        primary_row_map = ts_to_row[primary_ticker]
+        portfolio = Portfolio(initial_deposit=cmd.initial_deposit, ticker=primary_ticker)
+        last_prices: dict[str, float] = {}
+
+        sess.emit(simulation_event("status", status="running", strategy_scale=base_scale))
+        sess.emit(simulation_event("speed", bps=float(cmd.initial_speed_bps)))
+        catalog_rows = _indicator_series_catalog_payload(startup)
+        if catalog_rows:
+            sess.emit(simulation_event("indicator_series_catalog", series=catalog_rows))
+
+        def _emit_cap_base_row() -> int:
+            anchor_u, anchor_sc = sess.get_display_anchor()
+            if anchor_u <= 0 or not anchor_sc:
+                return sim_start_i - 1 + LOOKAHEAD_BASE_BARS
+            return (
+                _base_row_through_chart_anchor(
+                    primary_base_df, base_scale, anchor_sc, anchor_u
+                )
+                + LOOKAHEAD_BASE_BARS
+            )
+
+        for ts in all_ts_sorted:
+            if sess.stop_requested:
+                sess.emit(simulation_event("status", status="stopped"))
+                return
+            while not sess.pause.is_set():
+                if sess.stop_requested:
+                    sess.emit(simulation_event("status", status="stopped"))
+                    return
+                sess.pause.wait(timeout=0.05)
+
+            primary_row = primary_row_map.get(ts)
+            if primary_row is not None and not sess.wait_until_base_row_allowed(
+                _emit_cap_base_row, int(primary_row)
+            ):
+                sess.emit(simulation_event("status", status="stopped"))
+                return
+
+            base_unix = int(ts.timestamp())
+            step_points: list = []
+            fills: dict[str, float] = {}
+            primary_bar: tuple[float, float, float, float, float] | None = None
+            for sub in ticker_sub_order:
+                row_map = ts_to_row.get(sub.ticker)
+                if row_map is None:
+                    continue
+                row = row_map.get(ts)
+                if row is None:
+                    continue
+                df = per_base_df[sub.ticker]
+                o = float(df.iloc[row]["open"])
+                h = float(df.iloc[row]["high"])
+                l = float(df.iloc[row]["low"])
+                c = float(df.iloc[row]["close"])
+                v = float(df.iloc[row]["volume"]) if "volume" in df.columns else 0.0
+                step_points.append(
+                    InputOhlcDataPoint(
+                        id=str(sub.id),
+                        ticker=sub.ticker,
+                        ohlc=Ohlc(open=o, high=h, low=l, close=c, volume=v),
+                        closed=True,
+                    )
+                )
+                fills[sub.ticker] = c
+                last_prices[sub.ticker] = c
+                if sub.ticker == primary_ticker:
+                    primary_bar = (o, h, l, c, v)
+
+            for ind_sub in indicator_sub_order:
+                t_ind = getattr(ind_sub, "ticker", None)
+                row_map = ts_to_row.get(t_ind) if t_ind else None
+                if row_map is None:
+                    continue
+                row = row_map.get(ts)
+                if row is None:
+                    continue
+                eng = per_engine.get(t_ind)
+                if eng is None:
+                    continue
+                local_subs = per_engine_ind_subs.get(t_ind, [])
+                try:
+                    local_idx = local_subs.index(ind_sub)
+                except ValueError:
+                    continue
+                for pt in eng.values_at_row_for_subscription(local_idx, row):
+                    step_points.append(pt.model_copy(update={"id": str(ind_sub.id)}))
+
+            if step_points:
+                portfolio.equity(last_prices)
+                out = rt.send(
+                    StrategyInput(
+                        unixtime=base_unix,
+                        points=[portfolio.to_portfolio_datapoint(), *step_points],
+                    )
+                )
+                if base_unix >= sim_start_unix:
+                    orders = [
+                        item for item in out.root if isinstance(item, OutputMarketTradeOrder)
+                    ]
+                    if orders:
+                        first_trade = len(portfolio.trades)
+                        portfolio.apply_market_orders(
+                            orders,
+                            prices=fills,
+                            unixtime=base_unix,
+                            reason="strategy",
+                        )
+                        for trade in portfolio.trades[first_trade:]:
+                            sess.emit(
+                                simulation_event(
+                                    "trade",
+                                    unixtime=base_unix,
+                                    ticker=trade.ticker,
+                                    direction=trade.direction,
+                                    price=trade.price,
+                                    deposit_ratio=trade.deposit_ratio,
+                                    reason="strategy",
+                                )
+                            )
+
+            if last_prices and base_unix >= sim_start_unix:
+                portfolio.record_equity(base_unix, last_prices)
+
+            if (
+                primary_row is not None
+                and primary_bar is not None
+                and primary_row >= sim_start_i
+            ):
+                o, h, l, c, v = primary_bar
+                eq = portfolio.equity(last_prices)
+                sess.emit(
+                    simulation_event(
+                        "bar",
+                        unixtime=base_unix,
+                        scale=base_scale,
+                        ticker=primary_ticker,
+                        ohlc={
+                            "open": o,
+                            "high": h,
+                            "low": l,
+                            "close": c,
+                            "volume": v,
+                        },
+                        closed=True,
+                    )
+                )
+                sess.emit(
+                    simulation_event(
+                        "pnl",
+                        unixtime=base_unix,
+                        equity=eq,
+                        pnl_pct=eq / portfolio.initial_deposit - 1.0,
+                    )
+                )
+        sess.emit(simulation_event("status", status="done"))
+
     def _run_simulation_worker(
         self,
         sess: SimulationSession,
@@ -382,7 +685,8 @@ class StrategySimulateCommandHandler:
                 )
             )
             startup = assign_subscription_ids(startup)
-            ticker, base_scale = _ticker_and_scale_from_startup(startup)
+            tickers, base_scale = _subscribed_tickers_and_base_scale(startup)
+            ticker = tickers[0]
             base_scale = normalize_scale(base_scale)
             sess.emit(
                 simulation_event("status", status="starting", strategy_scale=base_scale)
@@ -401,6 +705,19 @@ class StrategySimulateCommandHandler:
                     f"simulation_scale {sim_scale!r} must divide scale {base_scale!r}"
                 )
             ind_specs = _indicator_subscriptions_from_startup(startup)
+            if len(tickers) > 1:
+                self._run_multi_ticker_simulation_worker(
+                    sess=sess,
+                    cmd=cmd,
+                    workspace=workspace,
+                    rt=rt,
+                    startup=startup,
+                    tickers=tickers,
+                    base_scale=base_scale,
+                    sim_scale=sim_scale,
+                    ind_specs=ind_specs,
+                )
+                return
             padding = _padding_days_for_indicator_subscriptions(ind_specs)
             scale_for_fetch = read_strategy_scale(workspace / "params.json")
             fetch_end = min_calendar_end_covering_bar_count(

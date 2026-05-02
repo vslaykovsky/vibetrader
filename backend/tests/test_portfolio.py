@@ -1,7 +1,7 @@
 import pytest
 
 from application.services.portfolio import Portfolio
-from strategies_v2.utils import InputPortfolioDataPoint
+from strategies_v2.utils import InputPortfolioDataPoint, OutputMarketTradeOrder
 
 
 def test_portfolio_buy_uses_deposit_fraction_of_cash():
@@ -11,6 +11,22 @@ def test_portfolio_buy_uses_deposit_fraction_of_cash():
     assert p.position_qty == pytest.approx(50.0)
     assert p.avg_entry_price == pytest.approx(100.0)
     assert p.equity(100.0) == pytest.approx(10_000.0)
+
+
+def test_portfolio_apply_market_orders_uses_batch_cash_for_buys():
+    p = Portfolio(initial_deposit=10_000.0, ticker="SPY")
+    p.apply_market_orders(
+        [
+            OutputMarketTradeOrder(ticker="SPY", direction="buy", deposit_ratio=0.25),
+            OutputMarketTradeOrder(ticker="AAPL", direction="buy", deposit_ratio=0.25),
+        ],
+        prices={"SPY": 100.0, "AAPL": 50.0},
+        unixtime=1,
+    )
+    assert p.cash == pytest.approx(5000.0)
+    assert p.position_qty == pytest.approx(25.0)
+    assert p.positions["AAPL"].qty == pytest.approx(50.0)
+    assert p.equity({"SPY": 100.0, "AAPL": 50.0}) == pytest.approx(10_000.0)
 
 
 def test_portfolio_sell_partial_realized_pnl():

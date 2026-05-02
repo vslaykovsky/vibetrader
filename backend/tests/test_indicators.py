@@ -10,6 +10,7 @@ from strategies_v2.utils import (
     EmaIndicatorSubscription,
     FibonacciIndicatorSubscription,
     MacdIndicatorSubscription,
+    OutputTickerSubscription,
     RsiIndicatorSubscription,
     SmaIndicatorSubscription,
     StochasticIndicatorSubscription,
@@ -211,6 +212,13 @@ def test_fibonacci_indicator_subscription_rejects_invalid_outputs():
             scale="1d",
             outputs=["fib_0p5", "fib_0p5"],
         )
+
+
+def test_subscription_scale_fields_reject_invalid_values():
+    with pytest.raises(ValidationError):
+        OutputTickerSubscription(ticker="X", scale="5m")
+    with pytest.raises(ValidationError):
+        EmaIndicatorSubscription(ticker="X", scale="1d", period=9, update_scale="5m")
 
 
 def test_indicator_engine_fibonacci_outputs():

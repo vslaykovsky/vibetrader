@@ -185,7 +185,7 @@ def _build_subscription_charts(
     primary_ticker: str,
     start_d: date,
     end_d: date,
-    markers: list[backtest_utils.LwcMarker],
+    markers: list[backtest_utils.LwcMarker] | dict[str, list[backtest_utils.LwcMarker]],
     output_indicator_points: dict[str, list[tuple[int, float]]],
     renko_specs: list[RenkoIndicatorSubscription],
     renko_bricks: dict[str, list[tuple[int, float, float, str, float]]],
@@ -194,6 +194,7 @@ def _build_subscription_charts(
     win_end = pd.Timestamp(end_d, tz="UTC") + pd.Timedelta(days=1)
     charts: list[backtest_utils.LightweightChartsChart] = []
     for ticker in tickers:
+        ticker_markers = markers.get(ticker, []) if isinstance(markers, dict) else markers
         df = per_base_df.get(ticker)
         if df is None or df.empty:
             continue
@@ -224,7 +225,7 @@ def _build_subscription_charts(
                 label=ticker,
                 options={"upColor": "#26a69a", "downColor": "#ef5350"},
                 data=candles,
-                markers=(markers or None) if ticker == primary_ticker else None,
+                markers=ticker_markers or None,
             )
         ]
         engine = per_engine.get(ticker)
@@ -271,8 +272,8 @@ def _build_subscription_charts(
             else:
                 period = getattr(spec, "period", None)
                 sub_title = f"{kind} {period}" if period is not None else kind
-                if ticker == primary_ticker and markers:
-                    spec_series[0] = spec_series[0].model_copy(update={"markers": markers})
+                if ticker_markers:
+                    spec_series[0] = spec_series[0].model_copy(update={"markers": ticker_markers})
                 ticker_aux.append(
                     backtest_utils.LightweightChartsChart(
                         title=f"{ticker} {sub_title} ({base_scale})",
@@ -305,8 +306,8 @@ def _build_subscription_charts(
                 if _output_indicator_name_is_price_overlay(out_name):
                     price_series.append(line)
                 else:
-                    if markers:
-                        line = line.model_copy(update={"markers": markers})
+                    if ticker_markers:
+                        line = line.model_copy(update={"markers": ticker_markers})
                     ticker_aux.append(
                         backtest_utils.LightweightChartsChart(
                             title=f"{ticker} output:{out_name} ({base_scale})",
@@ -361,7 +362,11 @@ def _build_subscription_charts(
                         label=f"{spec.ticker} renko",
                         options={"upColor": "#26a69a", "downColor": "#ef5350"},
                         data=points,
-                        markers=(markers or None) if spec.ticker == primary_ticker else None,
+                        markers=(
+                            markers.get(spec.ticker, []) or None
+                            if isinstance(markers, dict)
+                            else ((markers or None) if spec.ticker == primary_ticker else None)
+                        ),
                     )
                 ],
             )
@@ -577,7 +582,7 @@ def simulate(
         )
         portfolio = Portfolio(initial_deposit=initial_deposit, ticker=primary_ticker)
 
-        markers: list[backtest_utils.LwcMarker] = []
+        markers: dict[str, list[backtest_utils.LwcMarker]] = {}
         equity_points: list[backtest_utils.LwcTimeValuePoint] = []
         bench_points: list[backtest_utils.LwcTimeValuePoint] = []
         table_rows: list[dict] = []
@@ -590,6 +595,32 @@ def simulate(
             for item in output.root:
                 if isinstance(item, OutputChart):
                     strategy_charts.append(item.chart.model_dump(mode="json"))
+
+        def _record_new_trades(first_trade_index: int, t_ax: str | int) -> None:
+            for trade in portfolio.trades[first_trade_index:]:
+                is_buy = trade.direction == "buy"
+                markers.setdefault(trade.ticker, []).append(
+                    backtest_utils.LwcMarker(
+                        time=t_ax,
+                        position="belowBar" if is_buy else "aboveBar",
+                        color="#26a69a" if is_buy else "#ef5350",
+                        shape="arrowUp" if is_buy else "arrowDown",
+                        text=("BUY" if is_buy else "SELL"),
+                    )
+                )
+                table_rows.append(
+                    {
+                        "time": pd.Timestamp(
+                            trade.unixtime, unit="s", tz="UTC"
+                        ).isoformat(),
+                        "ticker": trade.ticker,
+                        "direction": trade.direction,
+                        "price": round(trade.price, 6),
+                        "qty": round(trade.qty, 6),
+                        "deposit_ratio": round(trade.deposit_ratio, 6),
+                        "comment": trade.reason or "strategy signal",
+                    }
+                )
 
         def _apply_outputs(
             out: StrategyOutput,
@@ -604,25 +635,21 @@ def simulate(
                         (int(item.unixtime), float(item.value))
                     )
                     continue
-                if isinstance(item, OutputMarketTradeOrder):
-                    if multi_ticker:
-                        raise ValueError(
-                            "multi-ticker market_order execution is not supported yet"
-                        )
-                    fill_px = fills.get(item.ticker)
-                    if fill_px is None:
-                        fill_px = fills.get(primary_ticker)
-                    if fill_px is None:
-                        raise ValueError(
-                            f"no fill price available for ticker {item.ticker!r}"
-                        )
-                    portfolio.apply_market_order(
-                        direction=item.direction,
-                        deposit_ratio=item.deposit_ratio,
-                        price=fill_px,
-                        unixtime=step_unixtime,
-                        reason="strategy",
-                    )
+            orders = [item for item in out.root if isinstance(item, OutputMarketTradeOrder)]
+            if not orders:
+                return
+            prices = dict(fills)
+            if not multi_ticker:
+                primary_px = prices.get(primary_ticker)
+                if primary_px is not None:
+                    for item in orders:
+                        prices.setdefault(item.ticker, primary_px)
+            portfolio.apply_market_orders(
+                orders,
+                prices=prices,
+                unixtime=step_unixtime,
+                reason="strategy",
+            )
 
         _collect_strategy_charts(startup)
 
@@ -718,7 +745,8 @@ def simulate(
                             step_unixtime=line.unixtime,
                             fills={primary_ticker: fill_price},
                         )
-                portfolio.record_equity(step.unixtime, fill_price)
+                marks = {primary_ticker: fill_price}
+                portfolio.record_equity(step.unixtime, marks)
 
                 if step.is_base_close and start_i <= step.base_row <= end_i:
                     completed_units += 1
@@ -738,7 +766,7 @@ def simulate(
                             next_progress_pct = min(100, pct + progress_step)
                     base_unix = int(pd.Timestamp(step.base_ts).timestamp())
                     t_ax = _time_for_chart(base_unix, base_scale)
-                    eq = portfolio.equity(fill_price)
+                    eq = portfolio.equity(marks)
                     equity_points.append(
                         backtest_utils.LwcTimeValuePoint(time=t_ax, value=float(eq))
                     )
@@ -750,30 +778,7 @@ def simulate(
                     bench_points.append(
                         backtest_utils.LwcTimeValuePoint(time=t_ax, value=float(bench_val))
                     )
-                    for trade in portfolio.trades[pre_trade_count:]:
-                        is_buy = trade.direction == "buy"
-                        markers.append(
-                            backtest_utils.LwcMarker(
-                                time=t_ax,
-                                position="belowBar" if is_buy else "aboveBar",
-                                color="#26a69a" if is_buy else "#ef5350",
-                                shape="arrowUp" if is_buy else "arrowDown",
-                                text=("BUY" if is_buy else "SELL"),
-                            )
-                        )
-                        table_rows.append(
-                            {
-                                "time": pd.Timestamp(
-                                    trade.unixtime, unit="s", tz="UTC"
-                                ).isoformat(),
-                                "ticker": trade.ticker,
-                                "direction": trade.direction,
-                                "price": round(trade.price, 6),
-                                "qty": round(trade.qty, 6),
-                                "deposit_ratio": round(trade.deposit_ratio, 6),
-                                "comment": trade.reason or "strategy signal",
-                            }
-                        )
+                    _record_new_trades(pre_trade_count, t_ax)
         else:
             ticker_sub_order: list[OutputTickerSubscription] = [
                 p for p in startup.root if isinstance(p, OutputTickerSubscription)
@@ -802,6 +807,7 @@ def simulate(
                 tickers,
             )
             primary_row_map = ts_to_row[primary_ticker]
+            last_prices: dict[str, float] = {}
             total_units = sum(
                 1
                 for ts in all_ts_sorted
@@ -841,6 +847,7 @@ def simulate(
                         )
                     )
                     fills[sub.ticker] = c
+                    last_prices[sub.ticker] = c
                     if sub.ticker == primary_ticker:
                         primary_bar = (o, h, l, c)
                 for ind_sub in indicator_sub_order:
@@ -868,14 +875,16 @@ def simulate(
 
                 pre_trade_count = len(portfolio.trades)
                 if fired:
+                    if last_prices:
+                        portfolio.equity(last_prices)
                     points_all: list = [portfolio.to_portfolio_datapoint()] + step_points
                     step_input = StrategyInput(unixtime=base_unix, points=points_all)
                     out = _call_strategy(rt.send, step_input)
                     _apply_outputs(out, step_unixtime=base_unix, fills=fills)
 
                 primary_close = fills.get(primary_ticker)
-                if primary_close is not None:
-                    portfolio.record_equity(base_unix, primary_close)
+                if last_prices:
+                    portfolio.record_equity(base_unix, last_prices)
 
                 if (
                     primary_row is not None
@@ -898,7 +907,7 @@ def simulate(
                             )
                             next_progress_pct = min(100, pct + progress_step)
                     c = primary_bar[3]
-                    eq = portfolio.equity(c)
+                    eq = portfolio.equity(last_prices)
                     equity_points.append(
                         backtest_utils.LwcTimeValuePoint(time=t_ax, value=float(eq))
                     )
@@ -908,30 +917,7 @@ def simulate(
                     bench_points.append(
                         backtest_utils.LwcTimeValuePoint(time=t_ax, value=float(bench_val))
                     )
-                    for trade in portfolio.trades[pre_trade_count:]:
-                        is_buy = trade.direction == "buy"
-                        markers.append(
-                            backtest_utils.LwcMarker(
-                                time=t_ax,
-                                position="belowBar" if is_buy else "aboveBar",
-                                color="#26a69a" if is_buy else "#ef5350",
-                                shape="arrowUp" if is_buy else "arrowDown",
-                                text=("BUY" if is_buy else "SELL"),
-                            )
-                        )
-                        table_rows.append(
-                            {
-                                "time": pd.Timestamp(
-                                    trade.unixtime, unit="s", tz="UTC"
-                                ).isoformat(),
-                                "ticker": trade.ticker,
-                                "direction": trade.direction,
-                                "price": round(trade.price, 6),
-                                "qty": round(trade.qty, 6),
-                                "deposit_ratio": round(trade.deposit_ratio, 6),
-                                "comment": trade.reason or "strategy signal",
-                            }
-                        )
+                    _record_new_trades(pre_trade_count, t_ax)
         try:
             final_output = _call_strategy(rt.finalize)
         except StrategyRuntimeError as exc:
