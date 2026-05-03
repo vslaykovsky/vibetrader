@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import datetime, timezone
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -9,6 +10,13 @@ assert _spec and _spec.loader
 _flask = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_flask)
 create_app = _flask.create_app
+
+from api.live_routes import _utc_isoformat
+
+
+def test_utc_isoformat_marks_naive_datetimes_as_utc():
+    assert _utc_isoformat(datetime(2026, 5, 3, 19, 10, 0)) == "2026-05-03T19:10:00Z"
+    assert _utc_isoformat(datetime(2026, 5, 3, 19, 10, 0, tzinfo=timezone.utc)) == "2026-05-03T19:10:00Z"
 
 
 def test_live_stream_requires_auth():

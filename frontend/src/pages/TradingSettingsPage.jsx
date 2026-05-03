@@ -20,14 +20,13 @@ export function TradingSettingsPage() {
   const [okMsg, setOkMsg] = useState('');
   const [profile, setProfile] = useState(null);
   const [accounts, setAccounts] = useState([]);
-  const [apiKeyInput, setApiKeyInput] = useState('');
-  const [secretInput, setSecretInput] = useState('');
-  const [newAccount, setNewAccount] = useState('');
   const [newLabel, setNewLabel] = useState('');
+  const [newApiKey, setNewApiKey] = useState('');
+  const [newSecretKey, setNewSecretKey] = useState('');
   const [newIsLive, setNewIsLive] = useState(false);
   const [timezoneInput, setTimezoneInput] = useState(timeZone || browserTimeZone());
   const timezoneOptions = supportedTimeZones();
-  const credentialsReady = Boolean(profile?.has_alpaca_api_key && profile?.has_alpaca_secret_key);
+  const credentialsReady = accounts.some((a) => a?.has_alpaca_api_key && a?.has_alpaca_secret_key);
 
   const authFetch = useCallback(
     async (url, options = {}) => {
@@ -80,8 +79,6 @@ export function TradingSettingsPage() {
     setOkMsg('');
     try {
       const profileBody = { timezone: timezoneInput };
-      if (apiKeyInput.trim()) profileBody.alpaca_api_key = apiKeyInput.trim();
-      if (secretInput.trim()) profileBody.alpaca_secret_key = secretInput.trim();
 
       const profileRes = await authFetch(`${API_BASE_URL}/settings/trading/profile`, {
         method: 'PUT',
@@ -91,8 +88,6 @@ export function TradingSettingsPage() {
       if (!profileRes.ok) throw new Error(profilePayload.error || `Save failed (${profileRes.status})`);
 
       setTimeZone(timezoneInput);
-      setApiKeyInput('');
-      setSecretInput('');
       setOkMsg('Saved settings.');
       await refreshTimeZone();
       await load();
@@ -108,25 +103,33 @@ export function TradingSettingsPage() {
     setError('');
     setOkMsg('');
     try {
-      const accountValue = newAccount.trim();
-      if (!accountValue) {
-        setError('Enter an account id to add a label.');
+      const labelValue = newLabel.trim();
+      const apiKeyValue = newApiKey.trim();
+      const secretValue = newSecretKey.trim();
+      if (!labelValue) {
+        setError('Enter a label for this Alpaca account.');
+        return;
+      }
+      if (!apiKeyValue || !secretValue) {
+        setError('Enter the Alpaca API key and secret for this account.');
         return;
       }
       const res = await authFetch(`${API_BASE_URL}/settings/trading/alpaca-accounts`, {
         method: 'POST',
         body: JSON.stringify({
-          account: accountValue,
-          label: newLabel.trim(),
+          label: labelValue,
+          alpaca_api_key: apiKeyValue,
+          alpaca_secret_key: secretValue,
           is_live: newIsLive,
         }),
       });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || `Create failed (${res.status})`);
-      setNewAccount('');
       setNewLabel('');
+      setNewApiKey('');
+      setNewSecretKey('');
       setNewIsLive(false);
-      setOkMsg('Account label added.');
+      setOkMsg('Alpaca account added.');
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -214,7 +217,7 @@ export function TradingSettingsPage() {
               <div className="settings-editor-head">
                 <div>
                   <p className="settings-kicker">Editor</p>
-                  <h2>Broker and display preferences</h2>
+                  <h2>Broker accounts and display preferences</h2>
                 </div>
                 <div className="settings-editor-actions">
                   <span className={credentialsReady ? 'dashboard-pill dashboard-pill--ok' : 'dashboard-pill dashboard-pill--warn'}>
@@ -223,42 +226,6 @@ export function TradingSettingsPage() {
                   <button type="button" className="dashboard-btn-primary" disabled={saving} onClick={saveSettings}>
                     Save settings
                   </button>
-                </div>
-              </div>
-
-              <div className="settings-editor-section">
-                <div className="settings-section-copy">
-                  <span className="home-ms settings-section-icon" aria-hidden>
-                    key
-                  </span>
-                  <div>
-                    <h3>API credentials</h3>
-                    <p>Update either field when a key rotates. Saved values stay hidden after this form clears.</p>
-                  </div>
-                </div>
-                <div className="settings-form settings-form--credentials">
-                  <label className="settings-label">
-                    Alpaca API key
-                    <input
-                      className="settings-input"
-                      type="password"
-                      autoComplete="off"
-                      value={apiKeyInput}
-                      onChange={(e) => setApiKeyInput(e.target.value)}
-                      placeholder="PK..."
-                    />
-                  </label>
-                  <label className="settings-label">
-                    Alpaca secret key
-                    <input
-                      className="settings-input"
-                      type="password"
-                      autoComplete="off"
-                      value={secretInput}
-                      onChange={(e) => setSecretInput(e.target.value)}
-                      placeholder="Hidden after saving"
-                    />
-                  </label>
                 </div>
               </div>
 
@@ -302,13 +269,13 @@ export function TradingSettingsPage() {
                     account_balance
                   </span>
                   <div>
-                    <h3>Account labels</h3>
-                    <p>Use labels to remember which Alpaca account is paper or live. The runner still uses the keys above.</p>
+                    <h3>Alpaca accounts</h3>
+                    <p>Save a label, API key, and secret for each Alpaca account you want to deploy to.</p>
                   </div>
                 </div>
                 <div className="settings-account-area">
                   <div className="settings-account-summary">
-                    <h4>Existing labels</h4>
+                    <h4>Saved accounts</h4>
                     <span className="dashboard-panel-count">{accounts.length}</span>
                   </div>
                   {accounts.length ? (
@@ -317,7 +284,10 @@ export function TradingSettingsPage() {
                         <li key={a.id} className="settings-account-row">
                           <div className="settings-account-main">
                             <strong>{a.label || 'Unlabeled account'}</strong>
-                            <span>{a.account || 'No account id'}</span>
+                            <span>
+                              {a.alpaca_api_key_hint ? `API key ${a.alpaca_api_key_hint}` : 'API key missing'}
+                              {a.alpaca_secret_key_hint ? ` · Secret ${a.alpaca_secret_key_hint}` : ' · Secret missing'}
+                            </span>
                           </div>
                           <div className="settings-account-actions">
                             {a.is_live ? <span className="dashboard-pill dashboard-pill--warn">live</span> : null}
@@ -339,28 +309,41 @@ export function TradingSettingsPage() {
                       <span className="home-ms" aria-hidden>
                         add_card
                       </span>
-                      <p>No account labels yet.</p>
+                      <p>No Alpaca accounts yet.</p>
                     </div>
                   )}
 
                   <div className="settings-account-add">
                     <div className="settings-form settings-form--account">
                       <label className="settings-label">
-                        Account id
-                        <input
-                          className="settings-input"
-                          value={newAccount}
-                          onChange={(e) => setNewAccount(e.target.value)}
-                          placeholder="Account id"
-                        />
-                      </label>
-                      <label className="settings-label">
                         Label
                         <input
                           className="settings-input"
                           value={newLabel}
                           onChange={(e) => setNewLabel(e.target.value)}
-                          placeholder="Label"
+                          placeholder="Paper momentum account"
+                        />
+                      </label>
+                      <label className="settings-label">
+                        Alpaca API key
+                        <input
+                          className="settings-input"
+                          type="password"
+                          autoComplete="off"
+                          value={newApiKey}
+                          onChange={(e) => setNewApiKey(e.target.value)}
+                          placeholder="PK..."
+                        />
+                      </label>
+                      <label className="settings-label">
+                        Alpaca secret key
+                        <input
+                          className="settings-input"
+                          type="password"
+                          autoComplete="off"
+                          value={newSecretKey}
+                          onChange={(e) => setNewSecretKey(e.target.value)}
+                          placeholder="Hidden after saving"
                         />
                       </label>
                       <div className="settings-account-type" role="group" aria-label="Account type">

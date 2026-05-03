@@ -70,6 +70,8 @@ function detectTimeColumn(columns, rows) {
 const CHART_ORDER_LS_PREFIX = 'vibetrader:chartPanelOrder:';
 const DETAILS_OPEN_LS_PREFIX = 'vibetrader:chartDetailsOpen:';
 const HIDDEN_PANELS_LS_PREFIX = 'vibetrader:hiddenChartPanels:';
+const MAX_SPARSE_LWC_BAR_SPACING = 28;
+const MIN_SPARSE_LWC_VISIBLE_SPAN = 12;
 
 function createDetailsOpenStore(storageKey, chartCount, includeMetrics) {
   let state = {};
@@ -297,6 +299,41 @@ function normalizeLwcItems(items, normalizeTime) {
   return changed ? out : items;
 }
 
+function lwcDataPointCount(chartSpec) {
+  let maxLen = 0;
+  for (const s of chartSpec?.series || []) {
+    if (Array.isArray(s?.data)) maxLen = Math.max(maxLen, s.data.length);
+  }
+  return maxLen;
+}
+
+function applyInitialLwcTimeRange(chart, el, pointCount, alignRightEdge = false) {
+  if (pointCount <= 0) return;
+  const width = el.clientWidth || 700;
+  const dataSpan = Math.max(1, pointCount - 1);
+  const sparseSpan = Math.max(MIN_SPARSE_LWC_VISIBLE_SPAN, Math.ceil(width / MAX_SPARSE_LWC_BAR_SPACING));
+  if (dataSpan >= sparseSpan) {
+    chart.timeScale().fitContent();
+    return;
+  }
+  const pad = sparseSpan - dataSpan;
+  const from = alignRightEdge ? dataSpan - sparseSpan : -pad / 2;
+  const to = alignRightEdge ? dataSpan : dataSpan + pad / 2;
+  try {
+    chart.timeScale().setVisibleLogicalRange({ from, to });
+  } catch {
+    chart.timeScale().fitContent();
+  }
+}
+
+function shouldUseSparseLwcRange(el, pointCount) {
+  if (pointCount <= 0) return false;
+  const width = el.clientWidth || 700;
+  const dataSpan = Math.max(1, pointCount - 1);
+  const sparseSpan = Math.max(MIN_SPARSE_LWC_VISIBLE_SPAN, Math.ceil(width / MAX_SPARSE_LWC_BAR_SPACING));
+  return dataSpan < sparseSpan;
+}
+
 function catalogMapFromDataJson(dataJson) {
   const map = new Map();
   const raw = dataJson?.indicator_series_catalog;
@@ -406,7 +443,7 @@ function makeSection(container, titleText, openStore, panelKey, helpText, onRemo
   return { details, chartEl };
 }
 
-function renderLightweightChart(container, chartSpec, openStore, panelKey, helpText, timeZone, onCrosshairMove, onRemove) {
+function renderLightweightChart(container, chartSpec, openStore, panelKey, helpText, timeZone, onCrosshairMove, onRemove, alignRightEdge) {
   const { details, chartEl: el } = makeSection(
     container,
     chartSpec.title || '',
@@ -438,6 +475,8 @@ function renderLightweightChart(container, chartSpec, openStore, panelKey, helpT
   });
 
   const normalizeTime = chartHasIntradayTime(chartSpec) ? toUnixSeconds : toBusinessDay;
+  const pointCount = lwcDataPointCount(chartSpec);
+  let sparseResizeObserver = null;
 
   let primarySeries = null;
   for (const s of chartSpec.series || []) {
@@ -464,7 +503,13 @@ function renderLightweightChart(container, chartSpec, openStore, panelKey, helpT
     }
   }
 
-  chart.timeScale().fitContent();
+  applyInitialLwcTimeRange(chart, el, pointCount, alignRightEdge);
+  if (shouldUseSparseLwcRange(el, pointCount) && typeof ResizeObserver !== 'undefined') {
+    sparseResizeObserver = new ResizeObserver(() => {
+      requestAnimationFrame(() => applyInitialLwcTimeRange(chart, el, pointCount, alignRightEdge));
+    });
+    sparseResizeObserver.observe(el);
+  }
 
   const setCrosshairAt = (unixSec) => {
     if (!primarySeries) return;
@@ -512,7 +557,12 @@ function renderLightweightChart(container, chartSpec, openStore, panelKey, helpT
     crosshairUnsub = () => chart.unsubscribeCrosshairMove(handler);
   }
 
-  return { chart, primarySeries, setCrosshairAt, clearCrosshair, crosshairUnsub };
+  const cleanup = () => {
+    if (crosshairUnsub) crosshairUnsub();
+    sparseResizeObserver?.disconnect();
+  };
+
+  return { chart, primarySeries, setCrosshairAt, clearCrosshair, crosshairUnsub: cleanup };
 }
 
 export { attachSyncedCrosshair } from './lib/lwcSync.js';
@@ -944,13 +994,13 @@ function renderMetricsPanel(container, metrics, openStore) {
   container.appendChild(details);
 }
 
-function renderOneChartPanel(panelHost, spec, openStore, srcIdx, catalogMap, timeZone, onCrosshairMove, onRowHover, onRowLeave, onRemove) {
+function renderOneChartPanel(panelHost, spec, openStore, srcIdx, catalogMap, timeZone, onCrosshairMove, onRowHover, onRowLeave, onRemove, alignRightEdge) {
   const panelKey = `c${srcIdx}`;
   const chartDesc = typeof spec.description === 'string' ? spec.description.trim() : '';
   if (spec.type === 'lightweight-charts') {
     const catalogHelp = helpTextForLightweightChart(spec, catalogMap);
     const helpText = [chartDesc, catalogHelp].filter(Boolean).join('\n\n') || null;
-    return renderLightweightChart(panelHost, spec, openStore, panelKey, helpText, timeZone, onCrosshairMove, onRemove);
+    return renderLightweightChart(panelHost, spec, openStore, panelKey, helpText, timeZone, onCrosshairMove, onRemove, alignRightEdge);
   }
   if (spec.type === 'plotly') {
     renderPlotlyChart(panelHost, spec, openStore, panelKey, chartDesc || null, onRemove);
@@ -975,6 +1025,7 @@ export function renderCharts(container, dataJson, options) {
   const charts = dataJson?.charts;
   const base = options?.chartOrderStorageBase;
   const timeZone = normalizeTimeZone(options?.timeZone);
+  const alignRightEdge = options?.alignRightEdge === true;
   const chartCount = Array.isArray(charts) ? charts.length : 0;
   const catalogMap = catalogMapFromDataJson(dataJson);
   const includeMetrics = buildMetricsPanelItems(dataJson?.metrics ?? null).length > 0;
@@ -1062,7 +1113,7 @@ export function renderCharts(container, dataJson, options) {
         } else {
           const spec = charts[srcIdx];
           if (!spec) continue;
-          collectResult(renderOneChartPanel(inner, spec, openStore, srcIdx, catalogMap, timeZone, onCrosshairMove, onRowHover, onRowLeave, removePanel));
+          collectResult(renderOneChartPanel(inner, spec, openStore, srcIdx, catalogMap, timeZone, onCrosshairMove, onRowHover, onRowLeave, removePanel, alignRightEdge));
         }
         enableChartDndHeader(row);
       }
@@ -1074,7 +1125,7 @@ export function renderCharts(container, dataJson, options) {
         for (let srcIdx = 0; srcIdx < charts.length; srcIdx++) {
           if (hiddenPanelKeys.has(`c${srcIdx}`)) continue;
           const spec = charts[srcIdx];
-          collectResult(renderOneChartPanel(container, spec, openStore, srcIdx, catalogMap, timeZone, onCrosshairMove, onRowHover, onRowLeave, removePanel));
+          collectResult(renderOneChartPanel(container, spec, openStore, srcIdx, catalogMap, timeZone, onCrosshairMove, onRowHover, onRowLeave, removePanel, alignRightEdge));
         }
       }
     }

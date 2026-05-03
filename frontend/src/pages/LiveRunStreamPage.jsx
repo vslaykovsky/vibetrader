@@ -4,34 +4,33 @@ import { formatDistanceStrict } from 'date-fns';
 import { useAuth } from '../AuthContext';
 import { useTheme } from '../ThemeContext';
 import { useTimeZone } from '../TimeZoneContext.jsx';
-import { formatUnixDateTime } from '../lib/dateTime.js';
+import { formatUnixDateTime, parseIsoInstant } from '../lib/dateTime.js';
 import { ProfileMenu } from '../ProfileMenu';
 import { renderCharts } from '../strategyChartRenderer.js';
 import { attachSyncedCrosshair, attachSyncedTimeScales } from '../lib/lwcSync.js';
+import {
+  applyLiveStreamEvent,
+  createLiveChartState,
+  liveChartsDataJson,
+  liveTrades,
+} from '../lib/liveChartStream.js';
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
   (import.meta.env.PROD ? '/api' : 'http://localhost:8080');
 
 const LIVE_SSE_KINDS = [
-  'output',
-  'chart',
-  'order_signal',
+  'snapshot',
   'bar',
-  'indicator_in',
-  'indicator_out',
-  'portfolio',
-  'renko',
-  'startup',
+  'indicator',
+  'position',
+  'trade',
   'status',
-  'input',
 ];
 
 function parseRunDate(iso) {
-  if (typeof iso !== 'string' || !iso.trim()) return null;
-  const ms = Date.parse(iso);
-  if (!Number.isFinite(ms)) return null;
-  return new Date(ms);
+  const ms = parseIsoInstant(iso);
+  return ms == null ? null : new Date(ms);
 }
 
 function liveRunDurationLabel(status, createdAt, updatedAt, now) {
@@ -79,14 +78,6 @@ function liveAccountLabel(r) {
   return '—';
 }
 
-function chartDedupeKey(spec, idx) {
-  if (!spec || typeof spec !== 'object') return `anon:${idx}`;
-  const t = typeof spec.title === 'string' ? spec.title.trim() : '';
-  const ty = typeof spec.type === 'string' ? spec.type : '';
-  if (t) return `${ty}:${t}`;
-  return `${ty}:i:${idx}`;
-}
-
 function fmtUnixTime(u, timeZone) {
   return formatUnixDateTime(u, timeZone);
 }
@@ -102,6 +93,12 @@ function liveOrderIdLabel(t) {
   const c = typeof t?.client_order_id === 'string' ? t.client_order_id.trim() : '';
   if (c) return c;
   return '—';
+}
+
+function fmtTradeNumber(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '—';
+  return n.toLocaleString('en-US', { maximumFractionDigits: 6 });
 }
 
 export function LiveRunStreamPage() {
@@ -121,7 +118,7 @@ export function LiveRunStreamPage() {
   const [stopping, setStopping] = useState(false);
 
   const chartsMountRef = useRef(null);
-  const chartMapRef = useRef(new Map());
+  const liveChartStateRef = useRef(createLiveChartState());
   const lastEventIdRef = useRef(0);
 
   const authFetch = useCallback(
@@ -177,43 +174,20 @@ export function LiveRunStreamPage() {
 
   const ingestParsed = useCallback(
     (parsed) => {
-      const eid = Number(parsed?.id);
+      const eid = Number(parsed?.seq);
       if (Number.isFinite(eid) && eid > lastEventIdRef.current) lastEventIdRef.current = eid;
-      const kind = parsed?.kind;
-      const payload = parsed?.payload && typeof parsed.payload === 'object' ? parsed.payload : {};
-
-      if (kind === 'chart' && payload.chart) {
-        const k = chartDedupeKey(payload.chart, chartMapRef.current.size);
-        chartMapRef.current.set(k, payload.chart);
+      const result = applyLiveStreamEvent(liveChartStateRef.current, parsed);
+      if (result.tradesChanged) {
+        setTrades(liveTrades(liveChartStateRef.current));
+      }
+      if (result.statusChanged) {
+        const status = liveChartStateRef.current.status?.status;
+        if (typeof status === 'string' && status.trim()) {
+          setDbRow((prev) => (prev && typeof prev === 'object' ? { ...prev, status: status.trim() } : { status: status.trim() }));
+        }
+      }
+      if (result.changed) {
         bumpCharts();
-        return;
-      }
-      if (kind === 'output' && Array.isArray(payload.output)) {
-        payload.output.forEach((item, i) => {
-          if (item && item.kind === 'chart' && item.chart) {
-            chartMapRef.current.set(chartDedupeKey(item.chart, i), item.chart);
-          }
-        });
-        bumpCharts();
-        return;
-      }
-      if (kind === 'order_signal') {
-        setTrades((prev) => [
-          ...prev,
-          {
-            rowKey: typeof parsed?.id === 'number' ? parsed.id : `${Date.now()}-${prev.length}`,
-            unixtime: parsed?.unixtime,
-            ticker: payload.ticker,
-            direction: payload.direction,
-            deposit_ratio: payload.deposit_ratio,
-            alpaca_order_id: payload.alpaca_order_id,
-            client_order_id: payload.client_order_id,
-          },
-        ]);
-        return;
-      }
-      if (kind === 'status' && typeof payload.status === 'string' && payload.status.trim()) {
-        setDbRow((prev) => (prev && typeof prev === 'object' ? { ...prev, status: payload.status.trim() } : prev));
       }
     },
     [bumpCharts],
@@ -223,7 +197,7 @@ export function LiveRunStreamPage() {
     let evtSource;
     let cancelled = false;
     lastEventIdRef.current = 0;
-    chartMapRef.current = new Map();
+    liveChartStateRef.current = createLiveChartState();
     setTrades([]);
     setChartError('');
     setStreamConn('connecting');
@@ -267,13 +241,13 @@ export function LiveRunStreamPage() {
   useEffect(() => {
     const mount = chartsMountRef.current;
     if (!mount) return undefined;
-    const charts = [...chartMapRef.current.values()];
+    const dataJson = liveChartsDataJson(liveChartStateRef.current);
+    const charts = Array.isArray(dataJson.charts) ? dataJson.charts : [];
     if (charts.length === 0) {
       mount.innerHTML = '';
       setChartError('');
       return undefined;
     }
-    const dataJson = { charts };
     mount.innerHTML = '';
     const root = document.createElement('div');
     root.className = 'strategy-charts-root';
@@ -285,6 +259,7 @@ export function LiveRunStreamPage() {
       const rid = String(runId || '').trim();
       const rendered = renderCharts(root, dataJson, {
         chartOrderStorageBase: rid ? `live:${rid}` : 'live',
+        alignRightEdge: true,
         timeZone,
       });
       detachChartDnD = rendered.detachChartDnD;
@@ -473,8 +448,14 @@ export function LiveRunStreamPage() {
                   <tr>
                     <th>Time</th>
                     <th>Ticker</th>
-                    <th>Side</th>
+                    <th>Direction</th>
+                    <th>Price</th>
+                    <th>Qty</th>
                     <th>Fraction</th>
+                    <th>Position Before</th>
+                    <th>Position After</th>
+                    <th>Status</th>
+                    <th>Comment</th>
                     <th>Order ID</th>
                   </tr>
                 </thead>
@@ -484,7 +465,13 @@ export function LiveRunStreamPage() {
                       <td>{fmtUnixTime(t.unixtime, timeZone)}</td>
                       <td>{t.ticker ?? '—'}</td>
                       <td>{t.direction ?? '—'}</td>
-                      <td>{t.deposit_ratio != null ? String(t.deposit_ratio) : '—'}</td>
+                      <td>{fmtTradeNumber(t.price)}</td>
+                      <td>{fmtTradeNumber(t.qty)}</td>
+                      <td>{fmtTradeNumber(t.deposit_ratio)}</td>
+                      <td>{fmtTradeNumber(t.position_before_order)}</td>
+                      <td>{fmtTradeNumber(t.position_after_order_filled)}</td>
+                      <td>{t.status || '—'}</td>
+                      <td>{t.comment || '—'}</td>
                       <td className="live-run-order-id-cell">{liveOrderIdLabel(t)}</td>
                     </tr>
                   ))}

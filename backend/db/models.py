@@ -132,6 +132,7 @@ class AlpacaLiveSubscription(Base):
     runner_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     channel: Mapped[str] = mapped_column(String(32), primary_key=True)
     symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(36), nullable=False, default="", index=True)
     scale: Mapped[str] = mapped_column(String(16), nullable=False, default="1m")
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     updated_at: Mapped[datetime] = mapped_column(
@@ -203,6 +204,7 @@ class LiveRunEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, index=True
     )
+    event_type: Mapped[str] = mapped_column(String(16), nullable=False, default="output", index=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     unixtime: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)

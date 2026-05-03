@@ -7,6 +7,7 @@ def test_init_database():
     eng = create_engine("sqlite:///:memory:")
     init_database(eng)
     names = set(inspect(eng).get_table_names())
+    insp = inspect(eng)
     assert names >= {
         "strategy",
         "candles",
@@ -17,4 +18,8 @@ def test_init_database():
         "live_run_events",
         "live_run_orders",
     }
+    subscription_cols = {c["name"] for c in insp.get_columns("alpaca_live_subscriptions")}
+    live_event_cols = {c["name"] for c in insp.get_columns("live_run_events")}
+    assert "run_id" in subscription_cols
+    assert "event_type" in live_event_cols
     init_database(eng)

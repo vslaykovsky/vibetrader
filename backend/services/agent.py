@@ -1492,6 +1492,7 @@ _REDACT_JSON_KEYS_FOR_USER = frozenset(
         "openrouter_api_key",
         "langsmith_api_key",
         "openai_api_key",
+        "alpaca_api_key",
         "alpaca_secret_key",
         "postgres_password",
     }

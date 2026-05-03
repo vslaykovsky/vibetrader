@@ -88,29 +88,19 @@ def _delete(path_qs: str) -> requests.Response:
     return requests.delete(f"{base}/rest/v1/{path_qs}", headers=_headers(), timeout=15)
 
 
-def fetch_profile_alpaca_keys(user_id: str) -> tuple[str, str] | None:
-    uid = (user_id or "").strip()
-    if not uid or not service_role_configured():
-        return None
-    r = _get(
-        "profiles",
-        {"id": f"eq.{uid}", "select": "alpaca_api_key,alpaca_secret_key"},
-    )
-    if r.status_code != 200:
-        logger.warning("supabase profiles fetch status=%s body=%s", r.status_code, r.text[:500])
-        return None
-    rows = r.json()
-    if not isinstance(rows, list) or not rows:
-        return None
-    row = rows[0]
-    k = str(row.get("alpaca_api_key") or "").strip()
-    s = str(row.get("alpaca_secret_key") or "").strip()
-    if not k or not s:
-        return None
-    return k, s
+def _account_select(*, include_credentials: bool = False) -> str:
+    cols = "id,label,is_live,created_at,updated_at"
+    if include_credentials:
+        cols += ",alpaca_api_key,alpaca_secret_key"
+    return cols
 
 
-def fetch_alpaca_account_for_user(user_id: str, account_id: str) -> dict[str, Any] | None:
+def fetch_alpaca_account_for_user(
+    user_id: str,
+    account_id: str,
+    *,
+    include_credentials: bool = False,
+) -> dict[str, Any] | None:
     uid = (user_id or "").strip()
     aid = (account_id or "").strip()
     if not uid or not aid or not service_role_configured():
@@ -120,7 +110,7 @@ def fetch_alpaca_account_for_user(user_id: str, account_id: str) -> dict[str, An
         {
             "id": f"eq.{urllib.parse.quote(aid, safe='')}",
             "user_id": f"eq.{urllib.parse.quote(uid, safe='')}",
-            "select": "id,account,label,is_live",
+            "select": _account_select(include_credentials=include_credentials),
         },
     )
     if r.status_code != 200:
@@ -137,7 +127,7 @@ def fetch_trading_settings_payload(user_id: str) -> dict[str, Any] | None:
     uid = (user_id or "").strip()
     if not uid or not service_role_configured():
         return None
-    pr = _get("profiles", {"id": f"eq.{uid}", "select": "alpaca_api_key,alpaca_secret_key,timezone,updated_at"})
+    pr = _get("profiles", {"id": f"eq.{uid}", "select": "timezone,updated_at"})
     if pr.status_code != 200:
         logger.warning("supabase profiles read status=%s", pr.status_code)
         return None
@@ -145,31 +135,34 @@ def fetch_trading_settings_payload(user_id: str) -> dict[str, Any] | None:
     prof: dict[str, Any] = {}
     if isinstance(prows, list) and prows:
         p0 = prows[0]
-        ak = str(p0.get("alpaca_api_key") or "").strip()
-        sk = str(p0.get("alpaca_secret_key") or "").strip()
         prof = {
-            "has_alpaca_api_key": bool(ak),
-            "has_alpaca_secret_key": bool(sk),
-            "alpaca_api_key_hint": mask_secret_tail(ak) if ak else "",
-            "alpaca_secret_key_hint": mask_secret_tail(sk) if sk else "",
             "timezone": normalize_timezone(str(p0.get("timezone") or "")),
             "updated_at": p0.get("updated_at"),
         }
     ar = _get(
         "alpaca_accounts",
-        {"user_id": f"eq.{uid}", "select": "id,account,label,is_live,created_at,updated_at", "order": "created_at.asc"},
+        {
+            "user_id": f"eq.{uid}",
+            "select": _account_select(include_credentials=True),
+            "order": "created_at.asc",
+        },
     )
     accounts: list[dict[str, Any]] = []
     if ar.status_code == 200 and isinstance(ar.json(), list):
         for a in ar.json():
             if not isinstance(a, dict):
                 continue
+            ak = str(a.get("alpaca_api_key") or "").strip()
+            sk = str(a.get("alpaca_secret_key") or "").strip()
             accounts.append(
                 {
                     "id": str(a.get("id") or ""),
-                    "account": str(a.get("account") or ""),
                     "label": str(a.get("label") or ""),
                     "is_live": bool(a.get("is_live")),
+                    "has_alpaca_api_key": bool(ak),
+                    "has_alpaca_secret_key": bool(sk),
+                    "alpaca_api_key_hint": mask_secret_tail(ak) if ak else "",
+                    "alpaca_secret_key_hint": mask_secret_tail(sk) if sk else "",
                     "created_at": a.get("created_at"),
                     "updated_at": a.get("updated_at"),
                 }
@@ -177,50 +170,32 @@ def fetch_trading_settings_payload(user_id: str) -> dict[str, Any] | None:
     return {"profile": prof, "alpaca_accounts": accounts}
 
 
-def upsert_profile_alpaca_keys(
+def upsert_profile_settings(
     user_id: str,
     *,
-    alpaca_api_key: str | None = None,
-    alpaca_secret_key: str | None = None,
     user_timezone: str | None = None,
 ) -> tuple[bool, str]:
     uid = (user_id or "").strip()
     if not uid or not service_role_configured():
         return False, "Trading settings are not configured on the server"
-    if alpaca_api_key is None and alpaca_secret_key is None and user_timezone is None:
+    if user_timezone is None:
         return False, "No fields to update"
-    tz = normalize_timezone(user_timezone) if user_timezone is not None else None
-    if user_timezone is not None and not tz:
+    tz = normalize_timezone(user_timezone)
+    if not tz:
         return False, "Invalid timezone"
     now_iso = datetime.now(timezone.utc).isoformat()
     rget = _get(
         "profiles",
         {
             "id": f"eq.{urllib.parse.quote(uid, safe='')}",
-            "select": "alpaca_api_key,alpaca_secret_key,timezone",
+            "select": "timezone",
         },
     )
-    ak = ""
-    sk = ""
-    existing_tz = ""
     has_row = False
     if rget.status_code == 200 and isinstance(rget.json(), list) and rget.json():
         has_row = True
-        row0 = rget.json()[0]
-        if isinstance(row0, dict):
-            ak = str(row0.get("alpaca_api_key") or "")
-            sk = str(row0.get("alpaca_secret_key") or "")
-            existing_tz = normalize_timezone(str(row0.get("timezone") or ""))
-    if alpaca_api_key is not None:
-        ak = alpaca_api_key
-    if alpaca_secret_key is not None:
-        sk = alpaca_secret_key
-    if tz is not None:
-        existing_tz = tz
     body = {
-        "alpaca_api_key": ak,
-        "alpaca_secret_key": sk,
-        "timezone": existing_tz,
+        "timezone": tz,
         "updated_at": now_iso,
     }
     if has_row:
@@ -240,18 +215,27 @@ def upsert_profile_alpaca_keys(
 def insert_alpaca_account(
     user_id: str,
     *,
-    account: str,
     label: str,
+    alpaca_api_key: str,
+    alpaca_secret_key: str,
     is_live: bool,
 ) -> tuple[dict[str, Any] | None, str]:
     uid = (user_id or "").strip()
     if not uid or not service_role_configured():
         return None, "Trading settings are not configured on the server"
+    ak = (alpaca_api_key or "").strip()
+    sk = (alpaca_secret_key or "").strip()
+    lab = (label or "").strip()
+    if not lab:
+        return None, "Account label is required"
+    if not ak or not sk:
+        return None, "Alpaca API key and secret are required"
     now_iso = datetime.now(timezone.utc).isoformat()
     row = {
         "user_id": uid,
-        "account": (account or "").strip(),
-        "label": (label or "").strip(),
+        "label": lab,
+        "alpaca_api_key": ak,
+        "alpaca_secret_key": sk,
         "is_live": bool(is_live),
         "updated_at": now_iso,
     }
@@ -270,21 +254,24 @@ def update_alpaca_account(
     user_id: str,
     account_id: str,
     *,
-    account: str | None = None,
     label: str | None = None,
+    alpaca_api_key: str | None = None,
+    alpaca_secret_key: str | None = None,
     is_live: bool | None = None,
 ) -> tuple[bool, str]:
     uid = (user_id or "").strip()
     aid = (account_id or "").strip()
     if not uid or not aid or not service_role_configured():
         return False, "Trading settings are not configured on the server"
-    if account is None and label is None and is_live is None:
+    if label is None and alpaca_api_key is None and alpaca_secret_key is None and is_live is None:
         return False, "No fields to update"
     body: dict[str, Any] = {"updated_at": datetime.now(timezone.utc).isoformat()}
-    if account is not None:
-        body["account"] = account.strip()
     if label is not None:
         body["label"] = label.strip()
+    if alpaca_api_key is not None:
+        body["alpaca_api_key"] = alpaca_api_key.strip()
+    if alpaca_secret_key is not None:
+        body["alpaca_secret_key"] = alpaca_secret_key.strip()
     if is_live is not None:
         body["is_live"] = bool(is_live)
     r = _patch(

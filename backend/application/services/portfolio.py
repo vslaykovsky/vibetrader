@@ -500,4 +500,11 @@ class Portfolio:
                     volume_weighted_avg_entry_price=float(pos.avg_entry_price),
                 )
             )
-        return InputPortfolioDataPoint(kind="portfolio", positions=positions)
+        cash = float(self.cash)
+        return InputPortfolioDataPoint(
+            kind="portfolio",
+            cash=max(0.0, cash),
+            equity=float(eq),
+            buying_power=max(0.0, cash),
+            positions=positions,
+        )

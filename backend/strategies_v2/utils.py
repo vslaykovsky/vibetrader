@@ -145,6 +145,9 @@ class PortfolioPosition(BaseModel):
 class InputPortfolioDataPoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["portfolio"] = "portfolio"
+    cash: float = Field(default=0.0, ge=0)
+    equity: float = 0.0
+    buying_power: float = Field(default=0.0, ge=0)
     positions: list[PortfolioPosition]
 
 

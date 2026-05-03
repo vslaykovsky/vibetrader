@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('local_live_orchestrator.py')
 
 from sqlalchemy import and_
 
@@ -26,7 +26,7 @@ except Exception:
 from application.services.live_run_control import live_run_row_requests_stop
 from db.models import LiveRun
 from db.session import SessionLocal
-from services.supabase_trading_settings import fetch_profile_alpaca_keys, service_role_configured
+from services.supabase_trading_settings import fetch_alpaca_account_for_user, service_role_configured
 
 
 def _load_run(run_id: str) -> LiveRun:
@@ -44,11 +44,15 @@ def _runner_env(row: LiveRun) -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     uid = (row.created_by or "").strip()
-    if service_role_configured() and uid:
-        pair = fetch_profile_alpaca_keys(uid)
-        if pair:
-            env["ALPACA_API_KEY"] = pair[0]
-            env["ALPACA_SECRET_KEY"] = pair[1]
+    aid = (row.alpaca_account_id or "").strip()
+    if service_role_configured() and uid and aid:
+        account = fetch_alpaca_account_for_user(uid, aid, include_credentials=True)
+        if account:
+            ak = str(account.get("alpaca_api_key") or "").strip()
+            sk = str(account.get("alpaca_secret_key") or "").strip()
+            if ak and sk:
+                env["ALPACA_API_KEY"] = ak
+                env["ALPACA_SECRET_KEY"] = sk
     return env
 
 

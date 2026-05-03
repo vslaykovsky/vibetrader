@@ -67,5 +67,5 @@ def test_settings_trading_get_returns_503_when_supabase_service_not_configured()
 def test_settings_trading_profile_put_requires_auth():
     app = create_app()
     client = app.test_client()
-    response = client.put("/settings/trading/profile", json={"alpaca_api_key": "x"})
+    response = client.put("/settings/trading/profile", json={"timezone": "UTC"})
     assert response.status_code == 401

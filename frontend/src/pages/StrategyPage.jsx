@@ -544,6 +544,12 @@ export function StrategyPage() {
   const [deployAccounts, setDeployAccounts] = useState([]);
   const [deploySelectedAccountId, setDeploySelectedAccountId] = useState('');
   const [deploySubmitting, setDeploySubmitting] = useState(false);
+  const deploySelectedAccountReady = deployAccounts.some(
+    (a) =>
+      String(a?.id || '').trim() === String(deploySelectedAccountId || '').trim() &&
+      a?.has_alpaca_api_key &&
+      a?.has_alpaca_secret_key,
+  );
   const [strategyNameByRunId, setStrategyNameByRunId] = useState(() => ({}));
   const [editingCanvasTitle, setEditingCanvasTitle] = useState(false);
   const [canvasTitleDraft, setCanvasTitleDraft] = useState('');
@@ -670,7 +676,10 @@ export function StrategyPage() {
         setDeployTradingConfigured(true);
         const acc = Array.isArray(payload.alpaca_accounts) ? payload.alpaca_accounts : [];
         setDeployAccounts(acc);
-        const firstId = acc.length && typeof acc[0].id === 'string' ? acc[0].id : '';
+        const firstReady = acc.find(
+          (a) => a?.has_alpaca_api_key && a?.has_alpaca_secret_key && typeof a.id === 'string',
+        );
+        const firstId = firstReady ? firstReady.id : '';
         setDeploySelectedAccountId(firstId);
         setDeployModalPhase('ready');
       } catch (e) {
@@ -2269,6 +2278,11 @@ export function StrategyPage() {
                   No Alpaca accounts yet. Add at least one in Settings, then open this dialog again.
                 </p>
               ) : null}
+              {deployModalPhase === 'ready' && deployTradingConfigured && deployAccounts.length > 0 && !deploySelectedAccountReady ? (
+                <p className="deploy-live-modal-muted">
+                  Select an Alpaca account with a saved API key and secret.
+                </p>
+              ) : null}
               {deployModalPhase === 'ready' && deployTradingConfigured && deployAccounts.length > 0 ? (
                 <div className="deploy-live-modal-accounts" role="group" aria-label="Alpaca account">
                   {deployAccounts.map((a) => {
@@ -2276,12 +2290,14 @@ export function StrategyPage() {
                     if (!id) return null;
                     const lab = typeof a.label === 'string' && a.label.trim() ? a.label.trim() : id.slice(0, 8);
                     const mode = a.is_live ? 'Live' : 'Paper';
+                    const accountReady = Boolean(a.has_alpaca_api_key && a.has_alpaca_secret_key);
                     return (
                       <label key={id} className="deploy-live-account-option">
                         <input
                           type="radio"
                           name="deploy-alpaca-account"
                           value={id}
+                          disabled={!accountReady}
                           checked={deploySelectedAccountId === id}
                           onChange={() => setDeploySelectedAccountId(id)}
                         />
@@ -2290,7 +2306,7 @@ export function StrategyPage() {
                           <span className="deploy-live-modal-muted">
                             {' '}
                             · {mode}
-                            {typeof a.account === 'string' && a.account.trim() ? ` · ${a.account.trim()}` : ''}
+                            {!accountReady ? ' · missing credentials' : ''}
                           </span>
                         </span>
                       </label>
@@ -2315,7 +2331,9 @@ export function StrategyPage() {
                     deploySubmitting ||
                     deployModalPhase !== 'ready' ||
                     (deployTradingConfigured &&
-                      (deployAccounts.length === 0 || !String(deploySelectedAccountId || '').trim()))
+                      (deployAccounts.length === 0 ||
+                        !String(deploySelectedAccountId || '').trim() ||
+                        !deploySelectedAccountReady))
                   }
                   onClick={async () => {
                     setDeployModalError('');
@@ -2333,6 +2351,10 @@ export function StrategyPage() {
                       const sid = String(deploySelectedAccountId || '').trim();
                       if (!sid) {
                         setDeployModalError('Select an Alpaca account.');
+                        return;
+                      }
+                      if (!deploySelectedAccountReady) {
+                        setDeployModalError('Select an Alpaca account with saved API credentials.');
                         return;
                       }
                     }

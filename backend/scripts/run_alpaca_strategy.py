@@ -26,6 +26,7 @@ except Exception:
     pass
 
 from alpaca.trading.client import TradingClient
+from alpaca.common.exceptions import APIError
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
 from sqlalchemy.exc import IntegrityError
@@ -35,10 +36,12 @@ from application.services.alpaca_live_db import (
     LiveSubscriptionSpec,
     delete_runner_subscriptions,
     prune_stale_subscriptions,
-    read_events_after_id,
+    read_run_market_events_after,
+    read_run_strategy_inputs_after,
     touch_runner_subscriptions,
     upsert_runner_subscriptions,
 )
+from application.queries.historical_bars import infer_asset_class
 from application.services.indicators import IndicatorEngine
 from application.services.scale_utils import (
     is_finer_or_equal,
@@ -78,6 +81,7 @@ from strategies_v2.utils import (
 logger = logging.getLogger(__name__)
 
 _SIMULATION_SCALE = "1m"
+_USE_CASH_ONLY_FOR_BUY_NOTIONAL = True
 
 
 def _materialize_workspace_from_db(strategy_row: Strategy, dest: Path) -> None:
@@ -125,6 +129,13 @@ def _require_env(name: str) -> str:
     return v
 
 
+def _float_attr(obj, name: str, default: float = 0.0) -> float:
+    try:
+        return float(getattr(obj, name, default) or default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 def _alpaca_client(*, paper: bool) -> TradingClient:
     return TradingClient(
         api_key=_require_env("ALPACA_API_KEY"),
@@ -158,6 +169,10 @@ def _subscription_specs_for_live_bars(startup: StrategyOutput) -> list[LiveSubsc
 
 
 def _portfolio_snapshot_from_alpaca(client: TradingClient) -> InputPortfolioDataPoint:
+    acct = client.get_account()
+    cash = max(0.0, _float_attr(acct, "cash"))
+    equity = _float_attr(acct, "equity", cash)
+    buying_power = max(0.0, _float_attr(acct, "buying_power", cash))
     positions = []
     for p in client.get_all_positions():
         sym = str(getattr(p, "symbol", "")).strip().upper()
@@ -165,16 +180,23 @@ def _portfolio_snapshot_from_alpaca(client: TradingClient) -> InputPortfolioData
         avg = float(getattr(p, "avg_entry_price", 0.0) or 0.0)
         if not sym or qty == 0:
             continue
-        deposit_ratio = 1.0
+        fallback_value = abs(qty) * avg
+        market_value = abs(_float_attr(p, "market_value", fallback_value))
+        deposit_ratio = market_value / equity if equity > 0 else 0.0
         positions.append(
             {
                 "ticker": sym,
                 "order_type": "long" if qty > 0 else "short",
-                "deposit_ratio": float(deposit_ratio),
+                "deposit_ratio": max(0.0, min(1.0, float(deposit_ratio))),
                 "volume_weighted_avg_entry_price": float(avg),
             }
         )
-    return InputPortfolioDataPoint(positions=positions)
+    return InputPortfolioDataPoint(
+        cash=cash,
+        equity=equity,
+        buying_power=buying_power,
+        positions=positions,
+    )
 
 
 def _fires_on(driver_ts: pd.Timestamp, next_ts: pd.Timestamp | None, update_scale: str) -> bool:
@@ -361,10 +383,27 @@ def _step_from_driver_index(
     return step, running, cur_base_idx
 
 
-def _emit_db_event(session, *, run_id: str, kind: str, unixtime: int | None, payload: dict) -> None:
+def _event_type_for_kind(kind: str) -> str:
+    if kind in {"input", "bar", "indicator_in", "portfolio", "renko", "market_bar"}:
+        return "input"
+    if kind in {"status", "startup"}:
+        return "system"
+    return "output"
+
+
+def _emit_db_event(
+    session,
+    *,
+    run_id: str,
+    kind: str,
+    unixtime: int | None,
+    payload: dict,
+    event_type: str | None = None,
+) -> None:
     session.add(
         LiveRunEvent(
             run_id=run_id,
+            event_type=event_type or _event_type_for_kind(str(kind)),
             kind=str(kind),
             unixtime=int(unixtime) if unixtime is not None else None,
             payload=dict(payload or {}),
@@ -379,6 +418,75 @@ def _client_order_id_for_signal(run_id: str, unixtime: int, order: OutputMarketT
     return f"{run_id}:{unixtime}:{t}:{d}:{dr:.6f}"
 
 
+def _alpaca_api_error_details(exc: APIError) -> dict[str, object]:
+    raw = str(exc)
+    details: dict[str, object] = {"error": raw}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        parsed = {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+    message = str(parsed.get("message") or "").strip()
+    code = str(parsed.get("code") or "").strip()
+    status_code = exc.status_code
+    if message:
+        details["error"] = message
+        details["alpaca_error_message"] = message
+    if code:
+        details["alpaca_error_code"] = code
+    if status_code is not None:
+        try:
+            details["alpaca_status_code"] = int(status_code)
+        except (TypeError, ValueError):
+            details["alpaca_status_code"] = str(status_code)
+    if raw and raw != details.get("error"):
+        details["alpaca_error_raw"] = raw
+    return details
+
+
+def _alpaca_rejection_comment(payload: dict[str, object]) -> str:
+    error = str(payload.get("alpaca_error_message") or payload.get("error") or "").strip()
+    if not error:
+        return ""
+    code = str(payload.get("alpaca_error_code") or "").strip()
+    status_code = str(payload.get("alpaca_status_code") or "").strip()
+    detail = f"Alpaca rejected order: {error}"
+    suffix = ", ".join(
+        x
+        for x in (
+            f"code {code}" if code else "",
+            f"HTTP {status_code}" if status_code else "",
+        )
+        if x
+    )
+    return f"{detail} ({suffix})" if suffix else detail
+
+
+def _add_rejection_comment(payload: dict[str, object]) -> dict[str, object]:
+    detail = _alpaca_rejection_comment(payload)
+    if not detail:
+        return payload
+    existing = str(payload.get("short_explanation") or payload.get("reason") or "").strip()
+    if detail in existing:
+        return payload
+    payload["short_explanation"] = f"{existing}; {detail}" if existing else detail
+    return payload
+
+
+def _time_in_force_for_symbol(symbol: str, *, session) -> TimeInForce:
+    asset = infer_asset_class(symbol, provider="alpaca", session=session)
+    return TimeInForce.GTC if asset == "crypto" else TimeInForce.DAY
+
+
+def _submit_market_order(client: TradingClient, req: MarketOrderRequest) -> tuple[str, dict[str, object]]:
+    try:
+        placed = client.submit_order(req)
+    except APIError as exc:
+        return "", _alpaca_api_error_details(exc)
+    return str(getattr(placed, "id", "") or ""), {}
+
+
 def _maybe_execute_market_order(
     client: TradingClient,
     *,
@@ -387,7 +495,7 @@ def _maybe_execute_market_order(
     unixtime: int,
     order: OutputMarketTradeOrder,
     enable_trading: bool,
-) -> dict[str, str] | None:
+) -> dict[str, object] | None:
     if not enable_trading:
         return None
     sym = str(order.ticker).strip().upper()
@@ -402,43 +510,88 @@ def _maybe_execute_market_order(
             session.flush()
             if side == OrderSide.BUY:
                 acct = client.get_account()
-                cash = float(getattr(acct, "cash", 0.0) or 0.0)
-                notional = round(cash * dr, 2)
+                cash = max(0.0, _float_attr(acct, "cash"))
+                buying_power = max(0.0, _float_attr(acct, "buying_power", cash))
+                basis = cash if _USE_CASH_ONLY_FOR_BUY_NOTIONAL else min(cash, buying_power)
+                notional = round(basis * dr, 2)
                 if notional <= 0:
-                    return {"client_order_id": cid, "alpaca_order_id": ""}
+                    return {
+                        "client_order_id": cid,
+                        "alpaca_order_id": "",
+                        "status": "skipped",
+                        "reason": "insufficient buying power",
+                        "cash": cash,
+                        "buying_power": buying_power,
+                    }
                 req = MarketOrderRequest(
                     symbol=sym,
                     notional=notional,
                     side=side,
-                    time_in_force=TimeInForce.DAY,
+                    time_in_force=_time_in_force_for_symbol(sym, session=session),
                     client_order_id=cid,
                 )
-                placed = client.submit_order(req)
-                aid = str(getattr(placed, "id", "") or "")
+                aid, err = _submit_market_order(client, req)
                 row.alpaca_order_id = aid
-                return {"client_order_id": cid, "alpaca_order_id": aid}
+                if err:
+                    return {
+                        "client_order_id": cid,
+                        "alpaca_order_id": "",
+                        "status": "rejected",
+                        "notional": notional,
+                        "cash": cash,
+                        "buying_power": buying_power,
+                    } | err
+                return {
+                    "client_order_id": cid,
+                    "alpaca_order_id": aid,
+                    "status": "submitted",
+                    "notional": notional,
+                    "cash": cash,
+                    "buying_power": buying_power,
+                }
             pos = None
             for p in client.get_all_positions():
                 if str(getattr(p, "symbol", "")).strip().upper() == sym:
                     pos = p
                     break
             if pos is None:
-                return {"client_order_id": cid, "alpaca_order_id": ""}
+                return {
+                    "client_order_id": cid,
+                    "alpaca_order_id": "",
+                    "status": "skipped",
+                    "reason": "no open position",
+                }
             qty = float(getattr(pos, "qty", 0.0) or 0.0)
             sell_qty = abs(qty) * dr
             if sell_qty <= 0:
-                return {"client_order_id": cid, "alpaca_order_id": ""}
+                return {
+                    "client_order_id": cid,
+                    "alpaca_order_id": "",
+                    "status": "skipped",
+                    "reason": "zero sell quantity",
+                }
             req = MarketOrderRequest(
                 symbol=sym,
                 qty=sell_qty,
                 side=side,
-                time_in_force=TimeInForce.DAY,
+                time_in_force=_time_in_force_for_symbol(sym, session=session),
                 client_order_id=cid,
             )
-            placed = client.submit_order(req)
-            aid = str(getattr(placed, "id", "") or "")
+            aid, err = _submit_market_order(client, req)
             row.alpaca_order_id = aid
-            return {"client_order_id": cid, "alpaca_order_id": aid}
+            if err:
+                return {
+                    "client_order_id": cid,
+                    "alpaca_order_id": "",
+                    "status": "rejected",
+                    "qty": sell_qty,
+                } | err
+            return {
+                "client_order_id": cid,
+                "alpaca_order_id": aid,
+                "status": "submitted",
+                "qty": sell_qty,
+            }
     except IntegrityError:
         return {"client_order_id": cid, "alpaca_order_id": ""}
 
@@ -602,7 +755,7 @@ def main(argv: list[str]) -> int:
         subs = _subscription_specs_for_live_bars(startup)
 
         with SessionLocal() as session:
-            upsert_runner_subscriptions(session, runner_id=runner_id, subs=subs)
+            upsert_runner_subscriptions(session, run_id=run_id, runner_id=runner_id, subs=subs)
             prune_stale_subscriptions(session, max_age_seconds=float(args.subs_ttl_s))
             _emit_db_event(
                 session,
@@ -640,6 +793,210 @@ def main(argv: list[str]) -> int:
         stop_poll_s = max(0.25, float(args.stop_poll_s))
         last_stop_mon = time.monotonic() - stop_poll_s
 
+        def process_market_events(session, events: list[LiveRunEvent], *, emit_outputs: bool) -> bool:
+            nonlocal driver_df, base_df, cached_base_len, j, running, cur_base_idx
+            appended = False
+            for ev in events:
+                payload = ev.payload or {}
+                sym = (payload.get("symbol") or payload.get("ticker") or "").strip().upper()
+                if sym != ticker:
+                    continue
+                ts_raw = payload.get("t")
+                ts = pd.Timestamp(ts_raw) if ts_raw else pd.Timestamp(int(ev.unixtime or time.time()), unit="s")
+                if getattr(ts, "tzinfo", None) is None and getattr(ts, "tz", None) is None:
+                    ts = ts.tz_localize("UTC")
+                else:
+                    ts = ts.tz_convert("UTC")
+                o = float(payload.get("open") or payload.get("o") or 0.0)
+                h = float(payload.get("high") or payload.get("h") or 0.0)
+                l = float(payload.get("low") or payload.get("l") or 0.0)
+                c = float(payload.get("close") or payload.get("c") or 0.0)
+                v = float(payload.get("volume") or payload.get("v") or 0.0)
+                driver_index.append(ts)
+                driver_rows.append({"open": o, "high": h, "low": l, "close": c, "volume": v})
+                appended = True
+
+            if not appended:
+                return False
+
+            driver_df = pd.DataFrame(driver_rows, index=pd.DatetimeIndex(driver_index))
+            base_df = aggregate_to_base(driver_df, base_scale)
+            if base_df.empty:
+                return False
+            engine.fit(base_df)
+
+            if len(base_df.index) != cached_base_len:
+                bucket_to_row.clear()
+                for i in range(len(base_df.index)):
+                    b = floor_ts_to_scale(pd.Timestamp(base_df.index[i]), base_scale)
+                    bucket_to_row[b] = i
+                cached_base_len = len(base_df.index)
+
+            wrote_any = False
+            while j < len(driver_df):
+                step, running, cur_base_idx = _step_from_driver_index(
+                    driver_df=driver_df,
+                    base_df=base_df,
+                    base_scale=base_scale,
+                    simulation_scale=simulation_scale,
+                    j=j,
+                    bucket_to_row=bucket_to_row,
+                    running=running,
+                    cur_base_idx=cur_base_idx,
+                    ticker_subs=ticker_subs,
+                    indicator_subs=indicator_subs,
+                    renko_subs=renko_subs,
+                    indicator_engine=engine,
+                    renko_states=renko_states,
+                )
+                j += 1
+                if step is None or not step.fired or not emit_outputs:
+                    continue
+
+                for line in expand_step_to_lines(
+                    step,
+                    portfolio_provider=lambda: _portfolio_snapshot_from_alpaca(client),
+                ):
+                    _emit_db_event(
+                        session,
+                        run_id=run_id,
+                        kind="input",
+                        unixtime=int(line.unixtime),
+                        payload={"input": json.loads(line.model_dump_json())},
+                    )
+                    for pt in line.points:
+                        if pt.kind == "ohlc":
+                            _emit_db_event(
+                                session,
+                                run_id=run_id,
+                                kind="bar",
+                                unixtime=int(line.unixtime),
+                                payload=pt.model_dump(mode="json"),
+                            )
+                        elif pt.kind == "indicator":
+                            _emit_db_event(
+                                session,
+                                run_id=run_id,
+                                kind="indicator_in",
+                                unixtime=int(line.unixtime),
+                                payload=pt.model_dump(mode="json"),
+                            )
+                        elif pt.kind == "portfolio":
+                            _emit_db_event(
+                                session,
+                                run_id=run_id,
+                                kind="portfolio",
+                                unixtime=int(line.unixtime),
+                                payload=pt.model_dump(mode="json"),
+                            )
+                        elif pt.kind == "renko":
+                            _emit_db_event(
+                                session,
+                                run_id=run_id,
+                                kind="renko",
+                                unixtime=int(line.unixtime),
+                                payload=pt.model_dump(mode="json"),
+                            )
+
+                    _log_strategy_input(line)
+                    out = rt.send(line)
+                    _log_strategy_output(out)
+                    _emit_db_event(
+                        session,
+                        run_id=run_id,
+                        kind="output",
+                        unixtime=int(line.unixtime),
+                        payload={"output": json.loads(out.model_dump_json())},
+                    )
+
+                    for item in out.root:
+                        if isinstance(item, OutputMarketTradeOrder):
+                            id_meta = _maybe_execute_market_order(
+                                client,
+                                session=session,
+                                run_id=run_id,
+                                unixtime=int(line.unixtime),
+                                order=item,
+                                enable_trading=enable_trading,
+                            )
+                            os_payload = dict(item.model_dump(mode="json"))
+                            if id_meta is not None:
+                                os_payload.update(id_meta)
+                                _add_rejection_comment(os_payload)
+                            _emit_db_event(
+                                session,
+                                run_id=run_id,
+                                kind="order_signal",
+                                unixtime=int(line.unixtime),
+                                payload=os_payload,
+                            )
+                        elif isinstance(item, OutputIndicatorDataPoint):
+                            _emit_db_event(
+                                session,
+                                run_id=run_id,
+                                kind="indicator_out",
+                                unixtime=int(line.unixtime),
+                                payload=item.model_dump(mode="json"),
+                            )
+                        elif isinstance(item, OutputChart):
+                            _emit_db_event(
+                                session,
+                                run_id=run_id,
+                                kind="chart",
+                                unixtime=int(line.unixtime),
+                                payload=item.model_dump(mode="json"),
+                            )
+                        elif isinstance(item, OutputTimeAck):
+                            continue
+
+                    wrote_any = True
+            return wrote_any
+
+        def replay_strategy_inputs() -> int:
+            replayed = 0
+            after = 0
+            while True:
+                with SessionLocal() as session:
+                    rows = read_run_strategy_inputs_after(
+                        session,
+                        run_id=run_id,
+                        after_id=after,
+                        limit=500,
+                    )
+                if not rows:
+                    return replayed
+                for ev in rows:
+                    after = int(ev.id)
+                    payload = ev.payload or {}
+                    stored_input = payload.get("input")
+                    if not isinstance(stored_input, dict):
+                        continue
+                    rt.send(StrategyInput.model_validate(stored_input))
+                    replayed += 1
+
+        with SessionLocal() as session:
+            run = session.get(LiveRun, run_id)
+            last_event_id = int(run.last_input_event_id or 0) if run is not None else 0
+
+        if last_event_id > 0:
+            after = 0
+            while True:
+                with SessionLocal() as session:
+                    replay_events = read_run_market_events_after(
+                        session,
+                        run_id=run_id,
+                        after_id=after,
+                        limit=500,
+                        through_id=last_event_id,
+                    )
+                    if replay_events:
+                        process_market_events(session, replay_events, emit_outputs=False)
+                if not replay_events:
+                    break
+                after = int(replay_events[-1].id)
+            replayed = replay_strategy_inputs()
+            logger.info("replayed %s strategy input event(s)", replayed)
+
         while True:
             if time.monotonic() - last_stop_mon >= stop_poll_s:
                 last_stop_mon = time.monotonic()
@@ -657,180 +1014,25 @@ def main(argv: list[str]) -> int:
                 last_touch = now
 
             with SessionLocal() as session:
-                events = read_events_after_id(session, after_id=last_event_id, limit=500)
+                events = read_run_market_events_after(
+                    session,
+                    run_id=run_id,
+                    after_id=last_event_id,
+                    limit=500,
+                )
 
             if not events:
                 time.sleep(max(0.01, float(args.poll_ms) / 1000.0))
                 continue
 
-            wrote_any = False
+            last_event_id = int(events[-1].id)
             with SessionLocal() as session:
-                for ev in events:
-                    last_event_id = int(ev.id)
-                    ch = (ev.channel or "").strip().lower()
-                    payload = ev.payload or {}
-
-                    if ch != "bars":
-                        continue
-                    sym = (ev.symbol or payload.get("symbol") or payload.get("ticker") or "").strip().upper()
-                    if sym != ticker:
-                        continue
-                    ts_raw = payload.get("t")
-                    ts = pd.Timestamp(ts_raw) if ts_raw else pd.Timestamp(int(ev.unixtime or time.time()), unit="s")
-                    if getattr(ts, "tzinfo", None) is None and getattr(ts, "tz", None) is None:
-                        ts = ts.tz_localize("UTC")
-                    else:
-                        ts = ts.tz_convert("UTC")
-                    o = float(payload.get("open") or payload.get("o") or 0.0)
-                    h = float(payload.get("high") or payload.get("h") or 0.0)
-                    l = float(payload.get("low") or payload.get("l") or 0.0)
-                    c = float(payload.get("close") or payload.get("c") or 0.0)
-                    v = float(payload.get("volume") or payload.get("v") or 0.0)
-                    driver_index.append(ts)
-                    driver_rows.append({"open": o, "high": h, "low": l, "close": c, "volume": v})
-
-                if not driver_rows:
-                    session.commit()
-                    continue
-
-                driver_df = pd.DataFrame(driver_rows, index=pd.DatetimeIndex(driver_index))
-                base_df = aggregate_to_base(driver_df, base_scale)
-                if base_df.empty:
-                    session.commit()
-                    continue
-                engine.fit(base_df)
-
-                if len(base_df.index) != cached_base_len:
-                    bucket_to_row.clear()
-                    for i in range(len(base_df.index)):
-                        b = floor_ts_to_scale(pd.Timestamp(base_df.index[i]), base_scale)
-                        bucket_to_row[b] = i
-                    cached_base_len = len(base_df.index)
-
-                while j < len(driver_df):
-                    step, running, cur_base_idx = _step_from_driver_index(
-                        driver_df=driver_df,
-                        base_df=base_df,
-                        base_scale=base_scale,
-                        simulation_scale=simulation_scale,
-                        j=j,
-                        bucket_to_row=bucket_to_row,
-                        running=running,
-                        cur_base_idx=cur_base_idx,
-                        ticker_subs=ticker_subs,
-                        indicator_subs=indicator_subs,
-                        renko_subs=renko_subs,
-                        indicator_engine=engine,
-                        renko_states=renko_states,
-                    )
-                    j += 1
-                    if step is None or not step.fired:
-                        continue
-
-                    for line in expand_step_to_lines(
-                        step,
-                        portfolio_provider=lambda: _portfolio_snapshot_from_alpaca(client),
-                    ):
-                        _emit_db_event(
-                            session,
-                            run_id=run_id,
-                            kind="input",
-                            unixtime=int(line.unixtime),
-                            payload={"input": json.loads(line.model_dump_json())},
-                        )
-                        for pt in line.points:
-                            if pt.kind == "ohlc":
-                                _emit_db_event(
-                                    session,
-                                    run_id=run_id,
-                                    kind="bar",
-                                    unixtime=int(line.unixtime),
-                                    payload=pt.model_dump(mode="json"),
-                                )
-                            elif pt.kind == "indicator":
-                                _emit_db_event(
-                                    session,
-                                    run_id=run_id,
-                                    kind="indicator_in",
-                                    unixtime=int(line.unixtime),
-                                    payload=pt.model_dump(mode="json"),
-                                )
-                            elif pt.kind == "portfolio":
-                                _emit_db_event(
-                                    session,
-                                    run_id=run_id,
-                                    kind="portfolio",
-                                    unixtime=int(line.unixtime),
-                                    payload=pt.model_dump(mode="json"),
-                                )
-                            elif pt.kind == "renko":
-                                _emit_db_event(
-                                    session,
-                                    run_id=run_id,
-                                    kind="renko",
-                                    unixtime=int(line.unixtime),
-                                    payload=pt.model_dump(mode="json"),
-                                )
-
-                        _log_strategy_input(line)
-                        out = rt.send(line)
-                        _log_strategy_output(out)
-                        _emit_db_event(
-                            session,
-                            run_id=run_id,
-                            kind="output",
-                            unixtime=int(line.unixtime),
-                            payload={"output": json.loads(out.model_dump_json())},
-                        )
-
-                        for item in out.root:
-                            if isinstance(item, OutputMarketTradeOrder):
-                                id_meta = _maybe_execute_market_order(
-                                    client,
-                                    session=session,
-                                    run_id=run_id,
-                                    unixtime=int(line.unixtime),
-                                    order=item,
-                                    enable_trading=enable_trading,
-                                )
-                                os_payload = dict(item.model_dump(mode="json"))
-                                if id_meta is not None:
-                                    os_payload["client_order_id"] = id_meta["client_order_id"]
-                                    os_payload["alpaca_order_id"] = id_meta.get("alpaca_order_id", "")
-                                _emit_db_event(
-                                    session,
-                                    run_id=run_id,
-                                    kind="order_signal",
-                                    unixtime=int(line.unixtime),
-                                    payload=os_payload,
-                                )
-                            elif isinstance(item, OutputIndicatorDataPoint):
-                                _emit_db_event(
-                                    session,
-                                    run_id=run_id,
-                                    kind="indicator_out",
-                                    unixtime=int(line.unixtime),
-                                    payload=item.model_dump(mode="json"),
-                                )
-                            elif isinstance(item, OutputChart):
-                                _emit_db_event(
-                                    session,
-                                    run_id=run_id,
-                                    kind="chart",
-                                    unixtime=int(line.unixtime),
-                                    payload=item.model_dump(mode="json"),
-                                )
-                            elif isinstance(item, OutputTimeAck):
-                                continue
-
-                        wrote_any = True
-
-                if wrote_any:
-                    run = session.get(LiveRun, run_id)
-                    if run is not None:
-                        run.last_input_event_id = int(last_event_id)
-                        run.updated_at = datetime.now(timezone.utc)
-                        session.add(run)
+                process_market_events(session, events, emit_outputs=True)
+                run = session.get(LiveRun, run_id)
+                if run is not None:
+                    run.last_input_event_id = int(last_event_id)
+                    run.updated_at = datetime.now(timezone.utc)
+                    session.add(run)
                 session.commit()
 
     except KeyboardInterrupt:

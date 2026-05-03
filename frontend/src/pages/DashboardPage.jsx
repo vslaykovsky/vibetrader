@@ -5,7 +5,7 @@ import { randomUUID } from '../randomUUID.js';
 import { useAuth } from '../AuthContext';
 import { useTheme } from '../ThemeContext';
 import { useTimeZone } from '../TimeZoneContext.jsx';
-import { formatIsoDateTime } from '../lib/dateTime.js';
+import { formatIsoDateTime, parseIsoInstant } from '../lib/dateTime.js';
 import { ProfileMenu } from '../ProfileMenu';
 
 const API_BASE_URL =
@@ -65,10 +65,8 @@ function liveAccountLabel(r) {
 }
 
 function parseRunDate(iso) {
-  if (typeof iso !== 'string' || !iso.trim()) return null;
-  const ms = Date.parse(iso);
-  if (!Number.isFinite(ms)) return null;
-  return new Date(ms);
+  const ms = parseIsoInstant(iso);
+  return ms == null ? null : new Date(ms);
 }
 
 function liveRunDurationLabel(status, createdAt, updatedAt, now) {

@@ -231,6 +231,9 @@ def test_portfolio_to_portfolio_datapoint_flat():
     p = Portfolio(initial_deposit=100.0, ticker="SPY")
     pt = p.to_portfolio_datapoint()
     assert isinstance(pt, InputPortfolioDataPoint)
+    assert pt.cash == pytest.approx(100.0)
+    assert pt.equity == pytest.approx(100.0)
+    assert pt.buying_power == pytest.approx(100.0)
     assert pt.positions == []
 
 
@@ -238,6 +241,9 @@ def test_portfolio_to_portfolio_datapoint_in_position():
     p = Portfolio(initial_deposit=10_000.0, ticker="SPY")
     p.apply_market_order(direction="buy", deposit_ratio=1.0, price=100.0, unixtime=1)
     pt = p.to_portfolio_datapoint()
+    assert pt.cash == pytest.approx(0.0)
+    assert pt.equity == pytest.approx(10_000.0)
+    assert pt.buying_power == pytest.approx(0.0)
     assert len(pt.positions) == 1
     assert pt.positions[0].ticker == "SPY"
     assert pt.positions[0].order_type == "long"
@@ -245,6 +251,9 @@ def test_portfolio_to_portfolio_datapoint_in_position():
     p.apply_market_order(direction="sell", deposit_ratio=1.0, price=100.0, unixtime=2)
     p.apply_market_order(direction="sell", deposit_ratio=0.5, price=100.0, unixtime=3)
     pt = p.to_portfolio_datapoint()
+    assert pt.cash == pytest.approx(15_000.0)
+    assert pt.equity == pytest.approx(10_000.0)
+    assert pt.buying_power == pytest.approx(15_000.0)
     assert len(pt.positions) == 1
     assert pt.positions[0].ticker == "SPY"
     assert pt.positions[0].order_type == "short"

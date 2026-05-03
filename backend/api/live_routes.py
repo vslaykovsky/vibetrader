@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from flask import Blueprint, Response, g, jsonify, request
 
+from application.schemas.live_stream import build_live_stream_snapshot, live_stream_patch_from_event
 from application.services.alpaca_live_db import delete_runner_subscriptions
 from auth import require_auth
 from db.models import LiveRun, LiveRunEvent, Strategy
@@ -18,7 +19,6 @@ from db.strategy_queries import resolve_strategy_row_for_live
 from services.agent import thread_id_allowed
 from services.supabase_trading_settings import (
     fetch_alpaca_account_for_user,
-    fetch_profile_alpaca_keys,
     service_role_configured,
 )
 
@@ -52,6 +52,16 @@ def _live_use_kubernetes() -> bool:
 
 def _bad(message: str, code: int = 400) -> tuple:
     return jsonify({"error": message}), code
+
+
+def _utc_isoformat(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
 
 
 _SA_TOKEN_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
@@ -243,18 +253,24 @@ def live_start() -> tuple:
     alpaca_account_row: dict[str, Any] | None = None
     use_supabase_trading = service_role_configured() and _user_sub_is_uuid(getattr(g, "user_id", None))
     if use_supabase_trading:
-        alpaca_pair = fetch_profile_alpaca_keys(str(g.user_id))
-        if not alpaca_pair:
-            return _bad("Add Alpaca API credentials in Dashboard → Settings", 400)
         if not alpaca_account_id:
             return _bad("alpaca_account_id is required", 400)
         try:
             uuid.UUID(alpaca_account_id)
         except ValueError:
             return _bad("invalid alpaca_account_id")
-        alpaca_account_row = fetch_alpaca_account_for_user(str(g.user_id), alpaca_account_id)
+        alpaca_account_row = fetch_alpaca_account_for_user(
+            str(g.user_id),
+            alpaca_account_id,
+            include_credentials=True,
+        )
         if not alpaca_account_row:
             return _bad("Alpaca account not found", 404)
+        ak = str(alpaca_account_row.get("alpaca_api_key") or "").strip()
+        sk = str(alpaca_account_row.get("alpaca_secret_key") or "").strip()
+        if not ak or not sk:
+            return _bad("Add Alpaca API credentials for this account in Dashboard → Settings", 400)
+        alpaca_pair = (ak, sk)
         paper = not bool(alpaca_account_row.get("is_live"))
 
     use_k8s = _live_use_kubernetes()
@@ -288,6 +304,7 @@ def live_start() -> tuple:
         session.add(
             LiveRunEvent(
                 run_id=run_id,
+                event_type="system",
                 kind="status",
                 unixtime=int(time.time()),
                 payload={"status": "starting"},
@@ -388,14 +405,13 @@ def live_runs() -> tuple:
             acc_row = fetch_alpaca_account_for_user(uid, aid)
             if acc_row:
                 lab = str(acc_row.get("label") or "").strip()
-                acct = str(acc_row.get("account") or "").strip()
-                label_by_aid[aid] = lab or acct
+                label_by_aid[aid] = lab
 
         def _serialize_live_run(r: LiveRun) -> dict[str, Any]:
             sid = str(getattr(r, "deployed_from_run_id", "") or "").strip()
             strat = strat_by_id.get(sid) if sid else None
             name = (strat.strategy_name or "").strip() if strat else ""
-            bt_at = strat.created_at.isoformat() if strat and strat.created_at else None
+            bt_at = _utc_isoformat(strat.created_at) if strat else None
             aid = str(getattr(r, "alpaca_account_id", "") or "").strip()
             acct_label = label_by_aid.get(aid, "") if aid else ""
             return {
@@ -412,8 +428,8 @@ def live_runs() -> tuple:
                 "alpaca_account_id": aid,
                 "alpaca_account_label": acct_label,
                 "runner_backend": getattr(r, "runner_backend", "") or "kubernetes",
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                "created_at": _utc_isoformat(r.created_at),
+                "updated_at": _utc_isoformat(r.updated_at),
             }
 
         return (
@@ -457,13 +473,14 @@ def live_stop() -> tuple:
                 rid = ((row.runner_id or "").strip() or run_id)[:64]
                 delete_runner_subscriptions(session, runner_id=rid)
             row.status_text = ""
-            row.updated_at = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+            row.updated_at = datetime.now(timezone.utc)
             session.add(row)
         else:
             ev_status = "stopping" if use_k8s else "stopped"
         session.add(
             LiveRunEvent(
                 run_id=run_id,
+                event_type="system",
                 kind="status",
                 unixtime=int(time.time()),
                 payload={"status": ev_status},
@@ -515,8 +532,8 @@ def live_status() -> tuple:
                 "runner_backend": getattr(row, "runner_backend", "") or "kubernetes",
                 "runner_id": row.runner_id,
                 "last_input_event_id": int(row.last_input_event_id or 0),
-                "created_at": row.created_at.isoformat() if row.created_at else None,
-                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                "created_at": _utc_isoformat(row.created_at),
+                "updated_at": _utc_isoformat(row.updated_at),
             }
     finally:
         session.close()
@@ -557,7 +574,22 @@ def live_stream() -> tuple | Response:
 
     def generate():
         last_keepalive = time.monotonic()
-        cur_after = int(after_id)
+        session = SessionLocal()
+        try:
+            snapshot_rows = (
+                session.query(LiveRunEvent)
+                .filter(LiveRunEvent.run_id == run_id)
+                .order_by(LiveRunEvent.id.asc())
+                .all()
+            )
+        finally:
+            session.close()
+
+        snapshot, live_ctx = build_live_stream_snapshot(run_id, snapshot_rows)
+        cur_after = max(int(after_id), int(snapshot.data.last_seq))
+        yield f"id: {snapshot.seq}\n"
+        yield "event: snapshot\n"
+        yield "data: " + snapshot.model_dump_json() + "\n\n"
         while True:
             session = SessionLocal()
             try:
@@ -580,16 +612,12 @@ def live_stream() -> tuple | Response:
 
             for ev in rows:
                 cur_after = int(ev.id)
-                payload = {
-                    "id": int(ev.id),
-                    "run_id": ev.run_id,
-                    "kind": ev.kind,
-                    "unixtime": ev.unixtime,
-                    "payload": dict(ev.payload or {}),
-                }
-                yield f"id: {ev.id}\n"
-                yield f"event: {ev.kind}\n"
-                yield "data: " + json.dumps(payload, ensure_ascii=False, default=str) + "\n\n"
+                patch = live_stream_patch_from_event(ev, live_ctx)
+                if patch is None:
+                    continue
+                yield f"id: {patch.seq}\n"
+                yield f"event: {patch.kind}\n"
+                yield "data: " + patch.model_dump_json() + "\n\n"
                 last_keepalive = time.monotonic()
 
     return Response(

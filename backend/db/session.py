@@ -329,6 +329,58 @@ def ensure_live_runs_alpaca_account_id_column(eng: Engine) -> None:
         )
 
 
+def ensure_alpaca_live_subscriptions_run_id_column(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    insp = inspect(eng)
+    if not insp.has_table("alpaca_live_subscriptions"):
+        return
+    cols = {c["name"] for c in insp.get_columns("alpaca_live_subscriptions")}
+    if "run_id" in cols:
+        return
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE alpaca_live_subscriptions ADD COLUMN run_id VARCHAR(36) NOT NULL DEFAULT ''"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_alpaca_live_subscriptions_run_id "
+                "ON alpaca_live_subscriptions (run_id)"
+            )
+        )
+
+
+def ensure_live_run_events_event_type_column(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    insp = inspect(eng)
+    if not insp.has_table("live_run_events"):
+        return
+    cols = {c["name"] for c in insp.get_columns("live_run_events")}
+    if "event_type" in cols:
+        return
+    with eng.begin() as conn:
+        conn.execute(
+            text("ALTER TABLE live_run_events ADD COLUMN event_type VARCHAR(16) NOT NULL DEFAULT 'output'")
+        )
+        conn.execute(
+            text(
+                "UPDATE live_run_events SET event_type = CASE "
+                "WHEN kind IN ('input', 'bar', 'indicator_in', 'portfolio', 'renko', 'market_bar') THEN 'input' "
+                "WHEN kind IN ('status', 'startup') THEN 'system' "
+                "ELSE 'output' END"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_live_run_events_event_type "
+                "ON live_run_events (event_type)"
+            )
+        )
+
+
 def ensure_live_run_children_fk_ondelete_cascade(eng: Engine) -> None:
     from sqlalchemy import inspect
 
@@ -390,4 +442,6 @@ def init_database(eng: Engine) -> None:
     ensure_live_runs_deployed_from_run_id_column(eng)
     ensure_live_runs_runner_backend_column(eng)
     ensure_live_runs_alpaca_account_id_column(eng)
+    ensure_alpaca_live_subscriptions_run_id_column(eng)
+    ensure_live_run_events_event_type_column(eng)
     ensure_live_run_children_fk_ondelete_cascade(eng)

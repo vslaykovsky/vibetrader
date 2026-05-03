@@ -86,12 +86,12 @@ Renko is not supported in multi-ticker simulations; use a single ticker when sub
 
 ## Portfolio
 
-`portfolio` points contain authoritative open positions: `{ "ticker", "order_type", "deposit_ratio", "volume_weighted_avg_entry_price" }`. The host includes a portfolio point on every timestamped input it sends to the strategy, including the first market input. Refresh internal position state from it before making price-based decisions.
+`portfolio` points contain account state plus authoritative open positions. Account fields are `cash`, `equity`, and `buying_power`; open positions are `{ "ticker", "order_type", "deposit_ratio", "volume_weighted_avg_entry_price" }`. Position `deposit_ratio` is that leg's current marked exposure as a fraction of account equity. Cash is never represented as a synthetic position. The host includes a portfolio point on every timestamped input it sends to the strategy, including the first market input. Refresh internal position and cash state from it before making price-based decisions.
 
 ## Market Orders
 
 - `deposit_ratio` defaults to `1.0`.
-- `direction="buy"` opens/adds long when flat or long, spending `deposit_ratio` of cash; when covering short, `deposit_ratio` is the fraction of open short size to cover.
+- `direction="buy"` opens/adds long when flat or long, spending `deposit_ratio` of available cash; when covering short, `deposit_ratio` is the fraction of open short size to cover. In live trading, the host also caps submitted buy notional by broker-reported buying power.
 - `direction="sell"` closes long or opens/adds short; when closing long, `deposit_ratio` is the fraction of open long size to close; when opening short, it sizes exposure as a fraction of account equity.
 - For buy sizing, use a top-level tunable such as `deposit_fraction` in `[0, 1]` and pass it as `deposit_ratio`.
 - Use `1.0` for full exits/covers.
