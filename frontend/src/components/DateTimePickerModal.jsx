@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { parseIsoDate, startOfDay, toIsoDate } from '../lib/dateIso.js';
 
 const MONTH_NAMES_FULL = [
   'Январь',
@@ -29,28 +30,6 @@ const MONTH_SHORT = [
   'Дек',
 ];
 const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
-
-function pad2(n) {
-  return String(n).padStart(2, '0');
-}
-
-/** @param {Date} d */
-function toIsoDate(d) {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-}
-
-function parseIsoDate(s) {
-  const t = String(s || '').trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return null;
-  const [y, m, d] = t.split('-').map(Number);
-  const dt = new Date(y, m - 1, d);
-  if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
-  return dt;
-}
-
-function startOfDay(d) {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-}
 
 function monthGrid(year, month) {
   const first = new Date(year, month, 1);
@@ -165,7 +144,7 @@ export function DateTimePickerModal({
     if (!/^\d{1,2}:\d{2}$/.test(t)) return;
     const [hh, mm] = t.split(':').map((x) => parseInt(x, 10));
     if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return;
-    setTimeStr(`${pad2(hh)}:${pad2(mm)}`);
+    setTimeStr(`${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`);
   };
 
   const handleConfirm = () => {
