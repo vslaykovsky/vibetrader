@@ -55,6 +55,43 @@ function displayBarsWindowSec({ tfSec, wantSec, minIntradayPadSec = 172800 }) {
   return Math.max(inflatedSec + minPadSec, wantSec);
 }
 
+const SIM_START_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * @param {unknown} startDate
+ * @param {unknown} threadId
+ * @param {{ requireSessionReady?: boolean; sessionReady?: boolean }} [opts]
+ * @returns {{ sd: string; tid: string } | null}
+ */
+function parseSimulationSessionInputs(startDate, threadId, opts = {}) {
+  const { requireSessionReady = false, sessionReady = false } = opts;
+  const sd = String(startDate ?? '').trim();
+  const tid = String(threadId ?? '').trim();
+  if (!SIM_START_DATE_RE.test(sd) || !tid) return null;
+  if (requireSessionReady && !sessionReady) return null;
+  return { sd, tid };
+}
+
+function messageFromJsonErrorField(data, fallback) {
+  return typeof data?.error === 'string' ? data.error : fallback;
+}
+
+async function readJsonError(res, fallback) {
+  const data = await res.json().catch(() => ({}));
+  return messageFromJsonErrorField(data, fallback);
+}
+
+/** @param {unknown} payload */
+function applyStrategyScaleFromPayload(payload, setStrategyTf) {
+  const raw =
+    (typeof payload?.strategy_scale === 'string' && payload.strategy_scale) ||
+    (typeof payload?.strategyScale === 'string' && payload.strategyScale) ||
+    '';
+  if (!raw) return;
+  const st = normalizeTimeframe(raw.trim());
+  if (st) setStrategyTf(st);
+}
+
 export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToken }) {
   const { timeZone } = useTimeZone();
   // ── User input / session ──────────────────────────────────────────────
@@ -93,8 +130,6 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
   authFetchRef.current = authFetch;
   const busyRef = useRef(false);
   busyRef.current = busy;
-  const pausedRef = useRef(false);
-  pausedRef.current = paused;
   const barsRef = useRef([]);
   useEffect(() => { barsRef.current = bars; }, [bars]);
   const rightBarUnixRef = useRef(0);
@@ -108,10 +143,6 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
   const forwardExhaustedRef = useRef(false);
   const prefetchEmptyStreakRef = useRef(0);
   // Set when the *backend* finishes the simulation (``status:done``/``stopped``).
-  // The frontend playback loop must keep revealing buffered bars at the chosen
-  // speed until the buffer is exhausted; only this combined condition ends the
-  // run from the user's perspective.
-  const streamDoneRef = useRef(false);
   // Last known "playback cursor" captured BEFORE we wipe the OHLC buffer on a
   // chart-TF switch. We store the *end* of that bucket (open-time + tf-seconds)
   // so the new TF anchors at the latest sub-bar that fits inside the previous
@@ -147,6 +178,22 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
   const appendLogRef = useRef(appendLog);
   appendLogRef.current = appendLog;
 
+  const resetChartBuffers = useCallback(() => {
+    setBars([]);
+    setBarsScale('');
+    setBarsError('');
+    setBarsLoading(false);
+    setRightBarUnix(0);
+    barsRef.current = [];
+    rightBarUnixRef.current = 0;
+    playbackAccumRef.current = 0;
+    prefetchInFlightRef.current = false;
+    forwardExhaustedRef.current = false;
+    prefetchEmptyStreakRef.current = 0;
+    historyInFlightRef.current = false;
+    window.clearTimeout(panDebounceRef.current);
+  }, []);
+
   const stopStream = useCallback(() => {
     esRef.current?.close();
     esRef.current = null;
@@ -170,7 +217,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(typeof data.error === 'string' ? data.error : 'Failed to load chart OHLC');
+        throw new Error(messageFromJsonErrorField(data, 'Failed to load chart OHLC'));
       }
       const out = Array.isArray(data.bars) ? data.bars : [];
       out.sort((a, b) => a.unixtime - b.unixtime);
@@ -191,21 +238,8 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     chartTfRef.current = chartTf;
     prevTfSecRef.current = tfSec;
     tfFetchSeqRef.current += 1;
-    setBars([]);
-    setBarsScale('');
-    setBarsError('');
-    setBarsLoading(false);
-    setRightBarUnix(0);
-    barsRef.current = [];
-    rightBarUnixRef.current = 0;
-    playbackAccumRef.current = 0;
-    prefetchInFlightRef.current = false;
-    forwardExhaustedRef.current = false;
-    streamDoneRef.current = false;
-    prefetchEmptyStreakRef.current = 0;
-    historyInFlightRef.current = false;
-    window.clearTimeout(panDebounceRef.current);
-  }, [chartTf]);
+    resetChartBuffers();
+  }, [chartTf, tfSec, resetChartBuffers]);
 
   // ── Initial load: 21 bars ending at the temporal anchor in the current TF.
   // The anchor is either:
@@ -214,11 +248,13 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
   //    screen and lands on the latest sub-bar inside the previous bucket;
   //  • or the noon-bucket of ``start_date`` — the very first init.
   useEffect(() => {
-    if (!sessionReady) return undefined;
-    const sd = startDate.trim();
-    const tid = String(threadId || '').trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(sd) || !tid) return undefined;
+    const ctx = parseSimulationSessionInputs(startDate, threadId, {
+      requireSessionReady: true,
+      sessionReady,
+    });
+    if (!ctx) return undefined;
     if (bars.length > 0) return undefined;
+    const { sd, tid } = ctx;
 
     const seq = tfFetchSeqRef.current;
     const ac = new AbortController();
@@ -256,7 +292,6 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     setBarsLoading(true);
     setBarsError('');
     forwardExhaustedRef.current = false;
-    streamDoneRef.current = false;
     void (async () => {
       try {
         const fetched = await callDisplayBars(apiStart, apiEnd, ac.signal);
@@ -302,22 +337,21 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     };
   }, [sessionReady, startDate, threadId, chartTf, tfSec, callDisplayBars, bars.length, appendLog, timeZone]);
 
-  // ── Playback loop: rAF reveals next bar at ``liveBps``; prefetches more when buffer is low. ─
-  // Effect identity is stable across ``bars`` updates so the rAF clock never resets.
+  // ── Playback loop: reveals next bar at ``liveBps``; prefetches when buffer is low. ─
+  // Effect identity is stable across ``bars`` updates so the clock never resets.
   useEffect(() => {
     if (!busy || paused) return undefined;
-    const sd = startDate.trim();
-    const tid = String(threadId || '').trim();
-    if (!sessionReady || !/^\d{4}-\d{2}-\d{2}$/.test(sd) || !tid) return undefined;
+    const ctx = parseSimulationSessionInputs(startDate, threadId, {
+      requireSessionReady: true,
+      sessionReady,
+    });
+    if (!ctx) return undefined;
 
     let timer = 0;
     let lastTs = performance.now();
     let cancelled = false;
     let lastWatchdogLog = lastTs;
     let frameCount = 0;
-    // ~30 Hz; ``setInterval`` keeps ticking when the tab is in the background
-    // or DevTools steal focus, unlike ``requestAnimationFrame`` which Chrome
-    // throttles to ~1 Hz (and sometimes pauses entirely) for inactive tabs.
     const TICK_INTERVAL_MS = 1000 / 30;
     appendLog('[playback] loop started');
 
@@ -358,24 +392,30 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
             barsRef.current = merged;
             setBars(merged);
             prefetchEmptyStreakRef.current = 0;
-            appendLog(
-              `[prefetch] +${fresh.length} new (got=${fetched.length}) buf ${prev.length}→${merged.length} widen=${widen}`,
-            );
+            if (import.meta.env.DEV) {
+              appendLog(
+                `[prefetch] +${fresh.length} new (got=${fetched.length}) buf ${prev.length}→${merged.length} widen=${widen}`,
+              );
+            }
           } else {
             prefetchEmptyStreakRef.current += 1;
-            appendLog(
-              `[prefetch] no new bars (got=${fetched.length} dup-streak=${prefetchEmptyStreakRef.current} widen=${widen})`,
-            );
+            if (import.meta.env.DEV) {
+              appendLog(
+                `[prefetch] no new bars (got=${fetched.length} dup-streak=${prefetchEmptyStreakRef.current} widen=${widen})`,
+              );
+            }
             if (prefetchEmptyStreakRef.current >= 3) {
               forwardExhaustedRef.current = true;
-              appendLog('[prefetch] giving up — provider seems exhausted');
+              if (import.meta.env.DEV) appendLog('[prefetch] giving up — provider seems exhausted');
               setBarsError('No more historical bars available from provider.');
             }
           }
         } catch (err) {
           if (err instanceof DOMException && err.name === 'AbortError') return;
           setBarsError(err instanceof Error ? err.message : String(err));
-          appendLog(`[prefetch error] ${err instanceof Error ? err.message : String(err)}`);
+          if (import.meta.env.DEV) {
+            appendLog(`[prefetch error] ${err instanceof Error ? err.message : String(err)}`);
+          }
         } finally {
           prefetchInFlightRef.current = false;
         }
@@ -419,10 +459,12 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
           triggerPrefetch();
         }
         if (now - lastWatchdogLog > 1000) {
-          const lastBar = sorted[sorted.length - 1]?.unixtime;
-          appendLog(
-            `[tick] frames/s≈${frameCount} buf=${sorted.length} ix=${refIx} tail=${tail} lowMark=${lowMark} cur=${cur} lastBar=${lastBar} accum=${playbackAccumRef.current.toFixed(2)} pref=${prefetchInFlightRef.current ? 'Y' : 'N'} exh=${forwardExhaustedRef.current ? 'Y' : 'N'}`,
-          );
+          if (import.meta.env.DEV) {
+            const lastBar = sorted[sorted.length - 1]?.unixtime;
+            appendLog(
+              `[tick] frames/s≈${frameCount} buf=${sorted.length} ix=${refIx} tail=${tail} lowMark=${lowMark} cur=${cur} lastBar=${lastBar} accum=${playbackAccumRef.current.toFixed(2)} pref=${prefetchInFlightRef.current ? 'Y' : 'N'} exh=${forwardExhaustedRef.current ? 'Y' : 'N'}`,
+            );
+          }
           lastWatchdogLog = now;
           frameCount = 0;
         }
@@ -455,7 +497,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
           triggerPrefetch();
         }
       } else if (now - lastWatchdogLog > 1000) {
-        appendLog('[tick] empty bars buffer');
+        if (import.meta.env.DEV) appendLog('[tick] empty bars buffer');
         lastWatchdogLog = now;
       }
     };
@@ -473,9 +515,11 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     panDebounceRef.current = window.setTimeout(() => {
       if (!range || !Number.isFinite(range.from)) return;
       if (historyInFlightRef.current) return;
-      const sd = startDate.trim();
-      const tid = String(threadId || '').trim();
-      if (!sessionReady || !/^\d{4}-\d{2}-\d{2}$/.test(sd) || !tid) return;
+      const ctx = parseSimulationSessionInputs(startDate, threadId, {
+        requireSessionReady: true,
+        sessionReady,
+      });
+      if (!ctx) return;
 
       const sorted = barsRef.current;
       if (sorted.length === 0) return;
@@ -557,86 +601,88 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     if (token) url.searchParams.set('access_token', token);
     const es = new EventSource(url.toString());
     esRef.current = es;
+
+    function handleStreamTradePayload(payload) {
+      if (import.meta.env.DEV) {
+        const tu = Number(payload.unixtime) || 0;
+        const tIso = tu > 0 ? formatUnixDateTime(tu, timeZone) : '?';
+        const bucket = tu > 0 ? bucketStart(tu, chartTfRef.current) : 0;
+        const bIso = bucket > 0 ? formatUnixDateTime(bucket, timeZone) : '?';
+        appendLog(
+          `[trade-event] dir=${payload.direction} action=${payload.action || ''} price=${payload.price} ` +
+            `unixtime=${tu} (${tIso}) bucket@${chartTfRef.current}=${bucket} (${bIso})`,
+        );
+      }
+      setTrades((prev) => {
+        const row = {
+          unixtime: payload.unixtime,
+          direction: payload.direction,
+          action: payload.action,
+          label: payload.label,
+          price: payload.price,
+          deposit_ratio: payload.deposit_ratio,
+          position_before_order: payload.position_before_order,
+          position_after_order_filled: payload.position_after_order_filled,
+          reason: payload.reason,
+          valid: payload.valid !== false,
+        };
+        const next = [...prev, row];
+        return next.length > MAX_TRADES ? next.slice(-MAX_TRADES) : next;
+      });
+    }
+
+    function handleStreamPnlPayload(payload) {
+      setEquityPts((prev) => {
+        const row = { unixtime: payload.unixtime, equity: payload.equity };
+        const next = [...prev, row];
+        return next.length > MAX_OHLC_BARS ? next.slice(-MAX_OHLC_BARS) : next;
+      });
+    }
+
+    function handleStreamIndicatorCatalogPayload(payload) {
+      setIndicatorSeriesCatalog(
+        payload.series
+          .filter((row) => row && typeof row.name === 'string')
+          .map((row) => ({
+            name: row.name,
+            description: typeof row.description === 'string' ? row.description : '',
+          })),
+      );
+    }
+
+    function handleStreamStatusPayload(payload) {
+      applyStrategyScaleFromPayload(payload, setStrategyTfFromInit);
+      if (payload.status === 'ready') setSessionReady(true);
+      // NOTE: ``paused`` / ``running`` reflect the *backend worker*. The chart
+      // playback pacing is driven by the local interval loop; we do not mirror
+      // those into ``paused``. ``done`` / ``stopped`` end only the trade stream;
+      // OHLC still comes from ``GET /simulation/display_bars`` until prefetch
+      // exhausts (``forwardExhaustedRef``).
+      if (payload.status === 'done' || payload.status === 'stopped') {
+        stopStream();
+      }
+      if (payload.status === 'error') {
+        const msg =
+          typeof payload.message === 'string' && payload.message
+            ? payload.message
+            : 'Trade stream reported an error; chart playback continues.';
+        setError(msg);
+        stopStream();
+      }
+    }
+
     es.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data);
-        appendLog(JSON.stringify(payload));
+        if (import.meta.env.DEV) appendLog(JSON.stringify(payload));
         if (payload?.kind === 'trade') {
-          const tu = Number(payload.unixtime) || 0;
-          const tIso = tu > 0 ? formatUnixDateTime(tu, timeZone) : '?';
-          const bucket = tu > 0 ? bucketStart(tu, chartTfRef.current) : 0;
-          const bIso = bucket > 0 ? formatUnixDateTime(bucket, timeZone) : '?';
-          appendLog(
-            `[trade-event] dir=${payload.direction} action=${payload.action || ''} price=${payload.price} ` +
-              `unixtime=${tu} (${tIso}) bucket@${chartTfRef.current}=${bucket} (${bIso})`,
-          );
-          setTrades((prev) => {
-            const row = {
-              unixtime: payload.unixtime,
-              direction: payload.direction,
-              action: payload.action,
-              label: payload.label,
-              price: payload.price,
-              deposit_ratio: payload.deposit_ratio,
-              position_before_order: payload.position_before_order,
-              position_after_order_filled: payload.position_after_order_filled,
-              reason: payload.reason,
-              valid: payload.valid !== false,
-            };
-            const next = [...prev, row];
-            return next.length > MAX_TRADES ? next.slice(-MAX_TRADES) : next;
-          });
+          handleStreamTradePayload(payload);
         } else if (payload?.kind === 'pnl' && typeof payload.equity === 'number') {
-          setEquityPts((prev) => {
-            const row = { unixtime: payload.unixtime, equity: payload.equity };
-            const next = [...prev, row];
-            return next.length > MAX_OHLC_BARS ? next.slice(-MAX_OHLC_BARS) : next;
-          });
+          handleStreamPnlPayload(payload);
         } else if (payload?.kind === 'indicator_series_catalog' && Array.isArray(payload.series)) {
-          setIndicatorSeriesCatalog(
-            payload.series
-              .filter((row) => row && typeof row.name === 'string')
-              .map((row) => ({
-                name: row.name,
-                description: typeof row.description === 'string' ? row.description : '',
-              })),
-          );
+          handleStreamIndicatorCatalogPayload(payload);
         } else if (payload?.kind === 'status' && typeof payload.status === 'string') {
-          const rawSc =
-            (typeof payload.strategy_scale === 'string' && payload.strategy_scale) ||
-            (typeof payload.strategyScale === 'string' && payload.strategyScale) ||
-            '';
-          if (rawSc) {
-            const st = normalizeTimeframe(rawSc.trim());
-            if (st) setStrategyTfFromInit(st);
-          }
-          if (payload.status === 'ready') setSessionReady(true);
-          // NOTE: ``paused`` / ``running`` reflect the *backend worker*. The
-          // chart playback pacing is now driven entirely by the local
-          // setInterval loop (Play/Pause buttons toggle it), so we deliberately
-          // do NOT mirror these into ``paused`` state — the backend would
-          // otherwise yank the chart out of pause whenever the worker emits
-          // ``status:running`` (e.g. on SSE reconnect or speed change).
-          // ``done`` / ``stopped`` mean only that the backend's *trade stream*
-          // has finished — no more trades / pnl events will arrive. It tells
-          // us NOTHING about whether the provider has more historical bars.
-          // The chart pulls OHLC exclusively from ``GET /simulation/display_bars``
-          // and may have many more days available even after the strategy is
-          // done. Just close the SSE stream and let the playback loop keep
-          // revealing / prefetching bars; it self-terminates when prefetch
-          // returns no new bars 3× in a row (``forwardExhaustedRef``).
-          if (payload.status === 'done' || payload.status === 'stopped') {
-            streamDoneRef.current = true;
-            stopStream();
-          }
-          if (payload.status === 'error') {
-            const msg =
-              typeof payload.message === 'string' && payload.message
-                ? payload.message
-                : 'Trade stream reported an error; chart playback continues.';
-            setError(msg);
-            stopStream();
-          }
+          handleStreamStatusPayload(payload);
         }
       } catch {
         appendLog(event.data || '');
@@ -667,16 +713,18 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
   }, [threadId, stopStream]);
 
   useEffect(() => {
-    const sd = startDate.trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(sd)) {
-      setSessionReady(false);
-      setBusy(false);
-      setInitLoading(false);
-      stopStream();
+    const pre = parseSimulationSessionInputs(startDate, threadId);
+    if (!pre) {
+      const sdOnly = String(startDate ?? '').trim();
+      if (!SIM_START_DATE_RE.test(sdOnly)) {
+        setSessionReady(false);
+        setBusy(false);
+        setInitLoading(false);
+        stopStream();
+      }
       return undefined;
     }
-    const tid = String(threadId || '').trim();
-    if (!tid) return undefined;
+    const { sd, tid } = pre;
 
     let cancelled = false;
     setError('');
@@ -690,20 +738,8 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     setStrategyTfFromInit('');
     setIndicatorSeriesCatalog([]);
     setDisplayTfMode(DISPLAY_TF_NATIVE);
-    setBars([]);
-    setBarsScale('');
-    setBarsError('');
-    setBarsLoading(false);
-    setRightBarUnix(0);
-    barsRef.current = [];
-    rightBarUnixRef.current = 0;
+    resetChartBuffers();
     lastCursorEndUnixRef.current = 0;
-    playbackAccumRef.current = 0;
-    prefetchInFlightRef.current = false;
-    historyInFlightRef.current = false;
-    forwardExhaustedRef.current = false;
-    streamDoneRef.current = false;
-    prefetchEmptyStreakRef.current = 0;
     stopStream();
 
     void (async () => {
@@ -720,17 +756,10 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
         const data = await response.json().catch(() => ({}));
         if (cancelled) return;
         if (!response.ok) {
-          throw new Error(typeof data.error === 'string' ? data.error : 'Failed to init simulation');
+          throw new Error(messageFromJsonErrorField(data, 'Failed to init simulation'));
         }
         setSessionReady(true);
-        const rawSc =
-          (typeof data.strategy_scale === 'string' && data.strategy_scale) ||
-          (typeof data.strategyScale === 'string' && data.strategyScale) ||
-          '';
-        if (rawSc) {
-          const st = normalizeTimeframe(rawSc.trim());
-          if (st) setStrategyTfFromInit(st);
-        }
+        applyStrategyScaleFromPayload(data, setStrategyTfFromInit);
         await openStreamRef.current();
       } catch (err) {
         if (!cancelled) {
@@ -744,7 +773,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     return () => {
       cancelled = true;
     };
-  }, [threadId, startDate, initEpoch, apiBaseUrl, stopStream]);
+  }, [threadId, startDate, initEpoch, apiBaseUrl, stopStream, resetChartBuffers]);
 
   // ── Controls ─────────────────────────────────────────────────────────
   async function handlePlay() {
@@ -754,7 +783,6 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     try {
       if (!esRef.current) await openStreamRef.current();
       forwardExhaustedRef.current = false;
-      streamDoneRef.current = false;
       prefetchEmptyStreakRef.current = 0;
       playbackAccumRef.current = 0;
       // Drive the local playback loop *immediately* — the chart pacing is
@@ -769,8 +797,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
         body: JSON.stringify({ thread_id: tid }),
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(typeof data.error === 'string' ? data.error : 'Play failed');
+        throw new Error(await readJsonError(res, 'Play failed'));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -827,8 +854,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
         body: JSON.stringify({ thread_id: threadId, bps: opt.bps }),
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(typeof data.error === 'string' ? data.error : 'Speed change failed');
+        throw new Error(await readJsonError(res, 'Speed change failed'));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -875,7 +901,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     const visible = trades.filter(
       (tr) => bucketStart(tr.unixtime, chartTf) <= rightBarUnix,
     );
-    if (visible.length > 0) {
+    if (import.meta.env.DEV && visible.length > 0) {
       const first = visible[0];
       const last = visible[visible.length - 1];
       const isoFirst = formatUnixDateTime(first.unixtime || 0, timeZone);
