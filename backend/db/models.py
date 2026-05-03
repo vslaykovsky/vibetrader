@@ -47,6 +47,7 @@ class Strategy(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="success")
     status_text: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     langsmith_trace: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    codex_thread_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     strategy_name: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     algorithm: Mapped[str] = mapped_column(Text, nullable=False, default="")
     language: Mapped[str] = mapped_column(String(8), nullable=False, default="")
@@ -108,6 +109,20 @@ class Candle(Base):
     __table_args__ = (
         UniqueConstraint("ticker", "timeframe", "timestamp", name="uq_candles_ticker_tf_ts"),
         Index("ix_candles_ticker_timeframe_timestamp", "ticker", "timeframe", "timestamp"),
+    )
+
+
+class Ticker(Base):
+    __tablename__ = "tickers"
+
+    ticker: Mapped[str] = mapped_column(String(32), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(16), primary_key=True)
+    tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, index=True)
+    last_daily_volume: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    __table_args__ = (
+        Index("ix_tickers_provider_ticker", "provider", "ticker"),
     )
 
 

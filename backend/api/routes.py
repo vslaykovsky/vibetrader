@@ -107,6 +107,7 @@ def serialize_strategy(
     }
     if is_admin:
         payload["python_code"] = strategy.code or ""
+        payload["codex_thread_id"] = strategy.codex_thread_id or ""
     return payload
 
 
@@ -289,6 +290,7 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str) -> None:
                 existing_canvas=canvas,
                 thread_id=thread_id,
                 on_progress=persist_status_text,
+                codex_thread_id=str(strategy.codex_thread_id or ""),
             )
             assistant_entry: dict = {
                 "role": "assistant",
@@ -302,6 +304,9 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str) -> None:
             strategy.messages = messages
             strategy.canvas = canvas_with_output(dict(agent_result["canvas"] or {}), thread_id)
             strategy.code = read_strategy_code(thread_id)
+            strategy.codex_thread_id = str(
+                agent_result.get("codex_thread_id") or strategy.codex_thread_id or ""
+            )[:128]
             sn = (
                 str(agent_result.get("strategy_name") or "").strip()
                 or _strategy_name_from_canvas(strategy.canvas)
@@ -442,6 +447,7 @@ def post_strategy() -> tuple:
         prev_messages = list(latest.messages or []) if latest else []
         prev_canvas = dict(latest.canvas or {}) if latest else {}
         prev_code = getattr(latest, "code", "") if latest else ""
+        prev_codex_thread_id = getattr(latest, "codex_thread_id", "") if latest else ""
         messages = prev_messages + [{"role": "user", "content": content}]
         lang = detect_conversation_language_iso(messages)
 
@@ -455,6 +461,7 @@ def post_strategy() -> tuple:
             status="running",
             status_text="Starting…",
             language=lang,
+            codex_thread_id=prev_codex_thread_id or "",
         )
         session.add(new_strategy)
         session.commit()

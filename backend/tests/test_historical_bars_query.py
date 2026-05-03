@@ -4,12 +4,16 @@ from datetime import date
 import pandas as pd
 import pytest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from application.queries.historical_bars import (
     HistoricalBarsQuery,
     _covers_all_whole_weeks,
+    infer_asset_class,
     scale_to_timeframe,
 )
+from db.models import Base, Ticker
 
 
 def _tf_key(tf: TimeFrame) -> tuple:
@@ -28,6 +32,30 @@ def test_scale_to_timeframe_maps_common_scales():
 def test_scale_to_timeframe_rejects_unknown():
     with pytest.raises(ValueError, match="Unsupported scale"):
         scale_to_timeframe("2h")
+
+
+def test_infer_asset_class_detects_crypto_symbols():
+    eng = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=eng)
+    Session = sessionmaker(bind=eng, future=True)
+    session = Session()
+    try:
+        session.add_all(
+            [
+                Ticker(ticker="BTC/USD", provider="alpaca", tags=["crypto"]),
+                Ticker(ticker="AAPL", provider="alpaca", tags=["stock", "SNP500"]),
+                Ticker(ticker="SBER", provider="moex", tags=["stock"]),
+            ]
+        )
+        session.commit()
+
+        assert infer_asset_class("BTCUSD", provider="alpaca", session=session) == "crypto"
+        assert infer_asset_class("BTC/USD", provider="alpaca", session=session) == "crypto"
+        assert infer_asset_class("AAPL", provider="alpaca", session=session) == "us_equity"
+        assert infer_asset_class("SBER", provider="moex", session=session) == "us_equity"
+        assert infer_asset_class("ETH/USD", provider="alpaca", session=session) is None
+    finally:
+        session.close()
 
 
 def test_historical_bars_query_fetch_delegates(monkeypatch):

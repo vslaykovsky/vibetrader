@@ -34,8 +34,9 @@ The host may merge runtime overrides into `params.json` before process start. Do
 
 ## Runtime I/O
 
-- stdin is one JSON `StrategyInput` per line after startup: top-level `unixtime` plus `points` containing `ohlc`, `indicator`, `portfolio`, `renko`, and/or `trained_model_params`. `unixtime` is a real simulation/event timestamp and is strictly increasing. The host does not send a synthetic `unixtime=0` bootstrap input.
-- stdout is one JSON `StrategyOutput` per line containing subscription outputs, optional `indicator_series_catalog`, indicator values, market orders, charts, trained model params, and/or `time_ack`.
+- stdin is exactly one JSON `StrategyInput` object per line after startup: top-level `unixtime` plus `points` containing `ohlc`, `indicator`, `portfolio`, `renko`, and/or `trained_model_params`. `unixtime` is a real simulation/event timestamp and is strictly increasing. The host does not send a synthetic `unixtime=0` bootstrap input, command object, sentinel, or any other stdin shape.
+- stdout is exactly one JSON `StrategyOutput` object per line, including the startup line. Each `StrategyOutput` may contain subscription outputs, optional `indicator_series_catalog`, indicator values, market orders, charts, trained model params, and/or `time_ack`. Do not write raw output items, standalone chart/metric JSON, logs, prints, or any other object/text to stdout.
+- The only runtime boundary objects are `StrategyInput` read from stdin and `StrategyOutput` written to stdout.
 - Match all shapes to the Pydantic contracts in `utils.py`.
 
 For every stdin line read, print exactly one stdout line containing exactly one `OutputTimeAck` with the same `unixtime`. This is required even for portfolio-only lines, early bars with no indicator values, partial updates, lines with no trades, and Renko event lines. If there is nothing else to emit, output only the ack. Missing or delayed acks deadlock the host.

@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 
 import pytest
 
@@ -59,6 +60,45 @@ def test_strategy_runtime_missing_script():
     rt = StrategyRuntime(FIXTURES_DIR, entry_script="nonexistent_strategy.py")
     with pytest.raises(StrategyRuntimeError, match="not found"):
         rt.start()
+
+
+def test_strategy_runtime_drain_stdout_collects_split_startup_lines():
+    rt = StrategyRuntime(FIXTURES_DIR, entry_script="split_startup_strategy.py")
+    try:
+        startup = rt.start()
+        extra = rt.drain_stdout(timeout_seconds=1.0)
+        combined = StrategyOutput([*startup.root, *[p for output in extra for p in output.root]])
+        assert [p.kind for p in combined.root] == [
+            "ticker_subscription",
+            "indicator_series_catalog",
+        ]
+        step = StrategyInput(
+            unixtime=1_700_000_000,
+            points=[
+                InputOhlcDataPoint(
+                    ticker="TEST",
+                    ohlc=Ohlc(open=1.0, high=2.0, low=0.5, close=1.5, volume=0.0),
+                ),
+            ],
+        )
+        resp = rt.send(step)
+        acks = [p for p in resp.root if p.kind == "time_ack"]
+        assert len(acks) == 1
+        assert acks[0].unixtime == 1_700_000_000
+    finally:
+        rt.close()
+
+
+def test_strategy_runtime_invalid_extra_stdout_fails_without_waiting_for_exit():
+    rt = StrategyRuntime(FIXTURES_DIR, entry_script="invalid_extra_stdout_strategy.py")
+    try:
+        rt.start()
+        started = time.monotonic()
+        with pytest.raises(StrategyRuntimeError, match="Invalid stdout JSON"):
+            rt.drain_stdout(timeout_seconds=1.0)
+        assert time.monotonic() - started < 2.0
+    finally:
+        rt.close()
 
 
 def test_strategy_runtime_finalize_collects_eda_chart_after_eof():

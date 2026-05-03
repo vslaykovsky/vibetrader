@@ -6,6 +6,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from strategies_v2.utils import StrategyInput, StrategyOutput
@@ -36,7 +37,9 @@ class StrategyRuntime:
         self.python_executable = python_executable or sys.executable
         self._proc: subprocess.Popen[str] | None = None
         self._out_q: queue.Queue[str | None] = queue.Queue()
+        self._err_q: queue.Queue[str | None] = queue.Queue()
         self._reader_thread: threading.Thread | None = None
+        self._stderr_thread: threading.Thread | None = None
         self._recorded_inputs: list[str] = []
         self._recorded_outputs: list[str] = []
 
@@ -84,6 +87,19 @@ class StrategyRuntime:
         finally:
             self._out_q.put(None)
 
+    def _stderr_reader(self) -> None:
+        proc = self._proc
+        if proc is None or proc.stderr is None:
+            return
+        try:
+            while True:
+                line = proc.stderr.readline()
+                if not line:
+                    break
+                self._err_q.put(line)
+        finally:
+            self._err_q.put(None)
+
     def start(self) -> StrategyOutput:
         script = self.workspace / self.entry_script
         if not script.is_file():
@@ -104,6 +120,8 @@ class StrategyRuntime:
             raise StrategyRuntimeError("stdout not available")
         self._reader_thread = threading.Thread(target=self._stdout_reader, daemon=True)
         self._reader_thread.start()
+        self._stderr_thread = threading.Thread(target=self._stderr_reader, daemon=True)
+        self._stderr_thread.start()
 
         logger.info(
             "await_strategy_first_stdout cwd=%s entry=%s pid=%s timeout_s=%s",
@@ -129,6 +147,28 @@ class StrategyRuntime:
             err = self._drain_stderr()
             raise StrategyRuntimeError(f"Invalid startup JSON: {exc!s}; stderr={err!r}") from exc
         return startup
+
+    def drain_stdout(self, *, timeout_seconds: float) -> list[StrategyOutput]:
+        outputs: list[StrategyOutput] = []
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                line = self._out_q.get(timeout=remaining)
+            except queue.Empty:
+                break
+            if line is None:
+                self._out_q.put(None)
+                break
+            try:
+                self._recorded_outputs.append(line.strip())
+                outputs.append(StrategyOutput.model_validate_json(line.strip()))
+            except Exception as exc:
+                err = self._drain_stderr()
+                raise StrategyRuntimeError(f"Invalid stdout JSON: {exc!s}; stderr={err!r}") from exc
+        return outputs
 
     def send(self, step: StrategyInput) -> StrategyOutput:
         if self._proc is None or self._proc.stdin is None:
@@ -244,14 +284,33 @@ class StrategyRuntime:
             except Exception:
                 pass
         self._reader_thread = None
+        self._stderr_thread = None
 
     def _drain_stderr(self) -> str:
-        if self._proc is None or self._proc.stderr is None:
+        if self._proc is None:
             return ""
+        chunks: list[str] = []
         try:
-            return self._proc.stderr.read()[-4000:]
+            while True:
+                line = self._err_q.get_nowait()
+                if line is None:
+                    break
+                chunks.append(line)
+        except queue.Empty:
+            pass
+        try:
+            if self._proc.poll() is not None:
+                self._stderr_thread and self._stderr_thread.join(timeout=0.2)
+                while True:
+                    line = self._err_q.get_nowait()
+                    if line is None:
+                        break
+                    chunks.append(line)
+        except queue.Empty:
+            pass
         except Exception:
-            return ""
+            pass
+        return "".join(chunks)[-4000:]
 
     def __enter__(self) -> StrategyRuntime:
         self.start()

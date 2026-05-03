@@ -10,6 +10,7 @@ def test_init_database():
     assert names >= {
         "strategy",
         "candles",
+        "tickers",
         "alpaca_live_subscriptions",
         "alpaca_live_events",
         "live_runs",

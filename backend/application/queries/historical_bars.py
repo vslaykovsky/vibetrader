@@ -12,9 +12,10 @@ from typing import Optional
 
 import pandas as pd
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+from sqlalchemy.orm import Session
 
 from application.services.simulation_limits import CHUNK_BAR_BUDGET, plan_display_bars_fetch_chunks
-from db.models import Candle, CandleTimeframe
+from db.models import Candle, CandleTimeframe, Ticker
 from db.session import SessionLocal, engine
 from application.services import backtest_data as utils
 
@@ -54,6 +55,45 @@ def _scale_to_candle_timeframe(scale: str) -> CandleTimeframe:
             f"Unsupported scale {scale!r}; expected one of {', '.join(sorted(mapping))}"
         )
     return mapping[key]
+
+
+def infer_asset_class(
+    ticker: str,
+    provider: Optional[str] = None,
+    *,
+    session: Session | None = None,
+) -> str | None:
+    symbol = str(ticker or "").strip().upper()
+    prov = str(provider or "").strip().lower()
+    if not symbol:
+        return None
+    normalized = utils.normalize_crypto_symbol(symbol)
+    candidates = list(dict.fromkeys([symbol, normalized]))
+    close_session = False
+    db = session
+    if db is None:
+        db = SessionLocal()
+        close_session = True
+    try:
+        query = db.query(Ticker).filter(Ticker.ticker.in_(candidates))
+        if prov:
+            query = query.filter(Ticker.provider == prov)
+        rows = query.all()
+    except Exception:
+        logger.exception("ticker asset class lookup failed ticker=%s provider=%s", symbol, prov)
+        return None
+    finally:
+        if close_session and db is not None:
+            db.close()
+    for row in rows:
+        tags = {str(tag or "").strip().lower() for tag in (row.tags or [])}
+        if "crypto" in tags:
+            return "crypto"
+    for row in rows:
+        tags = {str(tag or "").strip().lower() for tag in (row.tags or [])}
+        if "stock" in tags:
+            return "us_equity"
+    return None
 
 
 def _date_bounds_utc(start: date, end: date) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -171,7 +211,7 @@ class HistoricalBarsQuery:
         asset = (asset_class or "").strip().lower()
         if asset and asset not in {"us_equity", "crypto"}:
             raise ValueError("asset_class must be one of: us_equity, crypto")
-        asset = asset or "us_equity"
+        asset = asset or infer_asset_class(ticker, provider=prov) or "us_equity"
         norm_ticker = utils.normalize_crypto_symbol(ticker) if asset == "crypto" else ticker
         logger.info(
             "fetch begin ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s",
@@ -339,6 +379,7 @@ class HistoricalBarsQuery:
         *,
         max_bars_per_chunk: int = CHUNK_BAR_BUDGET,
         provider: Optional[str] = None,
+        asset_class: Optional[str] = None,
     ) -> tuple[pd.DataFrame, int]:
         chunks = plan_display_bars_fetch_chunks(
             start, end, scale, max_bars_per_chunk=max_bars_per_chunk
@@ -358,7 +399,15 @@ class HistoricalBarsQuery:
         frames: list[pd.DataFrame] = []
         for i, (cs, ce) in enumerate(chunks):
             pad = int(padding_days) if i == 0 else 0
-            part = self.fetch(ticker, scale, cs, ce, padding_days=pad, provider=provider)
+            part = self.fetch(
+                ticker,
+                scale,
+                cs,
+                ce,
+                padding_days=pad,
+                provider=provider,
+                asset_class=asset_class,
+            )
             if part is not None and not part.empty:
                 frames.append(part)
         if not frames:

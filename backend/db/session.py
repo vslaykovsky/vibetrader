@@ -180,6 +180,19 @@ def ensure_strategy_langsmith_trace_column(eng: Engine) -> None:
         conn.execute(text("ALTER TABLE strategy ADD COLUMN langsmith_trace TEXT NOT NULL DEFAULT ''"))
 
 
+def ensure_strategy_codex_thread_id_column(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    insp = inspect(eng)
+    if not insp.has_table("strategy"):
+        return
+    cols = {c["name"] for c in insp.get_columns("strategy")}
+    if "codex_thread_id" in cols:
+        return
+    with eng.begin() as conn:
+        conn.execute(text("ALTER TABLE strategy ADD COLUMN codex_thread_id VARCHAR(128) NOT NULL DEFAULT ''"))
+
+
 def ensure_strategy_strategy_name_column(eng: Engine) -> None:
     from sqlalchemy import inspect
 
@@ -355,6 +368,7 @@ def init_database(eng: Engine) -> None:
     ensure_strategy_created_by_column(eng)
     ensure_strategy_created_by_email_column(eng)
     ensure_strategy_langsmith_trace_column(eng)
+    ensure_strategy_codex_thread_id_column(eng)
     ensure_strategy_strategy_name_column(eng)
     ensure_strategy_algorithm_column(eng)
     ensure_strategy_language_column(eng)

@@ -25,3 +25,7 @@ Entry signal — the "2 brick rule": Enter long when two consecutive green (up) 
 Stop loss: Place stop just below the most recent swing low (long) or swing high (short) — typically 2-3 bricks away.
 Exit: Close the trade when a reversal brick of the opposite color forms, or when price closes back inside the Donchian channel.
 Filters: Avoid trading during major news releases; restrict trades to active market hours (e.g., 8:00–12:15 CET for European session). If higher-timeframe context disagrees with the signal, skip the trade.
+12. давай такую стратегию . Используем 7 lagging price differences SPY. Это все будут входы регрессора xgboost предсказывающего изменение цены следующего дня spy. тренируем на первых 4 годах (1d), потом на оставшемся времени предсказываем. Торгуем только spy. 
+если предсказание вверх 90 percentile, то long, если предсказание вниз 10 percentile, то short. Выходим когда сигнала больше нет. percentile рассчитываем с помощью распределения предсказанного изменения цены в плавающем окне длиной 200
+Размер позиции 100% период тренировки 2020-2025, дальше тест 2025+
+предсказание, 10 перцентиль и 90 перцентиль должны быть на одном графике

@@ -2070,6 +2070,17 @@ export function StrategyPage() {
             <div className="canvas-text-block-body">{cliDescriptionText}</div>
           </article>
         ) : null}
+        {chartError ? <p className="canvas-chart-error">{chartError}</p> : null}
+        {!hasRenderableChartOutput(output) && !chartError ? (
+          <p className="canvas-charts-placeholder muted">
+            No charts yet. Send a message to refresh the strategy run.
+          </p>
+        ) : null}
+        <div
+          ref={chartsMountRef}
+          className="canvas-charts-mount canvas-charts-mount-inline"
+          aria-label="Strategy backtest charts"
+        />
         {showParamsPanel ? (
           <details className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details">
             <summary className="canvas-pseudocode-summary">Strategy parameters</summary>
@@ -2135,17 +2146,6 @@ export function StrategyPage() {
             <PythonSourceCode code={displayPythonCodeText} />
           </details>
         ) : null}
-        {chartError ? <p className="canvas-chart-error">{chartError}</p> : null}
-        {!hasRenderableChartOutput(output) && !chartError ? (
-          <p className="canvas-charts-placeholder muted">
-            No charts yet. Send a message to refresh the strategy run.
-          </p>
-        ) : null}
-        <div
-          ref={chartsMountRef}
-          className="canvas-charts-mount"
-          aria-label="Strategy backtest charts"
-        />
         </>
         ) : null}
       </section>

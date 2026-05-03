@@ -7,6 +7,7 @@ import json
 import logging
 import orjson
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -32,43 +33,94 @@ def _codex_bypass_sandbox() -> bool:
     v = (os.getenv("CODEX_BYPASS_SANDBOX") or "").strip().lower()
     return v in ("1", "true", "yes", "on")
 
+
+def _clean_codex_thread_id(value: str | None) -> str:
+    s = (value or "").strip()
+    if not s or len(s) > 128:
+        return ""
+    if any(ch.isspace() for ch in s):
+        return ""
+    if any(bad in s for bad in ("..", "/", "\\")):
+        return ""
+    if not all(ch.isalnum() or ch in ("-", "_") for ch in s):
+        return ""
+    return s
+
+
+def _codex_thread_id_from_stdout(stdout: str) -> str:
+    for line in (stdout or "").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        tid = event.get("thread_id")
+        if isinstance(tid, str):
+            tid = _clean_codex_thread_id(tid)
+            if tid:
+                return tid
+    return ""
+
+
+def _codex_exec_command(
+    task: str,
+    root: str,
+    resume_thread_id: str,
+    sandbox_flag: str,
+) -> list[str]:
+    cmd = [
+        "codex",
+        "exec",
+        "--json",
+        sandbox_flag,
+        "-C",
+        root,
+        "--skip-git-repo-check",
+        "-c", "service_tier=fast",
+        "-c", f"model={CODEX_MODEL}",
+        "-c", "model_verbosity=low",
+        "-c", f"model_reasoning_effort={CODEX_REASONING_EFFORT}",
+        "-c", "features.fast_mode=true",
+    ]
+    if resume_thread_id:
+        cmd.extend(["resume", resume_thread_id])
+    cmd.append(task)
+    return cmd
+
 CODE_ANALYSIS_MODEL = os.getenv("CODE_ANALYSIS_MODEL", "anthropic/claude-opus-4.7")
+TICKER_SQL_MODEL = os.getenv("TICKER_SQL_MODEL", CODE_ANALYSIS_MODEL)
 
-SYSTEM_PROMPT = f"""You help users design trading strategies in chat.
+SYSTEM_PROMPT = f"""You help users design and backtest trading strategies in chat.
 
-Workflow
-
-* Before the first update_strategy, request any missing details needed to build the strategy (e.g., ticker, candlestick scale, backtest window (start/end dates), indicators, entry/exit rules, order sizing, other parameters). The user may want to come up with good default values for these parameters, proceed with good defaults then. If the user already supplied a long or exhaustive specification (e.g., a pasted design doc), do not re-ask for basics; implement from what they gave.
-* Do not add hyperparameter search loops inside strategy.py by default; optimization is driven by the fixed workspace script hyperopt.py when the user asks for it.
-* To modify code, call update_strategy with the task string the coding agent will execute. Write it in English. The coding agent does not see the chat—only this task—so preserve the user's requirements in full: when they paste a detailed strategy (rules, indicators, parameters, entry/exit logic, sizing, constraints, edge cases, instruments, dates), include all of it in the task; do not compress it into a short summary. For small follow-up edits, a concise change list is enough.
-* If the user only tweaks existing parameters (different ticker, dates, thresholds, deposit, etc.), call run_backtest instead of update_strategy; pass parameters_json as a JSON string so the tool recursively merges into params.json before the run (do not use a --params CLI flag or teach strategies to accept one).
-* If the user asks for exploratory data analysis, market research, or charts **without** defining a tradable strategy (no signals, no rules backtest), use `update_strategy` for the analysis path, then run_backtest. That path should not emit market_order outputs or write params-hyperopt.json.
-* If the user asks for ordinary strategy-parameter training/hyperparameter optimization, ensure via update_strategy that the strategy workspace writes params-hyperopt.json (authored as a static file per the workspace AGENTS.md), then run_hyperopt (not run_backtest). To adjust the study without editing files—how many strategy parameters are tuned, their optimisation ranges and bounds, regimes or other study-only config—pass parameters_hyperopt_json on run_hyperopt to merge into params-hyperopt.json before the run.
-* Only ask the coding agent to implement trained model parameters for genuinely trainable models (for example neural networks or boosting/tree models). Simple indicator/rule strategies keep all tunable knobs in params.json and params-hyperopt.json. Trainable strategies use params.json run_mode ("train" or "test") as exclusive modes: strategy.py must either train or test in a given run, never both. To train and evaluate a model, run the simulator twice with run_backtest parameters_json overrides: first with run_mode="train" and start_date/end_date set to the training period, then with run_mode="test" and start_date/end_date set to the out-of-sample testing period. Train runs emit OutputTrainedModelParams only at EOF and never emit orders. Test runs require the trained_model_params input object, never retrain, never emit OutputTrainedModelParams, and are the only trained-model runs that may trade.
-* Always respond in the user's language.
-* After each successful update_strategy, call run_backtest or run_hyperopt so results match the change. For trainable model strategies, use the two-run train/test sequence described above instead of one combined full-period backtest. Only briefly summarize strategy performance based on the output of that tool call, don't make up numbers. The user already sees all the charts and metrics.
-* If a backtest completes with zero trades, say that no trades were executed. Do not call update_strategy just to force trades unless the strategy code contradicts the user's rules or the user asks to change signal sensitivity.
-* Canvas: The right-hand canvas shows the latest run output—interactive price and indicator charts (and any tables or other panels the strategy emits). Users pan along time by dragging the chart, zoom with scroll wheel or pinch where supported, collapse or expand each chart block using its section header, remove a chart block with the "x" beside the title, and reorder chart panels by dragging the handle. Removed/collapsed/reordered chart UI state is saved locally for that run output. When the strategy supplies per-chart help, hovering the "?" beside the title shows it. If the user needs more overlays or diagnostics than what is visible, invite them to ask you to add more indicators, series, or chart panels via the strategy output.
-* If the user asks to hide or remove a chart panel, tell them they can collapse it by clicking the section header or remove it with the "x" beside the chart title—no code change needed.
-* If the user asks to reorder chart panels, tell them they can drag and drop panels in the canvas UI—no code change needed.
-* If the user asks to improve chart alignment or spacing, explain that the layout is already rendered at its best and changes to the strategy code are very unlikely to affect visual alignment.
-
-Notes
-* The workspace follows strategies_v2 conventions (see AGENTS.md there): strategy.py is a streaming process that reads params.json, emits ticker_subscription and indicator_subscription on startup, then processes StrategyInput lines from stdin and emits market_order / indicator / trained_model_params / time_ack outputs on stdout. utils.py and hyperopt.py are fixed and must not be edited.
-* update_strategy edits strategy.py, params.json, and (for trading strategies) params-hyperopt.json via the coding agent; layout and run contract follow AGENTS.md in that workspace.
-* run_backtest runs the historical simulator (scripts/simulate_strategy_v2.py): it fetches OHLC bars for the ticker/scale across start_date..end_date from params.json, streams them to strategy.py, and refreshes backtest.json (charts) and metrics.json (scalar metrics, including num_trades).
-* run_hyperopt runs the random-search hyperparameter study in the workspace, which invokes the same simulator per trial and rewrites params.json with the best trial before a final simulator run.
-* Market data providers: use Alpaca for all non-Russian markets; use MOEX (moexalgo/Algopack) for Russian instruments/markets.
-* Alpaca historical market data starts in 2016; there is no data before 2016.
-* Auto provider selection is allowed and preferred when uncertain: try Alpaca first, then MOEX.
-* Do not use yfinance or ask the user to switch to yfinance.
-* Backtesting via simulation is supported; live trading is not.
-* Do NOT share with the user specific details about how the strategy is implemented (python code generated by the coding agent).
+Principles
+* Reply in the user's language, in plain text unless they ask for another format.
+* Be brief after tool runs: summarize only observed results; never invent metrics. The user sees charts and metrics.
+* Backtesting is supported; live trading is not.
+* Do not reveal generated Python implementation details.
 * Today's date is {(datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")}.
 
-{{strategy_help}}
+Strategy workflow
+* Before the first update_strategy, ask only for missing build/run details: ticker, scale, start/end dates, indicators, entry/exit, sizing, and parameters. If the user wants defaults, choose sensible defaults. If they supplied a complete spec, implement it.
+* update_strategy delegates implementation to the coding agent in the strategy workspace.
+* First update_strategy task: write English instructions with the full user spec because the coding agent may have no prior context. Resumed Codex thread: send a concise delta plus every new or changed requirement; omitted new details are lost.
+* After successful update_strategy, call run_backtest or run_hyperopt so outputs match the change.
+* If the user only changes parameters (ticker, dates, thresholds, deposit, etc.), call run_backtest with parameters_json merged into params.json. Do not edit code, add a --params flag, or make strategy.py parse CLI params.
+* If a backtest has num_trades=0, say no trades were executed. Do not loosen signals unless code contradicts the user's rules or the user asks.
 
-Answer in plain text. No JSON or markup unless the user asks."""
+Analysis and optimization
+* For EDA, market research, or charts without a tradable strategy, use update_strategy then run_backtest.
+* For parameter optimization, use run_hyperopt. Use parameters_hyperopt_json for study-only overrides and parameters_json for base simulation inputs.
+* If params.json contains run_mode, treat the strategy as trainable and run separate train and out-of-sample test backtests rather than one combined run.
+
+Canvas and data
+* The canvas shows latest run output: interactive price/indicator charts plus emitted panels. Users can pan, zoom, collapse sections, remove with "x", reorder by drag, and hover "?" for per-chart help; UI state is local to that run.
+* For hide/remove/reorder requests, explain the canvas controls; no code change is needed. For alignment/spacing requests, explain the layout is already rendered at its best and strategy code is unlikely to help. For more diagnostics, offer to add indicators, series, or panels via strategy output.
+* Market data: Alpaca for non-Russian markets, MOEX for Russian markets. Auto-selection is preferred when unsure: try Alpaca, then MOEX. Alpaca data starts in 2016; no pre-2016 data. Never use or suggest yfinance.
+* To discover available symbols, use list_tickers with a natural-language query. It can filter by ticker, provider (alpaca/moex), tags such as SNP500, and last_daily_volume.
+* run_backtest refreshes backtest.json and metrics.json. run_hyperopt optimizes parameters, updates params.json with the best trial, then performs a final run.
+
+{{strategy_help}}"""
 
 STRATEGIES_DIR = Path(__file__).resolve().parents[1] / "strategies_v2"
 STRATEGY_AGENTS_TEMPLATE = STRATEGIES_DIR / "AGENTS.md"
@@ -77,22 +129,16 @@ STRATEGY_UTILS_TEMPLATE = STRATEGIES_DIR / "utils.py"
 STRATEGY_PARAMS_TEMPLATE = STRATEGIES_DIR / "params.json"
 STRATEGY_HYPEROPT_TEMPLATE = STRATEGIES_DIR / "hyperopt.py"
 SIMULATE_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "simulate_strategy_v2.py"
-STRATEGY_CODE_AGENT_PREFIX = (
-    "Chart output constraints (always apply, do not override):\n"
-    "- Do NOT emit OutputIndicatorDataPoint or OutputChart for raw input prices (OHLC: open, high, low, close) "
-    "or for raw indicator values received directly from subscriptions (SMA, EMA, RSI, MACD, ATR, Bollinger Bands, "
-    "Stochastic, Renko bricks). The simulation UI already renders all subscribed prices and indicators in the "
-    "price/indicator panels — duplicating them wastes chart space.\n"
-    "- Only emit OutputIndicatorDataPoint or OutputChart for custom derived values that are NOT available as "
-    "built-in UI overlays: e.g. z-scores, normalized signals, spreads, composite scores, strategy-specific "
-    "intermediate calculations.\n\n"
-)
+STRATEGY_CODE_AGENT_PREFIX = ""
 UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
 RUN_BACKTEST_TOOL_NAME = "run_backtest"
 RUN_HYPEROPT_TOOL_NAME = "run_hyperopt"
 UPDATE_STRATEGY_TOOL_MESSAGE_MAX_JSON = 1024
 RUN_EXECUTION_TOOL_MESSAGE_MAX_JSON = 4096
 ANALYSE_CODE_TOOL_NAME = "analyse_code"
+LIST_TICKERS_TOOL_NAME = "list_tickers"
+TICKER_LIST_DEFAULT_LIMIT = 25
+TICKER_LIST_MAX_LIMIT = 100
 INTERNAL_LIMITS_MESSAGE = "Internal limits were hit. Please try again later."
 
 ProgressCallback = Callable[[str], None] | None
@@ -487,10 +533,43 @@ AGENT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": LIST_TICKERS_TOOL_NAME,
+            "description": (
+                "List available market tickers from the tickers database table. "
+                "Pass a natural-language query such as 'most liquid S&P 500 stocks', "
+                "'MOEX tickers starting with SB', or 'Alpaca crypto symbols'. "
+                "The tool generates and validates a read-only SQL SELECT on the fly. "
+                "Known providers and tags are taken from scripts/sync_tickers.py."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Natural-language criteria for filtering or ranking tickers. "
+                            "Available fields are ticker, provider, tags, updated_at, and last_daily_volume. "
+                            "Known providers: alpaca, moex. Known tags: stock, crypto, SNP500."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": TICKER_LIST_MAX_LIMIT,
+                        "description": f"Maximum rows to return. Defaults to {TICKER_LIST_DEFAULT_LIMIT}.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": UPDATE_STRATEGY_TOOL_NAME,
             "description": (
-                "Implement strategy or analysis changes in this thread's strategy workspace using the configured coding agent. "
-                "Workspace conventions are in AGENTS.md there. After it succeeds, call run_backtest or run_hyperopt to refresh outputs."
+                "Edit this thread's strategy workspace with the coding agent. "
+                "After success, call run_backtest or run_hyperopt to refresh outputs."
             ),
             "parameters": {
                 "type": "object",
@@ -498,10 +577,9 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                     "task": {
                         "type": "string",
                         "description": (
-                            "Full instructions for the coding agent in English. Include every requirement the user stated "
-                            "(especially for long or pasted strategy specs: indicators, thresholds, entry/exit, sizing, "
-                            "constraints, instruments, dates, edge cases). The agent does not see chat history—omitted "
-                            "detail is lost. For tiny follow-ups, a short delta-style description is acceptable. "
+                            "English instructions for the coding agent. For a first task, include the full user spec "
+                            "(rules, indicators, params, entry/exit, sizing, constraints, instruments, dates, edge cases). "
+                            "On a resumed Codex thread, a delta is enough, but include every new or changed requirement. "
                             "Do not include file paths or filenames; workspace layout is fixed."
                         ),
                     }
@@ -515,11 +593,9 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": RUN_BACKTEST_TOOL_NAME,
             "description": (
-                "Run a single backtest in this thread's workspace (no coding agent, no code edits). "
-                "Dispatches to scripts/simulate_strategy_v2.py: fetches OHLC bars for the ticker/scale across "
-                "start_date..end_date from params.json, streams them to strategy.py, and refreshes backtest.json and metrics.json. "
-                "If metrics show num_trades=0, tell the user no trades were executed; do not assume that is a code bug. "
-                "Optional parameters_json (a JSON string) is recursively merged into params.json before the run."
+                "Run one backtest with no code edits. It uses params.json, streams OHLC bars to strategy.py, "
+                "refreshes backtest.json and metrics.json, and can merge optional parameters_json into params.json first. "
+                "If num_trades=0, tell the user no trades were executed; do not assume a bug."
             ),
             "parameters": {
                 "type": "object",
@@ -527,9 +603,8 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                     "parameters_json": {
                         "type": "string",
                         "description": (
-                            "If provided, must be valid JSON. Object values are merged recursively into existing params.json "
-                            "(nested dicts merged by key, lists merged by index with recursive dict merge where both sides are objects; "
-                            "scalars and mismatched types take the new value). Non-object JSON replaces the file."
+                            "Optional valid JSON merged into params.json before the run. Objects merge recursively; "
+                            "lists merge by index; scalars, type mismatches, and non-object JSON replace existing values."
                         ),
                     },
                 },
@@ -541,12 +616,9 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": RUN_HYPEROPT_TOOL_NAME,
             "description": (
-                "Run hyperparameter optimization in this thread's workspace (no coding agent, no code edits). "
-                "Requires a valid params-hyperopt.json. Invokes the same simulator per trial and rewrites params.json "
-                "with the best trial before a final simulator run. "
-                "Optional parameters_json (a JSON string) is merged into params.json before the study. "
-                "Optional parameters_hyperopt_json (a JSON string) is merged into params-hyperopt.json before the study "
-                "(study definition: which params are optimised, their ranges, regimes, trial budget, etc.—not base backtest inputs like ticker or dates; use parameters_json for those)."
+                "Run hyperparameter optimization with no code edits. Requires params-hyperopt.json, runs simulator trials, "
+                "writes best params to params.json, then performs a final run. parameters_json changes base inputs; "
+                "parameters_hyperopt_json changes the study definition."
             ),
             "parameters": {
                 "type": "object",
@@ -554,17 +626,14 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                     "parameters_json": {
                         "type": "string",
                         "description": (
-                            "If provided, must be valid JSON. Object values are merged recursively into existing params.json "
-                            "before hyperopt starts, using the same merge rules as run_backtest."
+                            "Optional valid JSON merged into params.json before hyperopt, using run_backtest merge rules."
                         ),
                     },
                     "parameters_hyperopt_json": {
                         "type": "string",
                         "description": (
-                            "If provided, must be valid JSON. Merged recursively into existing params-hyperopt.json (same merge rules as "
-                            "parameters_json into params.json). Use this to change the optimisation study: which strategy parameters are "
-                            "in the search space, their ranges or bounds, regimes, trial count or timeouts, and other study-only settings—not "
-                            "base simulation inputs in params.json (ticker, dates, deposit, etc.); pass those via parameters_json."
+                            "Optional valid JSON merged into params-hyperopt.json. Use for search space, ranges, regimes, "
+                            "trial budgets, timeouts, and other study-only settings; use parameters_json for ticker, dates, deposit, etc."
                         ),
                     },
                 },
@@ -576,9 +645,8 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": ANALYSE_CODE_TOOL_NAME,
             "description": (
-                "Answer a question about the current strategy.py logic and params in this thread. "
-                "Use only for quick strategy-code comprehension without modifying files. "
-                "Do not ask this tool about simulator, portfolio, fills, metrics generation, or platform behavior."
+                "Answer quick questions about this thread's current strategy.py logic and params only. "
+                "No file edits; not for simulator, portfolio, fills, metrics, or platform behavior."
             ),
             "parameters": {
                 "type": "object",
@@ -647,12 +715,10 @@ def run_analyse_code(
     params_text = _read_strategy_params_text(thread_id)
 
     analysis_system = (
-        "You are a code analyst for a trading strategy project. "
         "Answer only questions about the provided strategy.py logic and params. "
-        "Use utils.py only to understand data models imported by strategy.py. "
-        "Do not infer simulator, portfolio, fills, metrics generation, or platform behavior; "
-        "if the question asks about those, say it is outside this tool's context. "
-        "Be concise: 1-4 sentences. If the answer cannot be determined, say what is missing."
+        "Use utils.py only for imported data models. Do not infer simulator, portfolio, fills, metrics, "
+        "or platform behavior; say those are outside this tool's context. "
+        "Use 1-4 sentences. If unknown, say what is missing."
     )
     context = (
         "Strategy params (JSON, may be empty):\n"
@@ -675,6 +741,222 @@ def run_analyse_code(
     return {"ok": True, "answer": answer}
 
 
+_TICKER_SQL_BLOCKED_RE = re.compile(
+    r"\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|call|execute|merge|vacuum|attach|detach|pragma|union|intersect|except)\b",
+    re.IGNORECASE,
+)
+_TICKER_SQL_TABLE_REF_RE = re.compile(
+    r'\bfrom\s+((?:"[^"]+"|[A-Za-z_][\w]*)(?:\.(?:"[^"]+"|[A-Za-z_][\w]*))?)',
+    re.IGNORECASE,
+)
+
+
+def _coerce_ticker_limit(value: Any) -> int:
+    if value is None or value == "":
+        return TICKER_LIST_DEFAULT_LIMIT
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return TICKER_LIST_DEFAULT_LIMIT
+    return max(1, min(TICKER_LIST_MAX_LIMIT, limit))
+
+
+def _strip_sql_response(raw: str) -> str:
+    s = (raw or "").strip()
+    if not s.startswith("```"):
+        return s
+    lines = s.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _sql_identifier_tail(ref: str) -> str:
+    part = (ref or "").split(".")[-1].strip()
+    if part.startswith('"') and part.endswith('"') and len(part) >= 2:
+        part = part[1:-1]
+    return part.lower()
+
+
+def _normalize_ticker_listing_sql(sql: str) -> str:
+    s = _strip_sql_response(sql)
+    s = re.sub(r"\s+", " ", s).strip()
+    if s.endswith(";"):
+        s = s[:-1].strip()
+    if not s:
+        raise ValueError("generated SQL is empty")
+    if ";" in s:
+        raise ValueError("generated SQL must contain one statement")
+    if ":" in s:
+        raise ValueError("generated SQL must use literal values, not bind parameters")
+    if "--" in s or "/*" in s or "*/" in s:
+        raise ValueError("generated SQL must not contain comments")
+    if not re.match(r"^select\b", s, re.IGNORECASE):
+        raise ValueError("generated SQL must be a SELECT statement")
+    if _TICKER_SQL_BLOCKED_RE.search(s):
+        raise ValueError("generated SQL contains a blocked keyword")
+    if re.search(r"\bjoin\b", s, re.IGNORECASE):
+        raise ValueError("generated SQL must not use joins")
+    if re.search(r"\(\s*select\b", s, re.IGNORECASE):
+        raise ValueError("generated SQL must not use subqueries")
+    from_sections = re.findall(
+        r"\bfrom\s+(.+?)(?=\bwhere\b|\bgroup\s+by\b|\border\s+by\b|\blimit\b|$)",
+        s,
+        re.IGNORECASE,
+    )
+    if len(from_sections) != 1:
+        raise ValueError("generated SQL must read from tickers once")
+    if "," in from_sections[0]:
+        raise ValueError("generated SQL may only read from tickers")
+    refs = _TICKER_SQL_TABLE_REF_RE.findall(s)
+    if len(refs) != 1:
+        raise ValueError("generated SQL must read from tickers")
+    for ref in refs:
+        if _sql_identifier_tail(ref) != "tickers":
+            raise ValueError("generated SQL may only read from tickers")
+    return s
+
+
+def _default_session_factory() -> Callable[[], Any]:
+    from db.session import SessionLocal
+
+    return SessionLocal
+
+
+def _normalize_ticker_result_row(row: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in row.items():
+        if key in ("ticker", "provider") and value is not None:
+            out[key] = str(value)
+        elif key == "tags":
+            if isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                except json.JSONDecodeError:
+                    parsed = value
+                out[key] = parsed
+            else:
+                out[key] = value
+        elif key == "last_daily_volume" and value is not None:
+            try:
+                out[key] = float(value)
+            except (TypeError, ValueError):
+                out[key] = value
+        elif isinstance(value, datetime):
+            out[key] = value.isoformat()
+        else:
+            out[key] = value
+    return out
+
+
+def _ticker_sql_prompt_vocabulary() -> tuple[list[str], list[str]]:
+    try:
+        from scripts import sync_tickers
+
+        providers = [
+            sync_tickers._PROVIDER_ALPACA,
+            sync_tickers._PROVIDER_MOEX,
+        ]
+        tags = [
+            sync_tickers._STOCK_TAG,
+            sync_tickers._CRYPTO_TAG,
+            sync_tickers._SNP500_TAG,
+        ]
+    except Exception:
+        providers = ["alpaca", "moex"]
+        tags = ["stock", "crypto", "SNP500"]
+    return sorted({str(v) for v in providers if str(v)}), sorted({str(v) for v in tags if str(v)})
+
+
+@traceable(name="generate_ticker_listing_sql")
+def _generate_ticker_listing_sql(*, query: str, limit: int) -> str:
+    try:
+        from db.session import engine
+
+        dialect = engine.dialect.name
+    except Exception:
+        dialect = "postgresql"
+    providers, tags = _ticker_sql_prompt_vocabulary()
+    system = (
+        "Generate exactly one read-only SQL SELECT statement for listing market tickers. "
+        "Use only the table tickers with columns ticker, provider, tags, updated_at, last_daily_volume. "
+        f"The only possible provider values are: {', '.join(repr(v) for v in providers)}. "
+        f"The only possible tags values are: {', '.join(repr(v) for v in tags)}. "
+        "Return columns useful to the user, usually ticker, provider, tags, last_daily_volume. "
+        "Do not use joins, CTEs, subqueries, comments, semicolons, bind parameters, DDL, or DML. "
+        "Use LOWER(...) LIKE for text matching and CAST(tags AS TEXT) for tag matching. "
+        "For stock requests, match LOWER(CAST(tags AS TEXT)) LIKE '%stock%'. "
+        "For crypto requests, match LOWER(CAST(tags AS TEXT)) LIKE '%crypto%'. "
+        "For S&P 500 or SNP500 requests, match CAST(tags AS TEXT) LIKE '%SNP500%'. "
+        "For MOEX or Russian requests, filter provider = 'moex'. "
+        "For Alpaca or US requests, filter provider = 'alpaca'. "
+        "For liquid, popular, or high-volume requests, order by last_daily_volume IS NULL, last_daily_volume DESC. "
+        f"Use SQL compatible with {dialect}. Include LIMIT {limit}. Return only SQL."
+    )
+    msg = ChatOpenRouter(model=TICKER_SQL_MODEL, request_timeout=60_000).invoke(
+        [
+            SystemMessage(content=system),
+            HumanMessage(content=(query or "").strip()),
+        ]
+    )
+    return _normalize_ticker_listing_sql(_aimessage_plain_text(msg))
+
+
+@traceable(name="execute_ticker_listing_sql")
+def _execute_ticker_listing_sql(
+    sql: str,
+    *,
+    limit: Any = None,
+    session_factory: Callable[[], Any] | None = None,
+) -> dict[str, Any]:
+    max_rows = _coerce_ticker_limit(limit)
+    safe_sql = _normalize_ticker_listing_sql(sql)
+    from sqlalchemy import text
+
+    SessionFactory = session_factory or _default_session_factory()
+    session = SessionFactory()
+    try:
+        rows = session.execute(
+            text(f"SELECT * FROM ({safe_sql}) AS ticker_listing LIMIT :ticker_listing_limit"),
+            {"ticker_listing_limit": max_rows},
+        ).mappings().all()
+    finally:
+        session.close()
+    normalized = [_normalize_ticker_result_row(dict(row)) for row in rows]
+    tickers = [
+        str(row["ticker"])
+        for row in normalized
+        if isinstance(row.get("ticker"), str) and row.get("ticker")
+    ]
+    return {
+        "ok": True,
+        "sql": safe_sql,
+        "row_count": len(normalized),
+        "rows": normalized,
+        "tickers": tickers,
+    }
+
+
+@traceable(name="run_list_tickers")
+def run_list_tickers(*, query: str, limit: Any = None) -> dict[str, Any]:
+    q = (query or "").strip()
+    if not q:
+        return {"ok": False, "error": "query is empty"}
+    if not os.getenv("OPENROUTER_API_KEY", "").strip():
+        return {"ok": False, "error": "OPENROUTER_API_KEY is not configured"}
+    max_rows = _coerce_ticker_limit(limit)
+    try:
+        sql = _generate_ticker_listing_sql(query=q, limit=max_rows)
+        payload = _execute_ticker_listing_sql(sql, limit=max_rows)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    payload["query"] = q
+    payload["limit"] = max_rows
+    return payload
+
+
 @traceable(name="generate_strategy_algorithm_pseudocode")
 def generate_strategy_algorithm_pseudocode(*, code: str, language: str = "") -> dict[str, Any]:
     src = (code or "").strip()
@@ -688,19 +970,16 @@ def generate_strategy_algorithm_pseudocode(*, code: str, language: str = "") -> 
 
     lang = (language or "").strip().lower()
     lang_line = (
-        f"The user's conversation language (ISO 639-1) is {lang}. Write all natural-language explanations, "
-        f"step titles, and comments in that language."
+        f"Write natural-language text, step titles, and comments in ISO 639-1 language {lang}."
         if lang
-        else "The user's conversation language is unknown; write all natural-language explanations, step titles, and comments in English."
+        else "Write natural-language text, step titles, and comments in English."
     )
     system = (
-        "Write very compact, language-agnostic pseudocode for the core business logic of this trading strategy only. "
-        "Omit boilerplate entirely: CLI/argparse, imports, logging, file I/O, HTTP/API calls, "
-        "dataframe plumbing, plotting, JSON/chart serialization, and generic helpers unless they directly encode a trading rule. "
-        "Do NOT include or rewrite the pseudocode of internal logic for standard indicators (like RSI, MACD, etc) — if strategy uses a standard indicator, mention its use without describing or outlining its internal computation. "
-        "No long code quotes. Prefer tight numbered steps or compact bullets. If something essential is ambiguous in the source, "
-        "state the single most likely interpretation in one line. "
-        "Can use Markdown for formatting. "
+        "Write compact, language-agnostic pseudocode for only the strategy's core trading logic. "
+        "Omit CLI/imports/logging/I/O/HTTP/dataframe plumbing/plotting/JSON/chart serialization/generic helpers unless they encode a trading rule. "
+        "For standard indicators (RSI, MACD, etc.), mention use without outlining internal computation. "
+        "Avoid long code quotes; prefer tight numbered steps or bullets. If essential logic is ambiguous, give the most likely interpretation in one line. "
+        "Markdown is allowed. "
         + lang_line
     )
     llm = ChatOpenRouter(model=CODE_ANALYSIS_MODEL, request_timeout=120_000)
@@ -776,27 +1055,19 @@ def canvas_with_output(existing_canvas: dict[str, Any], thread_id: str) -> dict[
 
 
 @traceable(name="run_codex_exec")
-def _run_codex_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run_codex_exec(
+    task: str,
+    cwd: Path,
+    codex_thread_id: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     root = str(cwd.resolve())
+    resume_thread_id = _clean_codex_thread_id(codex_thread_id)
     sandbox_flag = (
         "--dangerously-bypass-approvals-and-sandbox"
         if _codex_bypass_sandbox()
         else "--full-auto"
     )
-    cmd = [
-        "codex",
-        "exec",
-        sandbox_flag,
-        "-C",
-        root,
-        "--skip-git-repo-check",
-        "-c", "service_tier=fast",
-        "-c", f"model={CODEX_MODEL}",
-        "-c", "model_verbosity=low",
-        "-c", f"model_reasoning_effort={CODEX_REASONING_EFFORT}", # minimal, low, medium, high, xhigh
-        "-c", "features.fast_mode=true",
-        task,
-    ]
+    cmd = _codex_exec_command(task, root, resume_thread_id, sandbox_flag)
     return _run_logged_subprocess("codex exec", cmd, root, timeout=600)
 
 
@@ -807,11 +1078,15 @@ def _run_claude_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     return _run_logged_subprocess("claude", cmd, str(cwd), timeout=600)
 
 
-def _run_coding_agent_exec(task: str, cwd: Path) -> tuple[str, subprocess.CompletedProcess[str]]:
+def _run_coding_agent_exec(
+    task: str,
+    cwd: Path,
+    codex_thread_id: str | None = None,
+) -> tuple[str, subprocess.CompletedProcess[str]]:
     tool = CODING_TOOL    
     if tool == "claude":
         return tool, _run_claude_exec(task, cwd)
-    return tool, _run_codex_exec(task, cwd)
+    return tool, _run_codex_exec(task, cwd, codex_thread_id=codex_thread_id)
 
 
 @traceable(name="run_simulation")
@@ -1032,7 +1307,10 @@ def _coding_agent_usage_limit_error(text: str) -> bool:
 
 @traceable(name="run_update_strategy")
 def run_update_strategy(
-    thread_id: str, task: str, on_progress: ProgressCallback = None
+    thread_id: str,
+    task: str,
+    on_progress: ProgressCallback = None,
+    codex_thread_id: str | None = None,
 ) -> dict[str, Any]:
     task = (task or "").strip()
     if not task:
@@ -1044,13 +1322,22 @@ def run_update_strategy(
 
     if on_progress:
         on_progress("Updating strategy, this may take a few minutes…")
-    runner, codegen = _run_coding_agent_exec(STRATEGY_CODE_AGENT_PREFIX + task, root)
+    existing_codex_thread_id = _clean_codex_thread_id(codex_thread_id)
+    runner, codegen = _run_coding_agent_exec(
+        STRATEGY_CODE_AGENT_PREFIX + task,
+        root,
+        codex_thread_id=existing_codex_thread_id,
+    )
     logger.info(f"Coding agent exec result: {runner}, {codegen.returncode}, {codegen.stdout[:100]}, {codegen.stderr[:100]}")
+    next_codex_thread_id = existing_codex_thread_id
+    if runner == "codex":
+        next_codex_thread_id = _codex_thread_id_from_stdout(codegen.stdout or "") or existing_codex_thread_id
     result: dict[str, Any] = {
         "runner": runner,
         "codex_returncode": codegen.returncode,
         "codex_stdout": _tail(codegen.stdout or ""),
         "codex_stderr": _tail(codegen.stderr or ""),
+        "codex_thread_id": next_codex_thread_id,
         "ok": codegen.returncode == 0,
     }
     if codegen.returncode != 0:
@@ -1264,6 +1551,7 @@ def run_backtest(
     on_progress: ProgressCallback = None,
     parameters_json: Any = None,
     parameters_hyperopt_json: Any = None,
+    codex_thread_id: str | None = None,
 ) -> dict[str, Any]:
     if not thread_id_allowed(thread_id):
         return {"ok": False, "error": "invalid thread_id"}
@@ -1271,6 +1559,7 @@ def run_backtest(
     if not command:
         return {"ok": False, "error": "command is empty"}
     root = ensure_strategy_workspace(thread_id)
+    fixed_codex_thread_id = ""
     if parameters_json is not None:
         try:
             _merge_parameters_json_into_params_file(root, parameters_json)
@@ -1322,11 +1611,13 @@ def run_backtest(
                 (
                     "The backtest froze and was killed due to no output for over 120 seconds. "
                     "Fix strategy.py so it cannot hang: remove infinite loops, ensure per-bar processing is fast, "
-                    "avoid blocking network calls, and always read stdin line-by-line and emit outputs regularly per AGENTS.md. "
+                    "avoid blocking network calls, and always read stdin line-by-line and emit outputs regularly. "
                     "Then keep the strategy logic intact as much as possible."
                 ),
                 on_progress=on_progress,
+                codex_thread_id=codex_thread_id,
             )
+            fixed_codex_thread_id = _clean_codex_thread_id(str(fix_attempt.get("codex_thread_id") or ""))
             if fix_attempt.get("ok"):
                 if on_progress:
                     on_progress("Retrying simulation after auto-fix…")
@@ -1350,6 +1641,7 @@ def run_backtest(
                     "backtest_returncode": 124,
                     "backtest_stdout": "",
                     "backtest_stderr": "",
+                    "codex_thread_id": fixed_codex_thread_id,
                     "autofix": fix_attempt,
                 }
         extras: dict[str, Any] = {
@@ -1388,6 +1680,8 @@ def run_backtest(
     }
     if bt.returncode != 0:
         result["error"] = failure_message
+    if fixed_codex_thread_id:
+        result["codex_thread_id"] = fixed_codex_thread_id
     return result
 
 
@@ -1395,27 +1689,48 @@ def _tool_handlers_for_thread(
     thread_id: str,
     *,
     on_progress: ProgressCallback = None,
+    codex_thread_ref: dict[str, str] | None = None,
 ) -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
+    def _remember_codex_thread_id(payload: dict[str, Any]) -> None:
+        if codex_thread_ref is None:
+            return
+        tid = _clean_codex_thread_id(str(payload.get("codex_thread_id") or ""))
+        if tid:
+            codex_thread_ref["value"] = tid
+
     def _update(args: dict[str, Any]) -> dict[str, Any]:
-        return run_update_strategy(thread_id, str(args.get("task", "")), on_progress=on_progress)
+        payload = run_update_strategy(
+            thread_id,
+            str(args.get("task", "")),
+            on_progress=on_progress,
+            codex_thread_id=(codex_thread_ref or {}).get("value", ""),
+        )
+        _remember_codex_thread_id(payload)
+        return payload
 
     def _run_backtest_tool(args: dict[str, Any]) -> dict[str, Any]:
-        return run_backtest(
+        payload = run_backtest(
             thread_id,
             "python strategy.py",
             on_progress=on_progress,
             parameters_json=args.get("parameters_json"),
             parameters_hyperopt_json=None,
+            codex_thread_id=(codex_thread_ref or {}).get("value", ""),
         )
+        _remember_codex_thread_id(payload)
+        return payload
 
     def _run_hyperopt_tool(args: dict[str, Any]) -> dict[str, Any]:
-        return run_backtest(
+        payload = run_backtest(
             thread_id,
             "python hyperopt.py",
             on_progress=on_progress,
             parameters_json=args.get("parameters_json"),
             parameters_hyperopt_json=args.get("parameters_hyperopt_json"),
+            codex_thread_id=(codex_thread_ref or {}).get("value", ""),
         )
+        _remember_codex_thread_id(payload)
+        return payload
 
     def _analyse(args: dict[str, Any]) -> dict[str, Any]:
         return run_analyse_code(
@@ -1423,7 +1738,14 @@ def _tool_handlers_for_thread(
             question=str(args.get("question", "")),
         )
 
+    def _list_tickers(args: dict[str, Any]) -> dict[str, Any]:
+        return run_list_tickers(
+            query=str(args.get("query", "")),
+            limit=args.get("limit"),
+        )
+
     return {
+        LIST_TICKERS_TOOL_NAME: _list_tickers,
         UPDATE_STRATEGY_TOOL_NAME: _update,
         RUN_BACKTEST_TOOL_NAME: _run_backtest_tool,
         RUN_HYPEROPT_TOOL_NAME: _run_hyperopt_tool,
@@ -1553,6 +1875,7 @@ def build_agent_reply(
     existing_canvas: dict[str, Any],
     thread_id: str,
     on_progress: ProgressCallback = None,
+    codex_thread_id: str | None = None,
 ) -> dict[str, Any]:
     t0 = time.perf_counter()
 
@@ -1568,6 +1891,7 @@ def build_agent_reply(
             "canvas": canvas_with_output(existing_canvas, thread_id),
             "reply_duration_ms": _reply_duration_ms(),
             "strategy_name": "",
+            "codex_thread_id": _clean_codex_thread_id(codex_thread_id),
         }
 
     workspace = strategy_root_for_thread(thread_id)
@@ -1579,11 +1903,13 @@ def build_agent_reply(
 
     max_iterations = 10
     last_strategy_name = ""
+    codex_thread_ref = {"value": _clean_codex_thread_id(codex_thread_id)}
     llm = ChatOpenRouter(model=CHAT_MODEL, request_timeout=120_000, reasoning={"effort": CHAT_REASONING_EFFORT})
     llm_tools = llm.bind_tools(AGENT_TOOLS)
     tool_handlers = _tool_handlers_for_thread(
         thread_id,
         on_progress=on_progress,
+        codex_thread_ref=codex_thread_ref,
     )
 
     for _ in range(max_iterations):
@@ -1607,6 +1933,7 @@ def build_agent_reply(
                 "canvas": canvas_with_output(existing_canvas, thread_id),
                 "reply_duration_ms": _reply_duration_ms(),
                 "strategy_name": last_strategy_name,
+                "codex_thread_id": codex_thread_ref["value"],
             }
         for tc in tool_calls:
             name, parsed_args, tid = _tool_call_parts(tc)
@@ -1633,6 +1960,7 @@ def build_agent_reply(
                     "canvas": canvas_with_output(existing_canvas, thread_id),
                     "reply_duration_ms": _reply_duration_ms(),
                     "strategy_name": last_strategy_name,
+                    "codex_thread_id": codex_thread_ref["value"],
                 }
             if (
                 name == UPDATE_STRATEGY_TOOL_NAME

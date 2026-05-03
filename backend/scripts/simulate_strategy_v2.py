@@ -494,6 +494,18 @@ def simulate(
 
     try:
         startup = _call_strategy(rt.start)
+        extra_startup_outputs = _call_strategy(rt.drain_stdout, timeout_seconds=0.1)
+        if extra_startup_outputs:
+            startup = StrategyOutput(
+                [
+                    *startup.root,
+                    *[
+                        point
+                        for output in extra_startup_outputs
+                        for point in output.root
+                    ],
+                ]
+            )
         startup = assign_subscription_ids(startup)
         logger.info(
             "subscriptions_from_strategy %s",
