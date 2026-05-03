@@ -119,7 +119,7 @@ class Ticker(Base):
     provider: Mapped[str] = mapped_column(String(16), primary_key=True)
     tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, index=True)
-    last_daily_volume: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_day_volume_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     __table_args__ = (
         Index("ix_tickers_provider_ticker", "provider", "ticker"),

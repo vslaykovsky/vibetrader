@@ -150,9 +150,9 @@ def _chunked(values: Sequence[str], size: int) -> Iterable[Sequence[str]]:
         yield values[idx : idx + size]
 
 
-def _latest_daily_volumes(session: Session, tickers: Iterable[str]) -> dict[str, float]:
+def _latest_day_volume_usd(session: Session, tickers: Iterable[str]) -> dict[str, float]:
     symbols = sorted({_normalize_symbol(t) for t in tickers if _normalize_symbol(t)})
-    volumes: dict[str, float] = {}
+    volume_usd: dict[str, float] = {}
     batches = list(_chunked(symbols, 900))
     for batch in _progress(batches, desc="loading volumes", unit="batch"):
         latest = (
@@ -162,7 +162,7 @@ def _latest_daily_volumes(session: Session, tickers: Iterable[str]) -> dict[str,
             .subquery()
         )
         rows = session.execute(
-            select(Candle.ticker, Candle.volume).join(
+            select(Candle.ticker, Candle.close, Candle.volume).join(
                 latest,
                 and_(
                     Candle.ticker == latest.c.ticker,
@@ -171,9 +171,9 @@ def _latest_daily_volumes(session: Session, tickers: Iterable[str]) -> dict[str,
                 ),
             )
         ).all()
-        for ticker, volume in rows:
-            volumes[str(ticker)] = float(volume)
-    return volumes
+        for ticker, close, volume in rows:
+            volume_usd[str(ticker)] = float(close) * float(volume)
+    return volume_usd
 
 
 def _sync_tickers(
@@ -194,7 +194,7 @@ def _sync_tickers(
         TickerRecord(ticker=ticker, provider=provider, tags=tuple(sorted(tags)))
         for (ticker, provider), tags in sorted(tags_by_key.items())
     ]
-    volumes = _latest_daily_volumes(session, (r.ticker for r in unique))
+    volume_usd = _latest_day_volume_usd(session, (r.ticker for r in unique))
     now = updated_at or datetime.now(timezone.utc)
     rows = []
     for record in unique:
@@ -207,7 +207,7 @@ def _sync_tickers(
                 "provider": record.provider,
                 "tags": _ordered_tags(tags),
                 "updated_at": now,
-                "last_daily_volume": volumes.get(record.ticker),
+                "last_day_volume_usd": volume_usd.get(record.ticker),
             }
         )
     if rows and session.bind is not None and session.bind.dialect.name == "postgresql":
@@ -222,7 +222,7 @@ def _sync_tickers(
                 set_={
                     "tags": stmt.excluded.tags,
                     "updated_at": stmt.excluded.updated_at,
-                    "last_daily_volume": stmt.excluded.last_daily_volume,
+                    "last_day_volume_usd": stmt.excluded.last_day_volume_usd,
                 },
             )
             session.execute(stmt)

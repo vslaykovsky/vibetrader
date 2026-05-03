@@ -265,6 +265,19 @@ def ensure_strategy_messages_count_column(eng: Engine) -> None:
             )
 
 
+def ensure_tickers_last_day_volume_usd_column(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    insp = inspect(eng)
+    if not insp.has_table("tickers"):
+        return
+    cols = {c["name"] for c in insp.get_columns("tickers")}
+    if "last_day_volume_usd" in cols:
+        return
+    with eng.begin() as conn:
+        conn.execute(text("ALTER TABLE tickers ADD COLUMN last_day_volume_usd FLOAT"))
+
+
 def ensure_live_runs_deployed_from_run_id_column(eng: Engine) -> None:
     from sqlalchemy import inspect
 
@@ -373,6 +386,7 @@ def init_database(eng: Engine) -> None:
     ensure_strategy_algorithm_column(eng)
     ensure_strategy_language_column(eng)
     ensure_strategy_messages_count_column(eng)
+    ensure_tickers_last_day_volume_usd_column(eng)
     ensure_live_runs_deployed_from_run_id_column(eng)
     ensure_live_runs_runner_backend_column(eng)
     ensure_live_runs_alpaca_account_id_column(eng)

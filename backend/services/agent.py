@@ -104,20 +104,22 @@ Strategy workflow
 * Before the first update_strategy, ask only for missing build/run details: ticker, scale, start/end dates, indicators, entry/exit, sizing, and parameters. If the user wants defaults, choose sensible defaults. If they supplied a complete spec, implement it.
 * update_strategy delegates implementation to the coding agent in the strategy workspace.
 * First update_strategy task: write English instructions with the full user spec because the coding agent may have no prior context. Resumed Codex thread: send a concise delta plus every new or changed requirement; omitted new details are lost.
-* After successful update_strategy, call run_backtest or run_hyperopt so outputs match the change.
+* For update_strategy tasks, ask for direct implementation of the requested behavior. Do not ask the coding agent to add alternatives, fallback behavior, broad catch-and-continue handlers, fabricated data, mocked results, or hidden invariant recovery; required invalid or missing inputs should fail with explicit errors.
+* For trainable update_strategy tasks, ask update_strategy to implement support for both exclusive params.json run_mode values, selected at process start: train or test. Do not ask the coding agent to create two active training/testing segments inside one strategy run. Train mode fits and emits trained_model_params, and must not trade. Test mode loads trained_model_params, trades or infers only after loading them, and must not train.
+* After successful update_strategy, refresh outputs. For ordinary strategies, call run_backtest or run_hyperopt. For trainable strategies, run train and test as separate run_backtest calls: first with run_mode="train" and the training date segment, then with run_mode="test" and the test date segment.
 * If the user only changes parameters (ticker, dates, thresholds, deposit, etc.), call run_backtest with parameters_json merged into params.json. Do not edit code, add a --params flag, or make strategy.py parse CLI params.
 * If a backtest has num_trades=0, say no trades were executed. Do not loosen signals unless code contradicts the user's rules or the user asks.
 
 Analysis and optimization
 * For EDA, market research, or charts without a tradable strategy, use update_strategy then run_backtest.
 * For parameter optimization, use run_hyperopt. Use parameters_hyperopt_json for study-only overrides and parameters_json for base simulation inputs.
-* If params.json contains run_mode, treat the strategy as trainable and run separate train and out-of-sample test backtests rather than one combined run.
+* If params.json contains run_mode, treat the strategy as trainable and run separate train and out-of-sample test backtests with run_mode/date overrides rather than one combined run.
 
 Canvas and data
 * The canvas shows latest run output: interactive price/indicator charts plus emitted panels. Users can pan, zoom, collapse sections, remove with "x", reorder by drag, and hover "?" for per-chart help; UI state is local to that run.
 * For hide/remove/reorder requests, explain the canvas controls; no code change is needed. For alignment/spacing requests, explain the layout is already rendered at its best and strategy code is unlikely to help. For more diagnostics, offer to add indicators, series, or panels via strategy output.
 * Market data: Alpaca for non-Russian markets, MOEX for Russian markets. Auto-selection is preferred when unsure: try Alpaca, then MOEX. Alpaca data starts in 2016; no pre-2016 data. Never use or suggest yfinance.
-* To discover available symbols, use list_tickers with a natural-language query. It can filter by ticker, provider (alpaca/moex), tags such as SNP500, and last_daily_volume.
+* To discover available symbols, use list_tickers with a natural-language query. It can filter by ticker, provider (alpaca/moex), tags such as SNP500, and last_day_volume_usd.
 * run_backtest refreshes backtest.json and metrics.json. run_hyperopt optimizes parameters, updates params.json with the best trial, then performs a final run.
 
 {{strategy_help}}"""
@@ -129,7 +131,22 @@ STRATEGY_UTILS_TEMPLATE = STRATEGIES_DIR / "utils.py"
 STRATEGY_PARAMS_TEMPLATE = STRATEGIES_DIR / "params.json"
 STRATEGY_HYPEROPT_TEMPLATE = STRATEGIES_DIR / "hyperopt.py"
 SIMULATE_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "simulate_strategy_v2.py"
-STRATEGY_CODE_AGENT_PREFIX = ""
+STRATEGY_CODE_AGENT_PREFIX = (
+    "Implement the requested strategy change directly.  Do not add "
+    "alternative behavior, fallback behavior, broad catch-and-continue handlers, fabricated "
+    "data, mocked results, or hidden invariant recovery. For trainable strategies like boosted trees and ANNs, implement "
+    "exactly one exclusive params.json run_mode per process: train or test. Train mode fits "
+    "and emits trained_model_params without trading; test mode loads trained_model_params, "
+    "trades or infers only after loading them, and must not train.\n\n"
+)
+
+
+def _strategy_codegen_task(task: str, codex_thread_id: str | None) -> str:
+    if _clean_codex_thread_id(codex_thread_id):
+        return task
+    return STRATEGY_CODE_AGENT_PREFIX + task
+
+
 UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
 RUN_BACKTEST_TOOL_NAME = "run_backtest"
 RUN_HYPEROPT_TOOL_NAME = "run_hyperopt"
@@ -548,7 +565,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": (
                             "Natural-language criteria for filtering or ranking tickers. "
-                            "Available fields are ticker, provider, tags, updated_at, and last_daily_volume. "
+                            "Available fields are ticker, provider, tags, updated_at, and last_day_volume_usd. "
                             "Known providers: alpaca, moex. Known tags: stock, crypto, SNP500."
                         ),
                     },
@@ -580,6 +597,12 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                             "English instructions for the coding agent. For a first task, include the full user spec "
                             "(rules, indicators, params, entry/exit, sizing, constraints, instruments, dates, edge cases). "
                             "On a resumed Codex thread, a delta is enough, but include every new or changed requirement. "
+                            "Request a direct implementation; do not request alternatives, fallback behavior, broad "
+                            "catch-and-continue handlers, fabricated data, mocked results, or hidden invariant recovery. "
+                            "For trainable strategies, ask for support for both exclusive params.json run_mode values, "
+                            "selected at process start: train or test. Do not ask the coding agent to create two active "
+                            "training/testing segments inside one strategy run; train and test date windows are applied "
+                            "later through separate run_backtest calls. "
                             "Do not include file paths or filenames; workspace layout is fixed."
                         ),
                     }
@@ -839,7 +862,7 @@ def _normalize_ticker_result_row(row: dict[str, Any]) -> dict[str, Any]:
                 out[key] = parsed
             else:
                 out[key] = value
-        elif key == "last_daily_volume" and value is not None:
+        elif key == "last_day_volume_usd" and value is not None:
             try:
                 out[key] = float(value)
             except (TypeError, ValueError):
@@ -881,10 +904,10 @@ def _generate_ticker_listing_sql(*, query: str, limit: int) -> str:
     providers, tags = _ticker_sql_prompt_vocabulary()
     system = (
         "Generate exactly one read-only SQL SELECT statement for listing market tickers. "
-        "Use only the table tickers with columns ticker, provider, tags, updated_at, last_daily_volume. "
+        "Use only the table tickers with columns ticker, provider, tags, updated_at, last_day_volume_usd. "
         f"The only possible provider values are: {', '.join(repr(v) for v in providers)}. "
         f"The only possible tags values are: {', '.join(repr(v) for v in tags)}. "
-        "Return columns useful to the user, usually ticker, provider, tags, last_daily_volume. "
+        "Return columns useful to the user, usually ticker, provider, tags, last_day_volume_usd. "
         "Do not use joins, CTEs, subqueries, comments, semicolons, bind parameters, DDL, or DML. "
         "Use LOWER(...) LIKE for text matching and CAST(tags AS TEXT) for tag matching. "
         "For stock requests, match LOWER(CAST(tags AS TEXT)) LIKE '%stock%'. "
@@ -892,7 +915,7 @@ def _generate_ticker_listing_sql(*, query: str, limit: int) -> str:
         "For S&P 500 or SNP500 requests, match CAST(tags AS TEXT) LIKE '%SNP500%'. "
         "For MOEX or Russian requests, filter provider = 'moex'. "
         "For Alpaca or US requests, filter provider = 'alpaca'. "
-        "For liquid, popular, or high-volume requests, order by last_daily_volume IS NULL, last_daily_volume DESC. "
+        "For liquid, popular, or high-volume requests, order by last_day_volume_usd IS NULL, last_day_volume_usd DESC. "
         f"Use SQL compatible with {dialect}. Include LIMIT {limit}. Return only SQL."
     )
     msg = ChatOpenRouter(model=TICKER_SQL_MODEL, request_timeout=60_000).invoke(
@@ -1324,7 +1347,7 @@ def run_update_strategy(
         on_progress("Updating strategy, this may take a few minutes…")
     existing_codex_thread_id = _clean_codex_thread_id(codex_thread_id)
     runner, codegen = _run_coding_agent_exec(
-        STRATEGY_CODE_AGENT_PREFIX + task,
+        _strategy_codegen_task(task, existing_codex_thread_id),
         root,
         codex_thread_id=existing_codex_thread_id,
     )

@@ -24,19 +24,19 @@ def test_execute_ticker_listing_sql_returns_limited_tickers():
                     ticker="AAPL",
                     provider="alpaca",
                     tags=["SNP500"],
-                    last_daily_volume=250.0,
+                    last_day_volume_usd=250.0,
                 ),
                 Ticker(
                     ticker="MSFT",
                     provider="alpaca",
                     tags=["SNP500"],
-                    last_daily_volume=200.0,
+                    last_day_volume_usd=200.0,
                 ),
                 Ticker(
                     ticker="SBER",
                     provider="moex",
                     tags=[],
-                    last_daily_volume=500.0,
+                    last_day_volume_usd=500.0,
                 ),
             ]
         )
@@ -45,10 +45,10 @@ def test_execute_ticker_listing_sql_returns_limited_tickers():
         session.close()
 
     sql = (
-        "SELECT ticker, provider, tags, last_daily_volume "
+        "SELECT ticker, provider, tags, last_day_volume_usd "
         "FROM tickers "
         "WHERE provider = 'alpaca' "
-        "ORDER BY last_daily_volume IS NULL, last_daily_volume DESC"
+        "ORDER BY last_day_volume_usd IS NULL, last_day_volume_usd DESC"
     )
     result = _execute_ticker_listing_sql(sql, limit=2, session_factory=Session)
 
@@ -61,13 +61,13 @@ def test_execute_ticker_listing_sql_returns_limited_tickers():
                 "ticker": "AAPL",
                 "provider": "alpaca",
                 "tags": ["SNP500"],
-                "last_daily_volume": 250.0,
+                "last_day_volume_usd": 250.0,
             },
             {
                 "ticker": "MSFT",
                 "provider": "alpaca",
                 "tags": ["SNP500"],
-                "last_daily_volume": 200.0,
+                "last_day_volume_usd": 200.0,
             },
         ],
         "tickers": ["AAPL", "MSFT"],

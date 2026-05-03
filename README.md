@@ -188,3 +188,10 @@ sudo usermod -aG docker $USER && newgrp docker
 PYTHONPATH=$(pwd)  python scripts/precache_alpaca_daily.py --timeframe 1d --workers 1 --years 10 --symbols-file ../snp500.txt
 
 PYTHONPATH=$(pwd)  python scripts/precache_alpaca_daily.py --provider moex --timeframe 1d --workers 1 --years 10 --moex-market shares
+
+Sync ticker metadata after daily candles are cached:
+
+```
+cd backend
+PYTHONPATH=$(pwd) python scripts/sync_tickers.py --moex-market shares
+```

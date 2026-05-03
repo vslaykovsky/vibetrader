@@ -7,7 +7,7 @@ from db.models import Base, Candle, CandleTimeframe, Ticker
 from scripts.sync_tickers import TickerRecord, _sync_tickers
 
 
-def test_sync_tickers_sets_tags_and_latest_daily_volume():
+def test_sync_tickers_sets_tags_and_last_day_volume_usd():
     eng = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(bind=eng)
     Session = sessionmaker(bind=eng, future=True)
@@ -59,7 +59,7 @@ def test_sync_tickers_sets_tags_and_latest_daily_volume():
 
     assert set(rows) == {("AAPL", "alpaca"), ("BTC/USD", "alpaca"), ("SBER", "moex")}
     assert rows[("AAPL", "alpaca")].tags == ["stock", "SNP500"]
-    assert rows[("AAPL", "alpaca")].last_daily_volume == 250.0
+    assert rows[("AAPL", "alpaca")].last_day_volume_usd == 625.0
     assert rows[("BTC/USD", "alpaca")].tags == ["crypto"]
-    assert rows[("BTC/USD", "alpaca")].last_daily_volume is None
+    assert rows[("BTC/USD", "alpaca")].last_day_volume_usd is None
     assert rows[("SBER", "moex")].tags == ["stock"]
