@@ -5,6 +5,23 @@
 export const MAX_CHART_DISPLAY_BARS = 1000;
 
 /**
+ * Merge bar rows by ``unixtime``, sort ascending, trim tail to ``maxBars``.
+ * @template {{ unixtime: number }} T
+ * @param {T[]} prev
+ * @param {T[]} next
+ * @param {number} maxBars
+ * @returns {T[]}
+ */
+export function mergeBars(prev, next, maxBars = null) {
+  const map = new Map();
+  for (const b of prev) map.set(b.unixtime, b);
+  for (const b of next) map.set(b.unixtime, b);
+  const out = [...map.values()].sort((a, b) => a.unixtime - b.unixtime);
+  if (maxBars != null && out.length > maxBars) return out.slice(-maxBars);
+  return out;
+}
+
+/**
  * Coerce LWC visible time range point (UTCTimestamp or BusinessDay) to unix seconds.
  * @param {unknown} t
  * @returns {number | null}

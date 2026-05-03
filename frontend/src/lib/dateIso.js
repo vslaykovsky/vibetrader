@@ -21,3 +21,11 @@ export function parseIsoDate(s) {
 export function startOfDay(d) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
+
+/**
+ * Unix seconds for ``YYYY-MM-DD`` at 12:00 UTC (simulation ``start_date`` temporal anchor).
+ * @param {string} isoDate
+ */
+export function startNoonUnix(isoDate) {
+  return Math.floor(new Date(`${isoDate}T12:00:00Z`).getTime() / 1000);
+}

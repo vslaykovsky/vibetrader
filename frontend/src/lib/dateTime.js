@@ -23,6 +23,15 @@ export function normalizeTimeZone(value, fallback = browserTimeZone()) {
   return isValidTimeZone(tz) ? tz : fallback;
 }
 
+/** Calendar date in UTC for API ``start_date`` / ``end_date`` bounds from unix seconds. */
+export function unixToIsoDateUTC(sec) {
+  const d = new Date(sec * 1000);
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 export function parseIsoInstant(value) {
   if (typeof value !== 'string') return null;
   let t = value.trim();

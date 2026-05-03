@@ -2,7 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { DateTimePickerModal } from './DateTimePickerModal.jsx';
 import { SimulationCharts } from './SimulationCharts.jsx';
 import { useTimeZone } from '../TimeZoneContext.jsx';
-import { formatChartTick, formatUnixDateTime } from '../lib/dateTime.js';
+import { mergeBars } from '../lib/chartHistory.js';
+import { startNoonUnix, toIsoDate } from '../lib/dateIso.js';
+import { formatChartTick, formatUnixDateTime, unixToIsoDateUTC } from '../lib/dateTime.js';
 import {
   bucketStart,
   DISPLAY_TF_OPTIONS,
@@ -40,33 +42,17 @@ const SPEED_OPTIONS = [
   { id: 'max', bps: 1_000_000, label: 'Max' },
 ];
 
-function isoDateLocal(d) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-function unixToIsoDateUTC(sec) {
-  const d = new Date(sec * 1000);
-  const yyyy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(d.getUTCDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-function startNoonUnix(isoDate) {
-  return Math.floor(new Date(`${isoDate}T12:00:00Z`).getTime() / 1000);
-}
-
-/** Sorted unique by ``unixtime`` (ascending). */
-function mergeBars(prev, next) {
-  const map = new Map();
-  for (const b of prev) map.set(b.unixtime, b);
-  for (const b of next) map.set(b.unixtime, b);
-  const out = [...map.values()].sort((a, b) => a.unixtime - b.unixtime);
-  if (out.length > MAX_OHLC_BARS) return out.slice(-MAX_OHLC_BARS);
-  return out;
+/**
+ * Wall-clock seconds so ``wantSec`` / ``tfSec`` bars are likely reachable from providers
+ * (intraday ≈6.5h trading per calendar day, weekends closed).
+ * @param {{ tfSec: number; wantSec: number; minIntradayPadSec?: number }} opts
+ */
+function displayBarsWindowSec({ tfSec, wantSec, minIntradayPadSec = 172800 }) {
+  const tradingFractionPerDay = tfSec >= 86400 ? 1 : Math.min(1, (6.5 * 3600) / 86400);
+  const weekendInflation = tfSec >= 86400 ? 1 : 7 / 5;
+  const inflatedSec = Math.ceil((wantSec / tradingFractionPerDay) * weekendInflation);
+  const minPadSec = tfSec >= 86400 ? 0 : minIntradayPadSec;
+  return Math.max(inflatedSec + minPadSec, wantSec);
 }
 
 export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToken }) {
@@ -250,12 +236,8 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     // (often deep in after-hours) and the provider would only return a handful
     // of sparse bars sprinkled across the closing minutes of multiple days.
     const want = LEFT_WINDOW_BARS + 1;
-    const tradingFractionPerDay = tfSec >= 86400 ? 1 : Math.min(1, (6.5 * 3600) / 86400);
-    const weekendInflation = tfSec >= 86400 ? 1 : 7 / 5;
     const wantSec = want * tfSec;
-    const inflatedSec = Math.ceil((wantSec / tradingFractionPerDay) * weekendInflation);
-    const minPadSec = tfSec >= 86400 ? 0 : 2 * 86400;
-    const padBack = Math.max(inflatedSec + minPadSec, wantSec);
+    const padBack = displayBarsWindowSec({ tfSec, wantSec, minIntradayPadSec: 2 * 86400 });
     // ``apiEnd`` anchors at the moment *just before* the previous bucket's end
     // (or anchorBucket + tfSec for the very first init); it bounds the search
     // and avoids landing on the next-bucket sub-bars.
@@ -358,12 +340,8 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
       // closed entirely, and holidays add further gaps. Use a min 2-day floor
       // so even widen=1 always crosses at least one full overnight close — this
       // unsticks 1m playback at the boundary of the trading session.
-      const tradingFractionPerDay = tfSec >= 86400 ? 1 : Math.min(1, (6.5 * 3600) / 86400);
-      const weekendInflation = tfSec >= 86400 ? 1 : 7 / 5;
       const wantSec = (chunkBars + 5) * tfSec + padSec;
-      const inflatedSec = Math.ceil((wantSec / tradingFractionPerDay) * weekendInflation);
-      const minPadSec = tfSec >= 86400 ? 0 : 2 * 86400;
-      const lookaheadSec = Math.max(inflatedSec + minPadSec, wantSec) * widen;
+      const lookaheadSec = displayBarsWindowSec({ tfSec, wantSec, minIntradayPadSec: 2 * 86400 }) * widen;
       const apiStart = unixToIsoDateUTC(Math.floor(lastOpen + 1));
       const apiEnd = unixToIsoDateUTC(Math.ceil(lastOpen + lookaheadSec));
       const seq = tfFetchSeqRef.current;
@@ -376,7 +354,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
           const known = new Set(prev.map((b) => b.unixtime));
           const fresh = fetched.filter((b) => !known.has(b.unixtime));
           if (fresh.length > 0) {
-            const merged = mergeBars(prev, fetched);
+            const merged = mergeBars(prev, fetched, MAX_OHLC_BARS);
             barsRef.current = merged;
             setBars(merged);
             prefetchEmptyStreakRef.current = 0;
@@ -514,15 +492,10 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
       // are fully closed. Inflate the wall-clock window so ``want`` bars are
       // actually reachable, but bound the inflation so daily/weekly TFs don't
       // pull in months of extra data for a small whitespace.
-      const tradingFractionPerDay = tfSec >= 86400 ? 1 : Math.min(1, (6.5 * 3600) / 86400);
-      const weekendInflation = tfSec >= 86400 ? 1 : 7 / 5;
       const wantSec = want * tfSec;
-      const inflatedSec = Math.ceil((wantSec / tradingFractionPerDay) * weekendInflation);
-      const minPadSec = tfSec >= 86400 ? 0 : 86400; // ensure apiStart < apiEnd
+      const depthSec = displayBarsWindowSec({ tfSec, wantSec, minIntradayPadSec: 86400 });
       const apiEnd = unixToIsoDateUTC(Math.floor(oldest - 1));
-      const apiStart = unixToIsoDateUTC(
-        Math.floor(oldest - Math.max(inflatedSec + minPadSec, wantSec)),
-      );
+      const apiStart = unixToIsoDateUTC(Math.floor(oldest - depthSec));
       historyInFlightRef.current = true;
       const seq = tfFetchSeqRef.current;
       const ac = new AbortController();
@@ -551,7 +524,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
             return;
           }
           const before = barsRef.current.length;
-          const merged = mergeBars(barsRef.current, trimmed);
+          const merged = mergeBars(barsRef.current, trimmed, MAX_OHLC_BARS);
           const added = merged.length - before;
           appendLogRef.current?.(
             `[history] +${added} bars (got=${fetched.length} kept=${trimmed.length} buf ${before}→${merged.length})`,
@@ -958,9 +931,8 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
   return (
     <div className="simulation-panel">
       <p className="simulation-intro muted">
-        Pick a <strong>Start</strong> date to prepare the session (backend <code>POST /simulation/init</code>); then press{' '}
-        <strong>Play</strong> to stream bars. Chart OHLC always comes from <code>GET /simulation/display_bars</code>.
-        Trades are streamed from <code>/simulation/stream</code>.
+        Pick a <strong>Start</strong> date to prepare the session; then press{' '}
+        <strong>Play</strong> to stream bars.
       </p>
       <div className="simulation-controls-row">
         <label className="simulation-field">
@@ -983,7 +955,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
             setDatePickerOpen(false);
           }}
           disabled={busy || initLoading}
-          maxDate={isoDateLocal(new Date())}
+          maxDate={toIsoDate(new Date())}
         />
         <label className="simulation-field">
           <span>Speed</span>
