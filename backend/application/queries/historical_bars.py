@@ -203,6 +203,7 @@ class HistoricalBarsQuery:
         provider: Optional[str] = None,
         asset_class: Optional[str] = None,
         drop_wide_spread_bars: bool = True,
+        force_refresh: bool = False,
     ) -> pd.DataFrame:
         timeframe = scale_to_timeframe(scale)
         start_s = start.isoformat()
@@ -232,85 +233,87 @@ class HistoricalBarsQuery:
             asset_class=asset,
         )
         now = time.monotonic()
-        with self._lock:
-            stale_keys = [k for k, e in self._cache.items() if e.expires_at <= now]
-            for k in stale_keys:
-                del self._cache[k]
-            hit = self._cache.get(key)
-            if hit is not None and hit.expires_at > now:
-                logger.info(
-                    "fetch cache hit (memory) ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s",
-                    key.ticker,
-                    key.scale,
-                    key.start,
-                    key.end,
-                    key.padding_days,
-                    provider if isinstance(provider, str) and provider.strip() else provider,
-                )
-                return hit.df
+        if not force_refresh:
+            with self._lock:
+                stale_keys = [k for k, e in self._cache.items() if e.expires_at <= now]
+                for k in stale_keys:
+                    del self._cache[k]
+                hit = self._cache.get(key)
+                if hit is not None and hit.expires_at > now:
+                    logger.info(
+                        "fetch cache hit (memory) ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s",
+                        key.ticker,
+                        key.scale,
+                        key.start,
+                        key.end,
+                        key.padding_days,
+                        provider if isinstance(provider, str) and provider.strip() else provider,
+                    )
+                    return hit.df
 
         # Postgres-backed candles cache. We only serve a DB hit if it fully covers the requested
         # range (including padding) to preserve warmup semantics.
-        try:
-            tf = _scale_to_candle_timeframe(key.scale)
-            padded_start = (
-                pd.Timestamp(key.start.isoformat()) - pd.Timedelta(days=int(key.padding_days))
-            ).date()
-            s_utc, e_utc = _date_bounds_utc(padded_start, key.end)
-            s_naive = s_utc.tz_convert(None).to_pydatetime()
-            e_naive = e_utc.tz_convert(None).to_pydatetime()
-
-            session = SessionLocal()
+        if not force_refresh:
             try:
-                cached_rows: list[Candle] = (
-                    session.query(Candle)
-                    .filter(Candle.ticker == key.ticker, Candle.timeframe == tf)
-                    .filter(Candle.timestamp >= s_naive, Candle.timestamp <= e_naive)
-                    .order_by(Candle.timestamp.asc())
-                    .all()
-                )
-            finally:
-                session.close()
+                tf = _scale_to_candle_timeframe(key.scale)
+                padded_start = (
+                    pd.Timestamp(key.start.isoformat()) - pd.Timedelta(days=int(key.padding_days))
+                ).date()
+                s_utc, e_utc = _date_bounds_utc(padded_start, key.end)
+                s_naive = s_utc.tz_convert(None).to_pydatetime()
+                e_naive = e_utc.tz_convert(None).to_pydatetime()
 
-            if cached_rows:
-                min_ts = pd.Timestamp(cached_rows[0].timestamp).tz_convert("UTC")
-                max_ts = pd.Timestamp(cached_rows[-1].timestamp).tz_convert("UTC")
-                if min_ts <= s_utc and max_ts >= e_utc:
-                    logger.info(
-                        "fetch cache hit (db_full) ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s rows=%s",
-                        key.ticker,
-                        key.scale,
-                        padded_start,
-                        key.end,
-                        key.padding_days,
-                        provider if isinstance(provider, str) and provider.strip() else provider,
-                        len(cached_rows),
+                session = SessionLocal()
+                try:
+                    cached_rows: list[Candle] = (
+                        session.query(Candle)
+                        .filter(Candle.ticker == key.ticker, Candle.timeframe == tf)
+                        .filter(Candle.timestamp >= s_naive, Candle.timestamp <= e_naive)
+                        .order_by(Candle.timestamp.asc())
+                        .all()
                     )
-                    df_hit = _df_from_candles(cached_rows)
-                    with self._lock:
-                        self._cache[key] = _CacheEntry(
-                            df=df_hit, expires_at=time.monotonic() + self._cache_ttl
+                finally:
+                    session.close()
+
+                if cached_rows:
+                    min_ts = pd.Timestamp(cached_rows[0].timestamp).tz_convert("UTC")
+                    max_ts = pd.Timestamp(cached_rows[-1].timestamp).tz_convert("UTC")
+                    if min_ts <= s_utc and max_ts >= e_utc:
+                        logger.info(
+                            "fetch cache hit (db_full) ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s rows=%s",
+                            key.ticker,
+                            key.scale,
+                            padded_start,
+                            key.end,
+                            key.padding_days,
+                            provider if isinstance(provider, str) and provider.strip() else provider,
+                            len(cached_rows),
                         )
-                    return df_hit
-                if _covers_all_whole_weeks(cached_rows, start=padded_start, end=key.end):
-                    logger.info(
-                        "fetch cache hit (db_weekly) ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s rows=%s",
-                        key.ticker,
-                        key.scale,
-                        padded_start,
-                        key.end,
-                        key.padding_days,
-                        provider if isinstance(provider, str) and provider.strip() else provider,
-                        len(cached_rows),
-                    )
-                    df_hit = _df_from_candles(cached_rows)
-                    with self._lock:
-                        self._cache[key] = _CacheEntry(
-                            df=df_hit, expires_at=time.monotonic() + self._cache_ttl
+                        df_hit = _df_from_candles(cached_rows)
+                        with self._lock:
+                            self._cache[key] = _CacheEntry(
+                                df=df_hit, expires_at=time.monotonic() + self._cache_ttl
+                            )
+                        return df_hit
+                    if _covers_all_whole_weeks(cached_rows, start=padded_start, end=key.end):
+                        logger.info(
+                            "fetch cache hit (db_weekly) ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s rows=%s",
+                            key.ticker,
+                            key.scale,
+                            padded_start,
+                            key.end,
+                            key.padding_days,
+                            provider if isinstance(provider, str) and provider.strip() else provider,
+                            len(cached_rows),
                         )
-                    return df_hit
-        except Exception:
-            logger.exception("candles cache read failed ticker=%s scale=%s", key.ticker, key.scale)
+                        df_hit = _df_from_candles(cached_rows)
+                        with self._lock:
+                            self._cache[key] = _CacheEntry(
+                                df=df_hit, expires_at=time.monotonic() + self._cache_ttl
+                            )
+                        return df_hit
+            except Exception:
+                logger.exception("candles cache read failed ticker=%s scale=%s", key.ticker, key.scale)
         if asset == "crypto":
             df = utils.fetch_crypto_bars(
                 ticker=key.ticker,
@@ -380,6 +383,7 @@ class HistoricalBarsQuery:
         max_bars_per_chunk: int = CHUNK_BAR_BUDGET,
         provider: Optional[str] = None,
         asset_class: Optional[str] = None,
+        force_refresh: bool = False,
     ) -> tuple[pd.DataFrame, int]:
         chunks = plan_display_bars_fetch_chunks(
             start, end, scale, max_bars_per_chunk=max_bars_per_chunk
@@ -407,6 +411,7 @@ class HistoricalBarsQuery:
                 padding_days=pad,
                 provider=provider,
                 asset_class=asset_class,
+                force_refresh=force_refresh,
             )
             if part is not None and not part.empty:
                 frames.append(part)

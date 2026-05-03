@@ -13,7 +13,7 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
-from alpaca.data.enums import CryptoFeed
+from alpaca.data.enums import Adjustment, CryptoFeed
 from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
 from alpaca.data.requests import CryptoBarsRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -30,6 +30,7 @@ PARAMS_HYPEROPT_PATH = WORKSPACE_DIR / "params-hyperopt.json"
 AVAILABLE_PROVIDERS = {"auto", "alpaca", "moex"}
 
 _ALPACA_CRYPTO_BAR_CHUNK_BUDGET = 100_000
+ALPACA_STOCK_ADJUSTMENT = Adjustment.ALL
 
 
 class LwcMarker(BaseModel):
@@ -405,6 +406,7 @@ def _fetch_alpaca_bars(
         start=start,
         end=end,
         timeframe=timeframe,
+        adjustment=ALPACA_STOCK_ADJUSTMENT,
     )
     bars = client.get_stock_bars(request)
     df = bars.df if hasattr(bars, "df") else pd.DataFrame(bars)

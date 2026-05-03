@@ -5,12 +5,15 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
 import dotenv
+from moexalgo import Market
+from moexalgo import session as moex_session
 
 dotenv.load_dotenv()
 
@@ -43,6 +46,10 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _normalize_symbol(value: object) -> str:
+    return str(value or "").strip().upper()
+
+
 def _compute_window(*, years: int, end: date | None) -> tuple[date, date]:
     end_d = end or (date.today() - timedelta(days=1))
     start_d = end_d - timedelta(days=int(years) * 365)
@@ -69,7 +76,7 @@ def _list_alpaca_symbols(*, include_otc: bool, asset_class: str) -> list[str]:
             continue
         if asset != "crypto" and (not include_otc) and str(getattr(a, "exchange", "")).upper() == "OTC":
             continue
-        s = str(symbol).strip().upper()
+        s = _normalize_symbol(symbol)
         if asset == "crypto":
             s = utils.normalize_crypto_symbol(s)
         syms.append(s)
@@ -79,15 +86,33 @@ def _list_alpaca_symbols(*, include_otc: bool, asset_class: str) -> list[str]:
     return syms
 
 
+def _list_moex_symbols(*, markets: Sequence[str]) -> list[str]:
+    moex_session.TOKEN = _require_env("MOEX_API_KEY")
+    resolved_markets = [str(m or "").strip() for m in markets if str(m or "").strip()]
+    symbols: set[str] = set()
+    for market in resolved_markets:
+        data = Market(market).tickers("SECID")
+        rows = data.to_dict("records") if hasattr(data, "to_dict") else list(data)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            symbol = _normalize_symbol(row.get("ticker") or row.get("SECID") or row.get("secid"))
+            if symbol:
+                symbols.add(symbol)
+    out = sorted(symbols)
+    logger.info("found %s MOEX symbols markets=%s", len(out), ",".join(resolved_markets))
+    return out
+
+
 def _read_symbols_file(path: str | Path) -> list[str]:
     p = Path(path).expanduser().resolve()
     raw = p.read_text(encoding="utf-8")
     out: list[str] = []
     for line in raw.splitlines():
-        s = (line or "").strip()
+        s = _normalize_symbol(line)
         if not s or s.startswith("#"):
             continue
-        out.append(s.upper())
+        out.append(s)
     return sorted({s for s in out if s})
 
 
@@ -111,6 +136,7 @@ def _precache_one(job: _Job, *, provider: str, sleep_seconds: float) -> tuple[st
         provider=provider,
         asset_class=job.asset_class,
         drop_wide_spread_bars=False,
+        force_refresh=True,
     )
     n = 0 if df is None else int(getattr(df, "shape", [0])[0] or 0)
     return job.symbol, n
@@ -118,7 +144,7 @@ def _precache_one(job: _Job, *, provider: str, sleep_seconds: float) -> tuple[st
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        description="Precache last N years of candles for all Alpaca tickers into the DB-backed candles cache."
+        description="Precache last N years of candles into the DB-backed candles cache."
     )
     parser.add_argument("--years", type=int, default=10)
     parser.add_argument("--end", default="", help="YYYY-MM-DD (default: yesterday)")
@@ -132,7 +158,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--sleep-seconds", type=float, default=0.0, help="Optional per-ticker delay")
     parser.add_argument("--include-otc", action="store_true")
-    parser.add_argument("--provider", default="alpaca", choices=["alpaca", "auto"])
+    parser.add_argument("--provider", default="alpaca", choices=["alpaca", "auto", "moex"])
     parser.add_argument(
         "--asset-class",
         default="us_equity",
@@ -149,6 +175,12 @@ def main(argv: list[str]) -> int:
         default="",
         help="Optional path to write the resolved symbol list.",
     )
+    parser.add_argument(
+        "--moex-market",
+        action="append",
+        default=[],
+        help="MOEX market alias to download; repeatable. Defaults to shares.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -161,10 +193,15 @@ def main(argv: list[str]) -> int:
     start_d, end_d = _compute_window(years=int(args.years), end=end)
     scale = str(args.timeframe).strip().lower()
     asset_class = str(args.asset_class).strip().lower() or "us_equity"
+    provider = str(args.provider).strip().lower()
+    if provider == "moex" and asset_class != "us_equity":
+        parser.error("--provider moex requires --asset-class us_equity")
     if str(args.symbols_file).strip():
         symbols = _read_symbols_file(args.symbols_file)
         if asset_class == "crypto":
             symbols = [utils.normalize_crypto_symbol(s) for s in symbols]
+    elif provider == "moex":
+        symbols = _list_moex_symbols(markets=args.moex_market or ["shares"])
     else:
         symbols = _list_alpaca_symbols(include_otc=bool(args.include_otc), asset_class=asset_class)
 
@@ -175,18 +212,21 @@ def main(argv: list[str]) -> int:
         _write_symbols_file(args.symbols_out, symbols)
 
     logger.info(
-        "precache plan symbols=%s scale=%s window=%s..%s workers=%s provider=%s asset_class=%s dry_run=%s",
+        "precache plan symbols=%s scale=%s window=%s..%s workers=%s provider=%s "
+        "asset_class=%s stock_adjustment=%s force_refresh=%s dry_run=%s",
         len(symbols),
         scale,
         start_d.isoformat(),
         end_d.isoformat(),
         int(args.workers),
-        args.provider,
+        provider,
         asset_class,
+        utils.ALPACA_STOCK_ADJUSTMENT.value,
+        True,
         bool(args.dry_run),
     )
     if not symbols:
-        logger.warning("no symbols returned from Alpaca assets endpoint")
+        logger.warning("no symbols resolved for provider=%s", provider)
         return 0
 
     if args.dry_run:
@@ -195,6 +235,9 @@ def main(argv: list[str]) -> int:
         if len(symbols) > 20:
             logger.info("dry-run ... and %s more", len(symbols) - 20)
         return 0
+
+    if provider == "moex":
+        _require_env("MOEX_API_KEY")
 
     jobs = [
         _Job(symbol=s, scale=scale, start=start_d, end=end_d, asset_class=asset_class) for s in symbols
@@ -209,7 +252,7 @@ def main(argv: list[str]) -> int:
             ex.submit(
                 _precache_one,
                 j,
-                provider=str(args.provider),
+                provider=provider,
                 sleep_seconds=float(args.sleep_seconds),
             )
             for j in jobs
