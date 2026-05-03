@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import calendar
 import logging
 import os
 import sys
@@ -50,9 +51,20 @@ def _normalize_symbol(value: object) -> str:
     return str(value or "").strip().upper()
 
 
-def _compute_window(*, years: int, end: date | None) -> tuple[date, date]:
+def _subtract_months(value: date, months: int) -> date:
+    month_index = value.year * 12 + value.month - 1 - int(months)
+    year = month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def _compute_window(*, years: int | None, months: int | None, end: date | None) -> tuple[date, date]:
     end_d = end or (date.today() - timedelta(days=1))
-    start_d = end_d - timedelta(days=int(years) * 365)
+    if months is not None:
+        start_d = _subtract_months(end_d, int(months))
+    else:
+        start_d = end_d - timedelta(days=int(years or 10) * 365)
     return start_d, end_d
 
 
@@ -116,6 +128,10 @@ def _read_symbols_file(path: str | Path) -> list[str]:
     return sorted({s for s in out if s})
 
 
+def _normalize_symbols(values: Sequence[object]) -> list[str]:
+    return sorted({s for value in values if (s := _normalize_symbol(value))})
+
+
 def _write_symbols_file(path: str | Path, symbols: list[str]) -> None:
     p = Path(path).expanduser().resolve()
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -146,7 +162,8 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="Precache last N years of candles into the DB-backed candles cache."
     )
-    parser.add_argument("--years", type=int, default=10)
+    parser.add_argument("--years", type=int, default=None)
+    parser.add_argument("--months", type=int, default=None)
     parser.add_argument("--end", default="", help="YYYY-MM-DD (default: yesterday)")
     parser.add_argument(
         "--timeframe",
@@ -171,6 +188,12 @@ def main(argv: list[str]) -> int:
         help="Optional newline-delimited symbols file (skips Alpaca assets listing).",
     )
     parser.add_argument(
+        "--symbols",
+        nargs="+",
+        default=[],
+        help="Optional symbols to precache (skips Alpaca assets listing).",
+    )
+    parser.add_argument(
         "--symbols-out",
         default="",
         help="Optional path to write the resolved symbol list.",
@@ -190,14 +213,20 @@ def main(argv: list[str]) -> int:
     )
 
     end = date.fromisoformat(args.end) if str(args.end).strip() else None
-    start_d, end_d = _compute_window(years=int(args.years), end=end)
+    if args.years is not None and args.months is not None:
+        parser.error("--months cannot be used with --years")
+    start_d, end_d = _compute_window(years=args.years, months=args.months, end=end)
     scale = str(args.timeframe).strip().lower()
     asset_class = str(args.asset_class).strip().lower() or "us_equity"
     provider = str(args.provider).strip().lower()
     if provider == "moex" and asset_class != "us_equity":
         parser.error("--provider moex requires --asset-class us_equity")
-    if str(args.symbols_file).strip():
-        symbols = _read_symbols_file(args.symbols_file)
+    requested_symbols = _normalize_symbols(args.symbols)
+    if str(args.symbols_file).strip() or requested_symbols:
+        symbols = requested_symbols
+        if str(args.symbols_file).strip():
+            symbols.extend(_read_symbols_file(args.symbols_file))
+            symbols = sorted({s for s in symbols if s})
         if asset_class == "crypto":
             symbols = [utils.normalize_crypto_symbol(s) for s in symbols]
     elif provider == "moex":

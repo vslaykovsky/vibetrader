@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
 
+import pytest
+from alpaca.trading.enums import AssetClass
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from db.models import Base, Candle, CandleTimeframe, Ticker
-from scripts.sync_tickers import TickerRecord, _sync_tickers
+from scripts.sync_tickers import TickerRecord, _alpaca_asset_classes, _include_moex_for_asset_class, _sync_tickers
 
 
 def test_sync_tickers_sets_tags_and_last_day_volume_usd():
@@ -63,3 +65,21 @@ def test_sync_tickers_sets_tags_and_last_day_volume_usd():
     assert rows[("BTC/USD", "alpaca")].tags == ["crypto"]
     assert rows[("BTC/USD", "alpaca")].last_day_volume_usd is None
     assert rows[("SBER", "moex")].tags == ["stock"]
+
+
+def test_alpaca_asset_classes_filters_requested_assets():
+    assert _alpaca_asset_classes("all") == (AssetClass.US_EQUITY, AssetClass.CRYPTO)
+    assert _alpaca_asset_classes("us_equity") == (AssetClass.US_EQUITY,)
+    assert _alpaca_asset_classes("crypto") == (AssetClass.CRYPTO,)
+
+    with pytest.raises(ValueError, match="asset_class"):
+        _alpaca_asset_classes("forex")
+
+
+def test_include_moex_for_asset_class_skips_crypto():
+    assert _include_moex_for_asset_class("all") is True
+    assert _include_moex_for_asset_class("us_equity") is True
+    assert _include_moex_for_asset_class("crypto") is False
+
+    with pytest.raises(ValueError, match="asset_class"):
+        _include_moex_for_asset_class("forex")

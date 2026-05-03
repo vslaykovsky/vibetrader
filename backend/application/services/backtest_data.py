@@ -13,8 +13,9 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
-from alpaca.data.enums import Adjustment, CryptoFeed
+from alpaca.data.enums import Adjustment
 from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
+from alpaca.data.models import BarSet
 from alpaca.data.requests import CryptoBarsRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
@@ -338,6 +339,25 @@ def _alpaca_keys() -> tuple[str, str]:
     return api_key, secret_key
 
 
+def _alpaca_crypto_feed_locs() -> tuple[str, ...]:
+    raw = (
+        os.environ.get("ALPACA_CRYPTO_FEED_LOC")
+        or os.environ.get("ALPACA_CRYPTO_LOC")
+        or "us-1,us"
+    )
+    locs = tuple(dict.fromkeys(v.strip().lower() for v in raw.split(",") if v.strip()))
+    valid = {"us", "us-1", "eu-1", "bs-1"}
+    invalid = [loc for loc in locs if loc not in valid]
+    if invalid:
+        raise RuntimeError(
+            "ALPACA_CRYPTO_FEED_LOC must contain only: "
+            f"{', '.join(sorted(valid))}; got {', '.join(invalid)}"
+        )
+    if not locs:
+        raise RuntimeError("ALPACA_CRYPTO_FEED_LOC must not be empty")
+    return locs
+
+
 def _moex_keys() -> str:
     api_key = (os.environ.get("MOEX_API_KEY") or "").strip()
     if not api_key:
@@ -508,6 +528,8 @@ def _crypto_largest_chunk_end_exclusive(
 
 def _alpaca_crypto_barset_to_ohlcv(barset: Any, symbol: str) -> pd.DataFrame:
     df = barset.df.copy()
+    if df.empty:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
     if isinstance(df.index, pd.MultiIndex):
         df = df.reset_index()
         if "timestamp" in df.columns:
@@ -518,6 +540,8 @@ def _alpaca_crypto_barset_to_ohlcv(barset: Any, symbol: str) -> pd.DataFrame:
         df = df.rename(columns={"timestamp": "time"})
     if "symbol" in df.columns:
         df = df[df["symbol"] == symbol].copy()
+        if df.empty:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
     if "time" not in df.columns:
         df = df.reset_index().rename(columns={df.index.name or "index": "time"})
     df["time"] = pd.to_datetime(df["time"], utc=True)
@@ -547,8 +571,28 @@ def _fetch_alpaca_crypto_bars_one_window(
         end=end_exclusive.to_pydatetime(),
         timeframe=timeframe,
     )
-    barset = client.get_crypto_bars(request, feed=CryptoFeed.US)
-    return _alpaca_crypto_barset_to_ohlcv(barset, symbol)
+    errors: list[str] = []
+    for loc in _alpaca_crypto_feed_locs():
+        try:
+            raw_bars = client._get_marketdata(
+                path=f"/crypto/{loc}/bars",
+                params=request.to_request_fields(),
+                page_size=10_000,
+            )
+        except Exception as exc:
+            if _is_http_429_exception(exc):
+                raise
+            errors.append(f"{loc}: {exc}")
+            continue
+        out = _alpaca_crypto_barset_to_ohlcv(BarSet(raw_bars), symbol)
+        if not out.empty:
+            return out
+    if errors:
+        raise RuntimeError(
+            f"No market data returned from Alpaca crypto locations for {symbol}: "
+            + "; ".join(errors)
+        )
+    return pd.DataFrame()
 
 
 @retry(

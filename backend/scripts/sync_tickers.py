@@ -38,6 +38,9 @@ _PROVIDER_MOEX = "moex"
 _SNP500_TAG = "SNP500"
 _STOCK_TAG = "stock"
 _CRYPTO_TAG = "crypto"
+_ASSET_CLASS_ALL = "all"
+_ASSET_CLASS_US_EQUITY = "us_equity"
+_ASSET_CLASS_CRYPTO = "crypto"
 
 
 @dataclass(frozen=True, order=True)
@@ -103,17 +106,26 @@ def _list_alpaca_symbols(*, include_otc: bool, asset_class: AssetClass) -> list[
     return sorted(symbols)
 
 
-def _list_alpaca_records(*, include_otc: bool) -> list[TickerRecord]:
-    stock_symbols = _list_alpaca_symbols(include_otc=include_otc, asset_class=AssetClass.US_EQUITY)
-    crypto_symbols = _list_alpaca_symbols(include_otc=include_otc, asset_class=AssetClass.CRYPTO)
-    records = [
-        TickerRecord(ticker=s, provider=_PROVIDER_ALPACA, tags=(_STOCK_TAG,))
-        for s in stock_symbols
-    ]
-    records.extend(
-        TickerRecord(ticker=s, provider=_PROVIDER_ALPACA, tags=(_CRYPTO_TAG,))
-        for s in crypto_symbols
-    )
+def _alpaca_asset_classes(asset_class: str) -> tuple[AssetClass, ...]:
+    value = str(asset_class or "").strip().lower() or _ASSET_CLASS_ALL
+    if value == _ASSET_CLASS_ALL:
+        return (AssetClass.US_EQUITY, AssetClass.CRYPTO)
+    if value == _ASSET_CLASS_US_EQUITY:
+        return (AssetClass.US_EQUITY,)
+    if value == _ASSET_CLASS_CRYPTO:
+        return (AssetClass.CRYPTO,)
+    raise ValueError("asset_class must be one of: all, us_equity, crypto")
+
+
+def _list_alpaca_records(*, include_otc: bool, asset_class: str = _ASSET_CLASS_ALL) -> list[TickerRecord]:
+    records: list[TickerRecord] = []
+    for cls in _alpaca_asset_classes(asset_class):
+        symbols = _list_alpaca_symbols(include_otc=include_otc, asset_class=cls)
+        tag = _CRYPTO_TAG if cls == AssetClass.CRYPTO else _STOCK_TAG
+        records.extend(
+            TickerRecord(ticker=s, provider=_PROVIDER_ALPACA, tags=(tag,))
+            for s in symbols
+        )
     return sorted(records)
 
 
@@ -143,6 +155,13 @@ def _list_moex_records(markets: Sequence[str]) -> list[TickerRecord]:
         TickerRecord(ticker=s, provider=_PROVIDER_MOEX, tags=(_STOCK_TAG,))
         for s in _list_moex_symbols(markets)
     ]
+
+
+def _include_moex_for_asset_class(asset_class: str) -> bool:
+    value = str(asset_class or "").strip().lower() or _ASSET_CLASS_ALL
+    if value not in {_ASSET_CLASS_ALL, _ASSET_CLASS_US_EQUITY, _ASSET_CLASS_CRYPTO}:
+        raise ValueError("asset_class must be one of: all, us_equity, crypto")
+    return value in {_ASSET_CLASS_ALL, _ASSET_CLASS_US_EQUITY}
 
 
 def _chunked(values: Sequence[str], size: int) -> Iterable[Sequence[str]]:
@@ -242,6 +261,12 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--skip-alpaca", action="store_true")
     parser.add_argument("--skip-moex", action="store_true")
     parser.add_argument(
+        "--asset-class",
+        default=_ASSET_CLASS_ALL,
+        choices=[_ASSET_CLASS_ALL, _ASSET_CLASS_US_EQUITY, _ASSET_CLASS_CRYPTO],
+        help="Assets to sync. crypto syncs Alpaca crypto only.",
+    )
+    parser.add_argument(
         "--moex-market",
         action="append",
         default=[],
@@ -257,14 +282,18 @@ def main(argv: list[str]) -> int:
 
     snp500_symbols = _read_symbols_file(args.snp500_file)
     moex_markets = args.moex_market or ["shares"]
+    asset_class = str(args.asset_class).strip().lower() or _ASSET_CLASS_ALL
     records: list[TickerRecord] = []
 
     if not args.skip_alpaca:
-        alpaca_records = _list_alpaca_records(include_otc=bool(args.include_otc))
+        alpaca_records = _list_alpaca_records(
+            include_otc=bool(args.include_otc),
+            asset_class=asset_class,
+        )
         records.extend(alpaca_records)
         logger.info("downloaded alpaca tickers=%s", len(alpaca_records))
 
-    if not args.skip_moex:
+    if not args.skip_moex and _include_moex_for_asset_class(asset_class):
         moex_records = _list_moex_records(moex_markets)
         records.extend(moex_records)
         logger.info("downloaded moex tickers=%s markets=%s", len(moex_records), ",".join(moex_markets))
