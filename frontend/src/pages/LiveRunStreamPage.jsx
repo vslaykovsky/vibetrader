@@ -115,6 +115,7 @@ function liveAlpacaOrderHref(t) {
 }
 
 function fmtTradeNumber(v) {
+  if (v == null || v === '') return '—';
   const n = Number(v);
   if (!Number.isFinite(n)) return '—';
   return n.toLocaleString('en-US', { maximumFractionDigits: 6 });

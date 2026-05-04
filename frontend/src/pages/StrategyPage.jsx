@@ -2393,7 +2393,7 @@ export function StrategyPage() {
                     try {
                       const body = {
                         thread_id: tid,
-                        enable_trading: false,
+                        enable_trading: true,
                         strategy_id: rid,
                       };
                       if (deployTradingConfigured && String(deploySelectedAccountId || '').trim()) {
