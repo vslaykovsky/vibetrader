@@ -23,7 +23,6 @@ export function TradingSettingsPage() {
   const [newLabel, setNewLabel] = useState('');
   const [newApiKey, setNewApiKey] = useState('');
   const [newSecretKey, setNewSecretKey] = useState('');
-  const [newIsLive, setNewIsLive] = useState(false);
   const [timezoneInput, setTimezoneInput] = useState(timeZone || browserTimeZone());
   const timezoneOptions = supportedTimeZones();
   const credentialsReady = accounts.some((a) => a?.has_alpaca_api_key && a?.has_alpaca_secret_key);
@@ -120,7 +119,6 @@ export function TradingSettingsPage() {
           label: labelValue,
           alpaca_api_key: apiKeyValue,
           alpaca_secret_key: secretValue,
-          is_live: newIsLive,
         }),
       });
       const payload = await res.json().catch(() => ({}));
@@ -128,7 +126,6 @@ export function TradingSettingsPage() {
       setNewLabel('');
       setNewApiKey('');
       setNewSecretKey('');
-      setNewIsLive(false);
       setOkMsg('Alpaca account added.');
       await load();
     } catch (e) {
@@ -268,7 +265,10 @@ export function TradingSettingsPage() {
                   </span>
                   <div>
                     <h3>Alpaca accounts</h3>
-                    <p>Save a label, API key, and secret for each Alpaca account you want to deploy to.</p>
+                    <p>
+                      Save a label, API key, and secret for each Alpaca account you want to deploy to. Account type is
+                      detected automatically.
+                    </p>
                   </div>
                 </div>
                 <div className="settings-account-area">
@@ -344,23 +344,12 @@ export function TradingSettingsPage() {
                           placeholder="Hidden after saving"
                         />
                       </label>
-                      <div className="settings-account-type" role="group" aria-label="Account type">
-                        <button
-                          type="button"
-                          className={!newIsLive ? 'settings-type-btn settings-type-btn--active' : 'settings-type-btn'}
-                          onClick={() => setNewIsLive(false)}
-                        >
-                          Paper
-                        </button>
-                        <button
-                          type="button"
-                          className={newIsLive ? 'settings-type-btn settings-type-btn--active' : 'settings-type-btn'}
-                          onClick={() => setNewIsLive(true)}
-                        >
-                          Live
-                        </button>
-                      </div>
-                      <button type="button" className="dashboard-btn-ghost settings-add-btn" disabled={saving} onClick={addAccount}>
+                      <button
+                        type="button"
+                        className="dashboard-btn-ghost settings-add-btn"
+                        disabled={saving}
+                        onClick={addAccount}
+                      >
                         Add
                       </button>
                     </div>

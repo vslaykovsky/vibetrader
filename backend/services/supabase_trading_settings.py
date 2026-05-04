@@ -12,6 +12,11 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+_ALPACA_ACCOUNT_ENDPOINTS: tuple[tuple[bool, str], ...] = (
+    (False, "https://paper-api.alpaca.markets/v2/account"),
+    (True, "https://api.alpaca.markets/v2/account"),
+)
+
 
 def mask_secret_tail(value: str, *, tail: int = 4) -> str:
     s = (value or "").strip()
@@ -86,6 +91,64 @@ def _post(path: str, body: Any) -> requests.Response:
 def _delete(path_qs: str) -> requests.Response:
     base = _supabase_url()
     return requests.delete(f"{base}/rest/v1/{path_qs}", headers=_headers(), timeout=15)
+
+
+def _alpaca_account_endpoint_authenticates(
+    url: str,
+    *,
+    alpaca_api_key: str,
+    alpaca_secret_key: str,
+) -> tuple[bool, int, str]:
+    try:
+        r = requests.get(
+            url,
+            headers={
+                "APCA-API-KEY-ID": alpaca_api_key,
+                "APCA-API-SECRET-KEY": alpaca_secret_key,
+                "Accept": "application/json",
+            },
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        return False, 0, str(exc)
+    if r.status_code == 200:
+        return True, r.status_code, ""
+    return False, r.status_code, ""
+
+
+def detect_alpaca_account_is_live(
+    *,
+    alpaca_api_key: str,
+    alpaca_secret_key: str,
+) -> tuple[bool | None, str]:
+    ak = (alpaca_api_key or "").strip()
+    sk = (alpaca_secret_key or "").strip()
+    if not ak or not sk:
+        return None, "Alpaca API key and secret are required"
+
+    matches: list[bool] = []
+    failures: list[str] = []
+    for is_live, url in _ALPACA_ACCOUNT_ENDPOINTS:
+        ok, status_code, err = _alpaca_account_endpoint_authenticates(
+            url,
+            alpaca_api_key=ak,
+            alpaca_secret_key=sk,
+        )
+        if ok:
+            matches.append(is_live)
+            continue
+        label = "live" if is_live else "paper"
+        if status_code:
+            failures.append(f"{label} HTTP {status_code}")
+        elif err:
+            failures.append(f"{label} request failed")
+
+    if len(matches) == 1:
+        return matches[0], ""
+    if len(matches) > 1:
+        return None, "Alpaca credentials authenticated against both paper and live APIs"
+    detail = f" ({', '.join(failures)})" if failures else ""
+    return None, f"Alpaca credentials did not authenticate against paper or live trading APIs{detail}"
 
 
 def _account_select(*, include_credentials: bool = False) -> str:
@@ -218,7 +281,6 @@ def insert_alpaca_account(
     label: str,
     alpaca_api_key: str,
     alpaca_secret_key: str,
-    is_live: bool,
 ) -> tuple[dict[str, Any] | None, str]:
     uid = (user_id or "").strip()
     if not uid or not service_role_configured():
@@ -230,13 +292,19 @@ def insert_alpaca_account(
         return None, "Account label is required"
     if not ak or not sk:
         return None, "Alpaca API key and secret are required"
+    detected_is_live, detect_err = detect_alpaca_account_is_live(
+        alpaca_api_key=ak,
+        alpaca_secret_key=sk,
+    )
+    if detect_err:
+        return None, detect_err
     now_iso = datetime.now(timezone.utc).isoformat()
     row = {
         "user_id": uid,
         "label": lab,
         "alpaca_api_key": ak,
         "alpaca_secret_key": sk,
-        "is_live": bool(is_live),
+        "is_live": bool(detected_is_live),
         "updated_at": now_iso,
     }
     r = _post("alpaca_accounts", row)
@@ -257,13 +325,12 @@ def update_alpaca_account(
     label: str | None = None,
     alpaca_api_key: str | None = None,
     alpaca_secret_key: str | None = None,
-    is_live: bool | None = None,
 ) -> tuple[bool, str]:
     uid = (user_id or "").strip()
     aid = (account_id or "").strip()
     if not uid or not aid or not service_role_configured():
         return False, "Trading settings are not configured on the server"
-    if label is None and alpaca_api_key is None and alpaca_secret_key is None and is_live is None:
+    if label is None and alpaca_api_key is None and alpaca_secret_key is None:
         return False, "No fields to update"
     body: dict[str, Any] = {"updated_at": datetime.now(timezone.utc).isoformat()}
     if label is not None:
@@ -272,8 +339,27 @@ def update_alpaca_account(
         body["alpaca_api_key"] = alpaca_api_key.strip()
     if alpaca_secret_key is not None:
         body["alpaca_secret_key"] = alpaca_secret_key.strip()
-    if is_live is not None:
-        body["is_live"] = bool(is_live)
+    if alpaca_api_key is not None or alpaca_secret_key is not None:
+        current = fetch_alpaca_account_for_user(uid, aid, include_credentials=True)
+        if current is None:
+            return False, "Alpaca account not found"
+        merged_api_key = (
+            body["alpaca_api_key"]
+            if alpaca_api_key is not None
+            else str(current.get("alpaca_api_key") or "").strip()
+        )
+        merged_secret_key = (
+            body["alpaca_secret_key"]
+            if alpaca_secret_key is not None
+            else str(current.get("alpaca_secret_key") or "").strip()
+        )
+        detected_is_live, detect_err = detect_alpaca_account_is_live(
+            alpaca_api_key=merged_api_key,
+            alpaca_secret_key=merged_secret_key,
+        )
+        if detect_err:
+            return False, detect_err
+        body["is_live"] = bool(detected_is_live)
     r = _patch(
         f"alpaca_accounts?id=eq.{urllib.parse.quote(aid, safe='')}&user_id=eq.{urllib.parse.quote(uid, safe='')}",
         body,

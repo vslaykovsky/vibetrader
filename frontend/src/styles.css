@@ -5293,6 +5293,32 @@ html[data-theme='dark'] .confirm-dialog-confirm--danger {
   margin-top: 18px;
 }
 
+.live-run-orders-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.live-run-orders-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 10px;
+  border: 1px solid var(--reply-time-border);
+  border-radius: 999px;
+  background: var(--reply-time-bg);
+  color: var(--accent-strong);
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.live-run-orders-link:hover {
+  border-color: var(--accent-strong);
+}
+
 .live-run-artifacts {
   margin-top: 18px;
 }
@@ -5303,7 +5329,9 @@ html[data-theme='dark'] .confirm-dialog-confirm--danger {
 }
 
 .live-run-trades-scroll {
+  max-height: 430px;
   overflow-x: auto;
+  overflow-y: auto;
   margin-bottom: 8px;
 }
 

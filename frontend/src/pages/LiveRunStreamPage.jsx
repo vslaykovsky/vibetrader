@@ -741,7 +741,17 @@ export function LiveRunStreamPage() {
 
         <section className="dashboard-panel live-run-trades-panel">
           <div className="dashboard-panel-head">
-            <h2 className="dashboard-panel-title">Orders</h2>
+            <div className="live-run-orders-heading">
+              <h2 className="dashboard-panel-title">Orders</h2>
+              <a
+                className="live-run-orders-link"
+                href="https://app.alpaca.markets/account/orders"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Alpaca orders
+              </a>
+            </div>
             <span className="dashboard-panel-count">{trades.length}</span>
           </div>
           {trades.length === 0 ? (

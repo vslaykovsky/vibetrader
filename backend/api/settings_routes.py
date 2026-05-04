@@ -73,13 +73,11 @@ def settings_alpaca_accounts_post() -> tuple:
         return _bad("alpaca_api_key must be a string")
     if not isinstance(secret_key, str):
         return _bad("alpaca_secret_key must be a string")
-    is_live = bool(body.get("is_live"))
     row, err = insert_alpaca_account(
         str(g.user_id),
         label=label,
         alpaca_api_key=api_key,
         alpaca_secret_key=secret_key,
-        is_live=is_live,
     )
     if not row:
         return _bad(err or "Create failed", 502)
@@ -100,7 +98,6 @@ def settings_alpaca_accounts_patch(account_id: str) -> tuple:
     lab = body.get("label")
     api_key = body.get("alpaca_api_key")
     secret_key = body.get("alpaca_secret_key")
-    live = body.get("is_live")
     lab_opt = None
     if "label" in body:
         if not isinstance(lab, str):
@@ -116,18 +113,12 @@ def settings_alpaca_accounts_patch(account_id: str) -> tuple:
         if not isinstance(secret_key, str):
             return _bad("alpaca_secret_key must be a string")
         sk_opt = str(secret_key or "").strip()
-    live_opt: bool | None = None
-    if "is_live" in body:
-        if not isinstance(live, bool):
-            return _bad("is_live must be a boolean")
-        live_opt = live
     ok, err = update_alpaca_account(
         str(g.user_id),
         aid,
         label=lab_opt,
         alpaca_api_key=ak_opt,
         alpaca_secret_key=sk_opt,
-        is_live=live_opt,
     )
     if not ok:
         return _bad(err or "Update failed", 502)
