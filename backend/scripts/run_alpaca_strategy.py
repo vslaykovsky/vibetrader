@@ -1084,13 +1084,13 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--thread-id",
         default="",
-        help="Chat thread UUID; strategy code is loaded from the latest strategy row (or --strategy-id).",
+        help="Chat thread UUID; strategy code is loaded from --strategy-id when --entry is omitted.",
     )
     parser.add_argument(
         "--strategy-id",
         default="",
         dest="strategy_id",
-        help="Optional primary key (id) of the strategy table row whose code column supplies strategy.py.",
+        help="Primary key (id) of the strategy table row whose code column supplies strategy.py.",
     )
     parser.add_argument("--paper", action="store_true", help="Use Alpaca paper trading.")
     parser.add_argument("--enable-trading", action="store_true", help="Actually submit Alpaca orders.")
@@ -1136,6 +1136,8 @@ def main(argv: list[str]) -> int:
                         strategy_id_raw = (lr0.deployed_from_run_id or "").strip()
         if not thread_raw:
             parser.error("provide --entry, or --thread-id, or --run-id for an existing live_runs row")
+        if not strategy_id_raw:
+            parser.error("provide --strategy-id when loading live strategy code from the database")
         with SessionLocal() as session:
             strat_row, strat_err = resolve_strategy_row_for_live(
                 session,
@@ -1193,6 +1195,7 @@ def main(argv: list[str]) -> int:
                     status="running",
                     status_text="starting",
                     entry_path=stored_entry_path,
+                    deployed_from_run_id=strategy_id_raw,
                     runner_backend=rb,
                     runner_id=runner_id,
                     last_input_event_id=0,
@@ -1204,6 +1207,8 @@ def main(argv: list[str]) -> int:
                 row.status = "running"
                 row.status_text = "starting"
                 row.entry_path = stored_entry_path
+                if strategy_id_raw:
+                    row.deployed_from_run_id = strategy_id_raw
                 row.runner_id = runner_id
                 cb = str(args.created_by).strip()
                 if cb:

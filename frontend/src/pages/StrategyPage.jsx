@@ -1691,7 +1691,12 @@ export function StrategyPage() {
     (Number.isFinite(Number(currentThreadMeta?.message_count)) &&
       Number(currentThreadMeta?.message_count) > 0);
   const deployableStrategyHasTrades = hasStrategyTrades(output);
-  const deployDisabled = loading || showProcessing || !strategyAvailable || !deployableStrategyHasTrades;
+  const deployDisabled =
+    loading ||
+    showProcessing ||
+    !strategyAvailable ||
+    !displayStrategyRunId ||
+    !deployableStrategyHasTrades;
   const deployTitle = loading
     ? 'Strategy is loading'
     : showProcessing
@@ -2363,7 +2368,7 @@ export function StrategyPage() {
                   onClick={async () => {
                     setDeployModalError('');
                     const tid = String(threadId || '').trim();
-                    const rid = String(liveStrategyRunIdRef.current || '').trim();
+                    const rid = String(displayStrategyRunId || '').trim();
                     if (!tid || !rid) {
                       setDeployModalError('Missing thread_id or strategy run id');
                       return;

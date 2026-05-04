@@ -250,6 +250,8 @@ def live_start() -> tuple:
     strategy_id = str(
         payload.get("strategy_id") or payload.get("deployed_from_run_id") or ""
     ).strip()
+    if not strategy_id:
+        return _bad("strategy_id is required")
 
     run_id = str(payload.get("run_id") or "").strip() or str(uuid.uuid4())
     paper = bool(payload.get("paper", True))
@@ -284,14 +286,16 @@ def live_start() -> tuple:
     runner_backend = "kubernetes" if use_k8s else "local"
     status_text = "creating deployment" if use_k8s else "waiting for local worker"
     session = SessionLocal()
+    resolved_strategy_id = ""
     try:
-        _, strat_err = resolve_strategy_row_for_live(
+        strat_row, strat_err = resolve_strategy_row_for_live(
             session,
             thread_id=thread_id,
             strategy_id=strategy_id,
         )
-        if strat_err:
-            return _bad(strat_err, 404)
+        if strat_err or strat_row is None:
+            return _bad(strat_err or "strategy not found", 404)
+        resolved_strategy_id = str(strat_row.id)
         run = LiveRun(
             id=run_id,
             thread_id=thread_id,
@@ -301,7 +305,7 @@ def live_start() -> tuple:
             status="starting",
             status_text=status_text,
             entry_path="",
-            deployed_from_run_id=strategy_id,
+            deployed_from_run_id=resolved_strategy_id,
             alpaca_account_id=alpaca_account_id if use_supabase_trading else "",
             runner_backend=runner_backend,
             runner_id=run_id[:64],
@@ -327,6 +331,8 @@ def live_start() -> tuple:
                 {
                     "ok": True,
                     "run_id": run_id,
+                    "strategy_id": resolved_strategy_id,
+                    "deployed_from_run_id": resolved_strategy_id,
                     "runner_backend": "local",
                     "deployment": None,
                     "hint": "Start workers: python scripts/local_live_orchestrator.py (watches DB) or python scripts/local_live_orchestrator.py <run_id>",
@@ -338,7 +344,7 @@ def live_start() -> tuple:
     manifest = _deployment_manifest(
         run_id=run_id,
         thread_id=thread_id,
-        strategy_id=strategy_id,
+        strategy_id=resolved_strategy_id,
         paper=paper,
         enable_trading=enable_trading,
         user_id=str(g.user_id),
@@ -356,6 +362,8 @@ def live_start() -> tuple:
             {
                 "ok": True,
                 "run_id": run_id,
+                "strategy_id": resolved_strategy_id,
+                "deployed_from_run_id": resolved_strategy_id,
                 "runner_backend": "kubernetes",
                 "deployment": _deployment_name(run_id),
             }

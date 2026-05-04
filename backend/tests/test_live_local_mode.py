@@ -31,14 +31,16 @@ def _auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {tok}"}
 
 
-def _ensure_strategy_row(thread_id: str, *, code: str = "x = 1\n") -> None:
+def _ensure_strategy_row(thread_id: str, *, code: str = "x = 1\n") -> str:
     from db.models import Strategy
     from db.session import SessionLocal
 
     session = SessionLocal()
     try:
-        session.add(Strategy(thread_id=thread_id, code=code))
+        row = Strategy(thread_id=thread_id, code=code)
+        session.add(row)
         session.commit()
+        return row.id
     finally:
         session.close()
 
@@ -52,12 +54,12 @@ def test_live_start_without_kubernetes_service_host_uses_local_runner():
     os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
     thread_id = str(uuid.uuid4())
     try:
-        _ensure_strategy_row(thread_id)
+        strategy_id = _ensure_strategy_row(thread_id)
         app = create_app()
         client = app.test_client()
         res = client.post(
             "/live/start",
-            json={"thread_id": thread_id, "paper": True},
+            json={"thread_id": thread_id, "strategy_id": strategy_id, "paper": True},
             headers=_auth_headers(),
         )
         assert res.status_code == 200
@@ -87,12 +89,12 @@ def test_live_start_with_local_runner_backend():
     os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
     thread_id = str(uuid.uuid4())
     try:
-        _ensure_strategy_row(thread_id)
+        strategy_id = _ensure_strategy_row(thread_id)
         app = create_app()
         client = app.test_client()
         res = client.post(
             "/live/start",
-            json={"thread_id": thread_id, "paper": True},
+            json={"thread_id": thread_id, "strategy_id": strategy_id, "paper": True},
             headers=_auth_headers(),
         )
         assert res.status_code == 200
@@ -100,6 +102,7 @@ def test_live_start_with_local_runner_backend():
         assert body.get("runner_backend") == "local"
         assert body.get("deployment") is None
         assert body.get("ok") is True
+        assert body.get("strategy_id") == strategy_id
         run_id = str(body.get("run_id") or "").strip()
         assert run_id
         from db.models import LiveRun
@@ -111,6 +114,7 @@ def test_live_start_with_local_runner_backend():
             assert row is not None
             assert row.runner_backend == "local"
             assert row.created_by == "live-local-test-user"
+            assert row.deployed_from_run_id == strategy_id
         finally:
             session.close()
     finally:
@@ -131,11 +135,15 @@ def test_live_status_skips_kubernetes_when_local_backend():
     os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
     thread_id = str(uuid.uuid4())
     try:
-        _ensure_strategy_row(thread_id)
+        strategy_id = _ensure_strategy_row(thread_id)
         app = create_app()
         client = app.test_client()
         hdrs = _auth_headers()
-        res0 = client.post("/live/start", json={"thread_id": thread_id, "paper": True}, headers=hdrs)
+        res0 = client.post(
+            "/live/start",
+            json={"thread_id": thread_id, "strategy_id": strategy_id, "paper": True},
+            headers=hdrs,
+        )
         run_id = str(res0.get_json().get("run_id") or "").strip()
         res = client.get(f"/live/status?run_id={run_id}", headers=hdrs)
         assert res.status_code == 200
@@ -163,11 +171,15 @@ def test_live_stop_without_kubernetes_when_local_backend():
     os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
     thread_id = str(uuid.uuid4())
     try:
-        _ensure_strategy_row(thread_id)
+        strategy_id = _ensure_strategy_row(thread_id)
         app = create_app()
         client = app.test_client()
         hdrs = _auth_headers()
-        res0 = client.post("/live/start", json={"thread_id": thread_id, "paper": True}, headers=hdrs)
+        res0 = client.post(
+            "/live/start",
+            json={"thread_id": thread_id, "strategy_id": strategy_id, "paper": True},
+            headers=hdrs,
+        )
         run_id = str(res0.get_json().get("run_id") or "").strip()
         res = client.post("/live/stop", json={"run_id": run_id}, headers=hdrs)
         assert res.status_code == 200
