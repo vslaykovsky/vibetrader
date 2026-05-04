@@ -27,12 +27,43 @@ from services.agent import (
     restore_strategy_workspace_from_snapshot,
     thread_id_allowed,
 )
+from services.strategy_stream_events import StrategyStreamPublisher, StrategyStreamSubscriber
 from services.conversation_language import detect_conversation_language_iso
 from langsmith import traceable
 from langsmith.run_helpers import get_current_run_tree
 
 strategy_blueprint = Blueprint("strategy", __name__)
 logger = logging.getLogger(__name__)
+
+
+def _sse_json(payload: dict, *, event: str | None = None, event_id: int | None = None) -> str:
+    lines: list[str] = []
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    if event:
+        lines.append(f"event: {event}")
+    data = json.dumps(payload, sort_keys=True)
+    for line in data.splitlines() or [""]:
+        lines.append(f"data: {line}")
+    return "\n".join(lines) + "\n\n"
+
+
+def _last_event_seq() -> int:
+    raw = (request.headers.get("Last-Event-ID") or request.args.get("last_event_id") or "").strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
+def _stream_event_payload(event: dict) -> dict:
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    payload = {
+        "run_id": str(event.get("run_id") or ""),
+        "seq": int(event.get("seq") or 0),
+    }
+    payload.update(data)
+    return payload
 
 
 def _messages_with_admin_extras(messages: list, strategy: Strategy) -> list:
@@ -261,6 +292,9 @@ def _stamp_langsmith_thread_metadata(thread_id: str) -> None:
 
 @traceable(name="post_strategy")
 def _execute_strategy_agent_job(run_id: str, thread_id: str) -> None:
+    stream = StrategyStreamPublisher(run_id)
+    stream.status("Starting…")
+
     def persist_status_text(text: str) -> None:
         t = (text or "")[:512]
         s = SessionLocal()
@@ -272,6 +306,7 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str) -> None:
                 s.commit()
         finally:
             s.close()
+        stream.status(t)
 
     session = SessionLocal()
     try:
@@ -290,8 +325,10 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str) -> None:
                 existing_canvas=canvas,
                 thread_id=thread_id,
                 on_progress=persist_status_text,
+                on_token=stream.assistant_delta if stream.enabled else None,
                 codex_thread_id=str(strategy.codex_thread_id or ""),
             )
+            stream.assistant_done()
             assistant_entry: dict = {
                 "role": "assistant",
                 "content": agent_result["message"],
@@ -323,6 +360,7 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str) -> None:
             strategy.status = "failure"
             strategy.status_text = str(exc)[:512]
             strategy.code = read_strategy_code(thread_id)
+            stream.error(str(exc))
         _apply_langsmith_trace(strategy)
         session.add(strategy)
         session.commit()
@@ -533,26 +571,59 @@ def strategy_stream():
     def generate():
         last_snapshot = None
         last_keepalive = time.monotonic()
-        while True:
-            session = SessionLocal()
-            try:
-                strategy = latest_thread_strategy(session, thread_id)
-                if strategy is None:
+        subscriber: StrategyStreamSubscriber | None = None
+        subscribed_run_id = ""
+        after_seq = _last_event_seq()
+        try:
+            while True:
+                session = SessionLocal()
+                try:
+                    strategy = latest_thread_strategy(session, thread_id)
+                    if strategy is None:
+                        break
+                    run_id = str(strategy.id or "")
+                    if run_id and run_id != subscribed_run_id:
+                        if subscriber is not None:
+                            subscriber.close()
+                        subscriber = StrategyStreamSubscriber(run_id, after_seq if not subscribed_run_id else 0)
+                        subscribed_run_id = run_id
+                    snapshot = json.dumps(serialize_strategy(strategy), sort_keys=True)
+                    if snapshot != last_snapshot:
+                        last_snapshot = snapshot
+                        yield f"data: {snapshot}\n\n"
+                        last_keepalive = time.monotonic()
+                    done = strategy.status != "running"
+                finally:
+                    session.close()
+                if subscriber is not None:
+                    for event in subscriber.drain(timeout=0.0):
+                        yield _sse_json(
+                            _stream_event_payload(event),
+                            event=str(event.get("kind") or "strategy_event"),
+                            event_id=int(event.get("seq") or 0),
+                        )
+                        last_keepalive = time.monotonic()
+                if done:
                     break
-                snapshot = json.dumps(serialize_strategy(strategy), sort_keys=True)
-                if snapshot != last_snapshot:
-                    last_snapshot = snapshot
-                    yield f"data: {snapshot}\n\n"
+                if subscriber is not None:
+                    for event in subscriber.drain(timeout=0.5):
+                        yield _sse_json(
+                            _stream_event_payload(event),
+                            event=str(event.get("kind") or "strategy_event"),
+                            event_id=int(event.get("seq") or 0),
+                        )
+                        last_keepalive = time.monotonic()
+                    if (time.monotonic() - last_keepalive) >= 15:
+                        yield ": keepalive\n\n"
+                        last_keepalive = time.monotonic()
+                    continue
+                if (time.monotonic() - last_keepalive) >= 15:
+                    yield ": keepalive\n\n"
                     last_keepalive = time.monotonic()
-                done = strategy.status != "running"
-            finally:
-                session.close()
-            if done:
-                break
-            if (time.monotonic() - last_keepalive) >= 15:
-                yield ": keepalive\n\n"
-                last_keepalive = time.monotonic()
-            time.sleep(0.5)
+                time.sleep(0.5)
+        finally:
+            if subscriber is not None:
+                subscriber.close()
 
     return Response(
         stream_with_context(generate()),

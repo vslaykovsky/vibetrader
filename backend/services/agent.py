@@ -17,13 +17,21 @@ import signal
 import selectors
 from pathlib import Path
 from typing import Any, Callable
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+    message_chunk_to_message,
+)
 
 from langchain_openrouter import ChatOpenRouter
 
 
 CHAT_MODEL = os.getenv("CHAT_MODEL", "openai/gpt-5.4")
 CHAT_REASONING_EFFORT = os.getenv("CHAT_REASONING_EFFORT", "medium")
+OPENROUTER_PROVIDER = {"sort": "throughput"}
 
 CODEX_MODEL = os.getenv("CODEX_MODEL", "gpt-5.4")
 CODEX_REASONING_EFFORT = os.getenv("CODEX_REASONING_EFFORT", "high")
@@ -159,6 +167,7 @@ TICKER_LIST_MAX_LIMIT = 100
 INTERNAL_LIMITS_MESSAGE = "Internal limits were hit. Please try again later."
 
 ProgressCallback = Callable[[str], None] | None
+TokenCallback = Callable[[str], None] | None
 
 CODING_TOOL = 'codex'
 
@@ -752,7 +761,11 @@ def run_analyse_code(
         f"{code if code else ''}"
     )
 
-    llm = ChatOpenRouter(model=CODE_ANALYSIS_MODEL, request_timeout=120_000)
+    llm = ChatOpenRouter(
+        model=CODE_ANALYSIS_MODEL,
+        request_timeout=120_000,
+        openrouter_provider=OPENROUTER_PROVIDER,
+    )
     msg = llm.invoke(
         [
             SystemMessage(content=analysis_system),
@@ -918,7 +931,11 @@ def _generate_ticker_listing_sql(*, query: str, limit: int) -> str:
         "For liquid, popular, or high-volume requests, order by last_day_volume_usd IS NULL, last_day_volume_usd DESC. "
         f"Use SQL compatible with {dialect}. Include LIMIT {limit}. Return only SQL."
     )
-    msg = ChatOpenRouter(model=TICKER_SQL_MODEL, request_timeout=60_000).invoke(
+    msg = ChatOpenRouter(
+        model=TICKER_SQL_MODEL,
+        request_timeout=60_000,
+        openrouter_provider=OPENROUTER_PROVIDER,
+    ).invoke(
         [
             SystemMessage(content=system),
             HumanMessage(content=(query or "").strip()),
@@ -1005,7 +1022,11 @@ def generate_strategy_algorithm_pseudocode(*, code: str, language: str = "") -> 
         "Markdown is allowed. "
         + lang_line
     )
-    llm = ChatOpenRouter(model=CODE_ANALYSIS_MODEL, request_timeout=120_000)
+    llm = ChatOpenRouter(
+        model=CODE_ANALYSIS_MODEL,
+        request_timeout=120_000,
+        openrouter_provider=OPENROUTER_PROVIDER,
+    )
     msg = llm.invoke(
         [
             SystemMessage(content=system),
@@ -1893,12 +1914,41 @@ def _tool_call_parts(tc: Any) -> tuple[str, dict[str, Any], str]:
         args = {}
     return name, args, tid
 
+
+def _invoke_agent_model(llm_tools: Any, chat_messages: list[BaseMessage], on_token: TokenCallback) -> AIMessage:
+    if on_token is None:
+        return llm_tools.invoke(chat_messages)
+    merged = None
+    emitted_text = ""
+    try:
+        for chunk in llm_tools.stream(chat_messages):
+            merged = chunk if merged is None else merged + chunk
+            if getattr(chunk, "tool_call_chunks", None):
+                continue
+            delta = _aimessage_plain_text(chunk)
+            if delta:
+                emitted_text += delta
+                on_token(delta)
+    except Exception:
+        logger.exception("streaming model invocation failed; falling back to blocking invocation")
+        return llm_tools.invoke(chat_messages)
+    if merged is None:
+        return AIMessage(content="")
+    msg = message_chunk_to_message(merged)
+    if not isinstance(msg, AIMessage):
+        return AIMessage(content=getattr(msg, "content", ""))
+    if msg.tool_calls and emitted_text:
+        logger.info("model streamed text before tool call", extra={"emitted_chars": len(emitted_text)})
+    return msg
+
+
 @traceable(name="build_agent_reply")
 def build_agent_reply(
     messages: list[dict[str, Any]],
     existing_canvas: dict[str, Any],
     thread_id: str,
     on_progress: ProgressCallback = None,
+    on_token: TokenCallback = None,
     codex_thread_id: str | None = None,
 ) -> dict[str, Any]:
     t0 = time.perf_counter()
@@ -1928,7 +1978,12 @@ def build_agent_reply(
     max_iterations = 10
     last_strategy_name = ""
     codex_thread_ref = {"value": _clean_codex_thread_id(codex_thread_id)}
-    llm = ChatOpenRouter(model=CHAT_MODEL, request_timeout=120_000, reasoning={"effort": CHAT_REASONING_EFFORT})
+    llm = ChatOpenRouter(
+        model=CHAT_MODEL,
+        request_timeout=120_000,
+        reasoning={"effort": CHAT_REASONING_EFFORT},
+        openrouter_provider=OPENROUTER_PROVIDER,
+    )
     llm_tools = llm.bind_tools(AGENT_TOOLS)
     tool_handlers = _tool_handlers_for_thread(
         thread_id,
@@ -1942,7 +1997,7 @@ def build_agent_reply(
         )
         if on_progress:
             on_progress("Thinking…")
-        assistant_msg = llm_tools.invoke(chat_messages)
+        assistant_msg = _invoke_agent_model(llm_tools, chat_messages, on_token)
         chat_messages.append(assistant_msg)
         tool_calls = assistant_msg.tool_calls or []
         if not tool_calls:

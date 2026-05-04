@@ -15,6 +15,10 @@ import { dateKeyFromIso as zonedDateKeyFromIso, parseIsoInstant, todayDateKey } 
 import { ProfileMenu } from '../ProfileMenu';
 import { ConfirmDialog } from '../components/ConfirmDialog.jsx';
 import { SimulationPanel } from '../components/SimulationPanel.jsx';
+import {
+  appendAssistantDeltaMessage,
+  mergeStrategySnapshotMessages,
+} from '../lib/strategyStreamMessages.js';
 
 hljs.registerLanguage('python', python);
 
@@ -195,7 +199,7 @@ function MessageBubble({
   onViewStrategy,
 }) {
   const isAssistant = message.role === 'assistant';
-  const hasRunId = isAssistant && message.run_id;
+  const hasRunId = isAssistant && message.run_id && !message.streaming;
   const answerDomId = hasRunId ? agentAnswerElementId(message.run_id) : undefined;
   const isActive = hasRunId && message.run_id === activeRunId;
   const langsmithTrace =
@@ -498,6 +502,7 @@ export function StrategyPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [serverJob, setServerJob] = useState({ status: null, statusText: '' });
+  const [streamingAssistantRunId, setStreamingAssistantRunId] = useState('');
   const [error, setError] = useState('');
   const [threads, setThreads] = useState([]);
   const [threadsError, setThreadsError] = useState('');
@@ -522,6 +527,7 @@ export function StrategyPage() {
   const optimisticUserContentRef = useRef(null);
   const viewingRunIdRef = useRef(null);
   const liveStrategyRunIdRef = useRef('');
+  const lastStreamEventSeqByRunIdRef = useRef({});
   const algorithmFetchAbortRef = useRef(null);
   const chartsMountRef = useRef(null);
   const [chartError, setChartError] = useState('');
@@ -612,6 +618,7 @@ export function StrategyPage() {
     }
     setServerJob({ status: null, statusText: '' });
     setSubmitting(false);
+    setStreamingAssistantRunId('');
   }, [threadId]);
 
   useEffect(() => {
@@ -643,6 +650,51 @@ export function StrategyPage() {
     const normalized = nextCanvas && typeof nextCanvas === 'object' ? nextCanvas : {};
     setCanvas((prev) => (canvasPayloadsEqual(prev, normalized) ? prev : normalized));
   }, []);
+
+  const setMessagesFromStrategyPayload = useCallback((payload) => {
+    const rid = typeof payload?.id === 'string' ? payload.id.trim() : '';
+    if (rid && payload?.status !== 'running') {
+      setStreamingAssistantRunId((prev) => (prev === rid ? '' : prev));
+    }
+    setMessages((prev) =>
+      mergeStrategySnapshotMessages(
+        payload?.messages || [],
+        prev,
+        payload?.id,
+        payload?.status,
+      ),
+    );
+  }, []);
+
+  const shouldApplyStreamEvent = useCallback((payload) => {
+    const rid = typeof payload?.run_id === 'string' ? payload.run_id.trim() : '';
+    const seq = Number(payload?.seq);
+    if (!rid || !Number.isFinite(seq) || seq <= 0) {
+      return false;
+    }
+    const prev = Number(lastStreamEventSeqByRunIdRef.current[rid] || 0);
+    if (seq <= prev) {
+      return false;
+    }
+    lastStreamEventSeqByRunIdRef.current = {
+      ...lastStreamEventSeqByRunIdRef.current,
+      [rid]: seq,
+    };
+    return true;
+  }, []);
+
+  const applyAssistantDelta = useCallback(
+    (payload) => {
+      if (!shouldApplyStreamEvent(payload)) {
+        return;
+      }
+      setStreamingAssistantRunId(String(payload.run_id || '').trim());
+      setMessages((prev) =>
+        appendAssistantDeltaMessage(prev, payload.run_id, payload.delta),
+      );
+    },
+    [shouldApplyStreamEvent],
+  );
 
   const openTradingSettingsWindow = useCallback(() => {
     const base = window.location.origin || '';
@@ -718,7 +770,7 @@ export function StrategyPage() {
       if (viewingRunIdRef.current) {
         return;
       }
-      setMessages(payload.messages || []);
+      setMessagesFromStrategyPayload(payload);
       setCanvasIfChanged(payload.canvas);
       if (typeof payload.id === 'string') {
         setLiveStrategyRunId(payload.id);
@@ -734,7 +786,14 @@ export function StrategyPage() {
       mergeStrategyNameFromPayload(payload);
     } catch {
     }
-  }, [threadId, signedInUserId, authFetch, mergeStrategyNameFromPayload, setCanvasIfChanged]);
+  }, [
+    threadId,
+    signedInUserId,
+    authFetch,
+    mergeStrategyNameFromPayload,
+    setCanvasIfChanged,
+    setMessagesFromStrategyPayload,
+  ]);
 
   const prevJobStatusRef = useRef(null);
 
@@ -895,6 +954,8 @@ export function StrategyPage() {
     appliedHashKeyRef.current = '';
     hydratingForRef.current = '';
     prevJobStatusRef.current = null;
+    lastStreamEventSeqByRunIdRef.current = {};
+    setStreamingAssistantRunId('');
     setStrategyNameByRunId({});
     setEditingCanvasTitle(false);
   }, [threadId]);
@@ -1019,7 +1080,7 @@ export function StrategyPage() {
         throw new Error('Reverted, but failed to reload thread');
       }
       const next = await refreshed.json();
-      setMessages(next.messages || []);
+      setMessagesFromStrategyPayload(next);
       setCanvasIfChanged(next.canvas);
       setLiveStrategyRunId(typeof next.id === 'string' ? next.id : '');
       setLiveStrategyAlgorithm(typeof next.algorithm === 'string' ? next.algorithm : '');
@@ -1118,7 +1179,7 @@ export function StrategyPage() {
           return;
         }
         const msgs = payload.messages || [];
-        setMessages(msgs);
+        setMessagesFromStrategyPayload(payload);
         setCanvasIfChanged(payload.canvas);
         setLiveStrategyRunId(typeof payload.id === 'string' ? payload.id : '');
         setLiveStrategyAlgorithm(typeof payload.algorithm === 'string' ? payload.algorithm : '');
@@ -1151,7 +1212,13 @@ export function StrategyPage() {
     loadThreads();
     loadThread();
     return () => controller.abort();
-  }, [threadId, signedInUserId, mergeStrategyNameFromPayload, setCanvasIfChanged]);
+  }, [
+    threadId,
+    signedInUserId,
+    mergeStrategyNameFromPayload,
+    setCanvasIfChanged,
+    setMessagesFromStrategyPayload,
+  ]);
 
   useEffect(() => {
     homePromptAutoSubmitRef.current = false;
@@ -1351,7 +1418,7 @@ export function StrategyPage() {
       evtSource.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data);
-          setMessages(payload.messages || []);
+          setMessagesFromStrategyPayload(payload);
           setCanvasIfChanged(payload.canvas);
           if (typeof payload.id === 'string') {
             setLiveStrategyRunId(payload.id);
@@ -1374,6 +1441,38 @@ export function StrategyPage() {
         }
       };
 
+      evtSource.addEventListener('assistant_delta', (event) => {
+        try {
+          applyAssistantDelta(JSON.parse(event.data));
+        } catch {
+        }
+      });
+
+      evtSource.addEventListener('agent_status', (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (!shouldApplyStreamEvent(payload)) {
+            return;
+          }
+          setServerJob((prev) => ({
+            ...prev,
+            status: prev.status || 'running',
+            statusText: payload.status_text || prev.statusText || '',
+          }));
+        } catch {
+        }
+      });
+
+      evtSource.addEventListener('agent_error', (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (shouldApplyStreamEvent(payload) && payload.message) {
+            setError(payload.message);
+          }
+        } catch {
+        }
+      });
+
       evtSource.onerror = () => {
         evtSource.close();
         setSubmitting(false);
@@ -1385,7 +1484,17 @@ export function StrategyPage() {
       cancelled = true;
       evtSource?.close();
     };
-  }, [threadId, serverJob.status, getAccessToken, syncLiveStrategyFromServer, mergeStrategyNameFromPayload, setCanvasIfChanged]);
+  }, [
+    threadId,
+    serverJob.status,
+    getAccessToken,
+    syncLiveStrategyFromServer,
+    mergeStrategyNameFromPayload,
+    setCanvasIfChanged,
+    setMessagesFromStrategyPayload,
+    applyAssistantDelta,
+    shouldApplyStreamEvent,
+  ]);
 
   useEffect(() => {
     if (skipNextChatEndScrollRef.current) {
@@ -1475,6 +1584,7 @@ export function StrategyPage() {
     }
 
     setSubmitting(true);
+    setStreamingAssistantRunId('');
     setError('');
     setViewingRunId(null);
     setHistoricalCanvas(null);
@@ -1499,7 +1609,7 @@ export function StrategyPage() {
       if (!response.ok) {
         if (payload.messages) {
           optimisticUserContentRef.current = null;
-          setMessages(payload.messages);
+          setMessagesFromStrategyPayload(payload);
         } else {
           const sent = optimisticUserContentRef.current;
           optimisticUserContentRef.current = null;
@@ -1528,7 +1638,7 @@ export function StrategyPage() {
       }
 
       optimisticUserContentRef.current = null;
-      setMessages(payload.messages || []);
+      setMessagesFromStrategyPayload(payload);
       setCanvasIfChanged(payload.canvas);
       if (typeof payload.id === 'string') {
         setLiveStrategyRunId(payload.id);
@@ -1563,7 +1673,9 @@ export function StrategyPage() {
     }
   }
 
-  const showProcessing = submitting || serverJob.status === 'running';
+  const showProcessing =
+    (submitting || serverJob.status === 'running') &&
+    (!streamingAssistantRunId || streamingAssistantRunId !== liveStrategyRunId);
   const processingLabel =
     serverJob.status === 'running'
       ? serverJob.statusText?.trim() || 'Working…'
