@@ -201,6 +201,35 @@ describe('applyLiveStreamEvent', () => {
         },
         {
           type: 'lightweight-charts',
+          title: 'Equity curve',
+          series: [
+            {
+              type: 'Line',
+              label: 'Strategy equity',
+              options: { color: '#2962ff', lineWidth: 2 },
+              data: [{ time: 1000, value: 12000 }, { time: 1050 }],
+              markers: [
+                {
+                  time: 1060,
+                  position: 'belowBar',
+                  color: '#26a69a',
+                  shape: 'arrowUp',
+                  text: 'buy filled',
+                },
+              ],
+            },
+          ],
+          verticalMarkers: [
+            {
+              time: 1050,
+              label: 'Live trading starts',
+              kind: 'live_start',
+              color: '#f59e0b',
+            },
+          ],
+        },
+        {
+          type: 'lightweight-charts',
           title: 'Current position value',
           series: [
             {

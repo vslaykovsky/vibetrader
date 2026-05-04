@@ -2,6 +2,7 @@ const EMPTY_STATE = {
   series: {},
   bars: {},
   indicators: {},
+  equity: [],
   positions: {},
   positionTickers: new Set(),
   trades: [],
@@ -14,6 +15,7 @@ function cloneEmptyState() {
     series: {},
     bars: {},
     indicators: {},
+    equity: [],
     positions: {},
     positionTickers: new Set(),
     trades: [],
@@ -113,6 +115,10 @@ function applyIndicator(state, data) {
 function applyPosition(state, data) {
   const time = pointTime(data);
   if (time == null) return false;
+  const equity = asOptionalNumber(data?.equity);
+  if (equity != null) {
+    upsertByTime(state.equity, { time, value: equity });
+  }
   const rows = Array.isArray(data?.positions) ? data.positions : [];
   const active = new Set();
   for (const row of rows) {
@@ -273,6 +279,7 @@ export function applyLiveStreamEvent(state, event) {
     result.changed =
       Object.keys(fresh.bars).length > 0 ||
       Object.keys(fresh.indicators).length > 0 ||
+      fresh.equity.length > 0 ||
       Object.keys(fresh.positions).length > 0 ||
       fresh.annotations.length > 0;
     result.tradesChanged = true;
@@ -380,6 +387,29 @@ function buildPositionCharts(state) {
   ];
 }
 
+function buildEquityCharts(state) {
+  const annotations = annotationMarkers(state);
+  const equity = state.equity || [];
+  if (equity.length === 0) return [];
+  const data = withAnnotationTimes(equity, annotations);
+  return [
+    {
+      type: 'lightweight-charts',
+      title: 'Equity curve',
+      series: [
+        {
+          type: 'Line',
+          label: 'Strategy equity',
+          options: { color: '#2962ff', lineWidth: 2 },
+          data,
+          markers: state.trades.map(markerForTrade),
+        },
+      ],
+      verticalMarkers: annotations,
+    },
+  ];
+}
+
 function buildIndicatorCharts(state) {
   const grouped = {};
   const annotations = annotationMarkers(state);
@@ -432,7 +462,7 @@ export function liveChartsDataJson(state) {
   const s = state || EMPTY_STATE;
   return {
     indicator_series_catalog: outputCatalog(s),
-    charts: [...buildOhlcvCharts(s), ...buildPositionCharts(s), ...buildIndicatorCharts(s)],
+    charts: [...buildOhlcvCharts(s), ...buildEquityCharts(s), ...buildPositionCharts(s), ...buildIndicatorCharts(s)],
   };
 }
 
