@@ -283,6 +283,11 @@ function chartHasIntradayTime(chartSpec) {
       if (typeof t === 'string' && INTRADAY_TIME_RE.test(t)) return true;
     }
   }
+  for (const m of chartSpec?.verticalMarkers || []) {
+    const t = m?.time;
+    if (typeof t === 'number') return true;
+    if (typeof t === 'string' && INTRADAY_TIME_RE.test(t)) return true;
+  }
   return false;
 }
 
@@ -332,6 +337,65 @@ function shouldUseSparseLwcRange(el, pointCount) {
   const dataSpan = Math.max(1, pointCount - 1);
   const sparseSpan = Math.max(MIN_SPARSE_LWC_VISIBLE_SPAN, Math.ceil(width / MAX_SPARSE_LWC_BAR_SPACING));
   return dataSpan < sparseSpan;
+}
+
+function installVerticalMarkers(chart, el, markers, normalizeTime) {
+  if (!Array.isArray(markers) || markers.length === 0) return () => {};
+  const normalized = normalizeLwcItems(markers, normalizeTime).filter((m) => m && m.time != null);
+  if (normalized.length === 0) return () => {};
+  if (window.getComputedStyle(el).position === 'static') {
+    el.style.position = 'relative';
+  }
+  const layer = document.createElement('div');
+  layer.className = 'strategy-chart-vertical-markers';
+  layer.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:4;overflow:hidden;';
+  el.appendChild(layer);
+  const nodes = normalized.map((marker) => {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:absolute;top:0;bottom:0;width:0;display:none;';
+    const line = document.createElement('div');
+    line.style.cssText = `position:absolute;top:0;bottom:0;border-left:1px dashed ${marker.color || '#f59e0b'};opacity:.9;`;
+    const label = document.createElement('div');
+    label.textContent = marker.label || '';
+    label.style.cssText = `position:absolute;top:8px;left:6px;padding:2px 6px;border-radius:999px;background:${marker.color || '#f59e0b'};color:#111827;font:11px system-ui, sans-serif;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.25);`;
+    wrap.appendChild(line);
+    if (label.textContent) wrap.appendChild(label);
+    layer.appendChild(wrap);
+    return { marker, wrap };
+  });
+  const render = () => {
+    const ts = chart.timeScale();
+    for (const item of nodes) {
+      const x = ts.timeToCoordinate(item.marker.time);
+      if (typeof x !== 'number' || !Number.isFinite(x)) {
+        item.wrap.style.display = 'none';
+        continue;
+      }
+      item.wrap.style.display = 'block';
+      item.wrap.style.left = `${Math.round(x)}px`;
+    }
+  };
+  const ts = chart.timeScale();
+  const unsubs = [];
+  if (typeof ts.subscribeVisibleLogicalRangeChange === 'function') {
+    ts.subscribeVisibleLogicalRangeChange(render);
+    unsubs.push(() => ts.unsubscribeVisibleLogicalRangeChange(render));
+  }
+  if (typeof ts.subscribeVisibleTimeRangeChange === 'function') {
+    ts.subscribeVisibleTimeRangeChange(render);
+    unsubs.push(() => ts.unsubscribeVisibleTimeRangeChange(render));
+  }
+  let observer = null;
+  if (typeof ResizeObserver !== 'undefined') {
+    observer = new ResizeObserver(() => requestAnimationFrame(render));
+    observer.observe(el);
+  }
+  requestAnimationFrame(render);
+  return () => {
+    for (const unsub of unsubs) unsub();
+    observer?.disconnect();
+    layer.remove();
+  };
 }
 
 function catalogMapFromDataJson(dataJson) {
@@ -477,6 +541,7 @@ function renderLightweightChart(container, chartSpec, openStore, panelKey, helpT
   const normalizeTime = chartHasIntradayTime(chartSpec) ? toUnixSeconds : toBusinessDay;
   const pointCount = lwcDataPointCount(chartSpec);
   let sparseResizeObserver = null;
+  let verticalMarkerCleanup = null;
 
   let primarySeries = null;
   for (const s of chartSpec.series || []) {
@@ -504,6 +569,7 @@ function renderLightweightChart(container, chartSpec, openStore, panelKey, helpT
   }
 
   applyInitialLwcTimeRange(chart, el, pointCount, alignRightEdge);
+  verticalMarkerCleanup = installVerticalMarkers(chart, el, chartSpec.verticalMarkers, normalizeTime);
   if (shouldUseSparseLwcRange(el, pointCount) && typeof ResizeObserver !== 'undefined') {
     sparseResizeObserver = new ResizeObserver(() => {
       requestAnimationFrame(() => applyInitialLwcTimeRange(chart, el, pointCount, alignRightEdge));
@@ -559,6 +625,7 @@ function renderLightweightChart(container, chartSpec, openStore, panelKey, helpT
 
   const cleanup = () => {
     if (crosshairUnsub) crosshairUnsub();
+    verticalMarkerCleanup?.();
     sparseResizeObserver?.disconnect();
   };
 

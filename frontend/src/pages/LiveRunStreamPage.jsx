@@ -33,6 +33,7 @@ const LIVE_SSE_KINDS = [
   'position',
   'trade',
   'status',
+  'annotation',
 ];
 
 function parseRunDate(iso) {

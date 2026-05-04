@@ -12,6 +12,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -43,12 +44,13 @@ from application.services.alpaca_live_db import (
     touch_runner_subscriptions,
     upsert_runner_subscriptions,
 )
-from application.queries.historical_bars import infer_asset_class
+from application.queries.historical_bars import HistoricalBarsQuery, infer_asset_class
 from application.services.indicators import IndicatorEngine
 from application.services.scale_utils import (
     is_finer_or_equal,
     normalize_scale,
     scale_divides,
+    scale_minutes,
 )
 from application.services.simulation_driver import (
     RunningBar,
@@ -84,6 +86,7 @@ logger = logging.getLogger(__name__)
 
 _SIMULATION_SCALE = "1m"
 _USE_CASH_ONLY_FOR_BUY_NOTIONAL = True
+_DEFAULT_BACKFILL_BARS = 240
 
 
 def _materialize_workspace_from_db(strategy_row: Strategy, dest: Path) -> None:
@@ -230,6 +233,166 @@ def _subscribed_tickers_and_base_scale(startup: StrategyOutput) -> tuple[list[st
 def _subscription_specs_for_live_bars(startup: StrategyOutput) -> list[LiveSubscriptionSpec]:
     tickers, _base_scale = _subscribed_tickers_and_base_scale(startup)
     return [LiveSubscriptionSpec(channel="bars", symbol=t, scale=_SIMULATION_SCALE) for t in tickers]
+
+
+def _positive_int(value, default: int = 0) -> int:
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        return int(default)
+    return out if out > 0 else int(default)
+
+
+def _live_backfill_configured_bars() -> int:
+    raw = (os.environ.get("LIVE_BACKFILL_BARS") or "").strip()
+    if not raw:
+        return _DEFAULT_BACKFILL_BARS
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _DEFAULT_BACKFILL_BARS
+
+
+def _indicator_warmup_bars(startup: StrategyOutput) -> int:
+    warmup = 0
+    for item in startup.root:
+        indicator = getattr(item, "indicator", None)
+        if indicator is None:
+            continue
+        kind = str(getattr(indicator, "kind", "") or "").strip().lower()
+        if kind in {"sma", "ema", "rsi", "atr", "bb"}:
+            warmup = max(warmup, _positive_int(getattr(indicator, "period", None)))
+        elif kind == "macd":
+            slow = _positive_int(getattr(indicator, "slow_period", None))
+            signal = _positive_int(getattr(indicator, "signal_period", None))
+            warmup = max(warmup, slow + signal)
+        elif kind == "stochastic":
+            k_period = _positive_int(getattr(indicator, "k_period", None))
+            k_slowing = _positive_int(getattr(indicator, "k_slowing", None))
+            d_period = _positive_int(getattr(indicator, "d_period", None))
+            warmup = max(warmup, k_period + k_slowing + d_period)
+        elif kind == "fibonacci":
+            warmup = max(warmup, _positive_int(getattr(indicator, "lookback", None)))
+        elif kind == "renko" and str(getattr(indicator, "brick_size_mode", "") or "") == "atr":
+            warmup = max(warmup, _positive_int(getattr(indicator, "atr_period", None)))
+    return warmup
+
+
+def _live_backfill_bar_count(
+    startup: StrategyOutput,
+    configured_bars: int,
+    *,
+    base_scale: str,
+    simulation_scale: str,
+) -> int:
+    configured = max(0, int(configured_bars))
+    if configured <= 0:
+        return 0
+    ratio = max(1, scale_minutes(base_scale) // scale_minutes(simulation_scale))
+    return max(configured * ratio, (_indicator_warmup_bars(startup) + 5) * ratio)
+
+
+def _fetch_live_backfill_driver_df(
+    *,
+    ticker: str,
+    simulation_scale: str,
+    live_start_ts: pd.Timestamp,
+    bars: int,
+) -> pd.DataFrame:
+    count = max(0, int(bars))
+    if count <= 0:
+        return pd.DataFrame()
+    scale = normalize_scale(simulation_scale)
+    start_ts = pd.Timestamp(live_start_ts)
+    if getattr(start_ts, "tzinfo", None) is None and getattr(start_ts, "tz", None) is None:
+        start_ts = start_ts.tz_localize("UTC")
+    else:
+        start_ts = start_ts.tz_convert("UTC")
+    day_span = max(3, ((count * scale_minutes(scale) + 1439) // 1440) * 3 + 7)
+    fetch_start = (start_ts - pd.Timedelta(days=int(day_span))).date()
+    fetch_end = start_ts.date()
+    df, _chunks = HistoricalBarsQuery().fetch_chunked_merge(
+        ticker,
+        scale,
+        fetch_start,
+        fetch_end,
+        provider="alpaca",
+    )
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    out.index = pd.to_datetime(out.index)
+    if getattr(out.index, "tz", None) is None:
+        out.index = out.index.tz_localize("UTC")
+    else:
+        out.index = out.index.tz_convert("UTC")
+    out = out.sort_index()
+    out = out[out.index < start_ts]
+    return out.tail(count)
+
+
+def _live_market_event_from_row(ticker: str, ts: pd.Timestamp, row) -> SimpleNamespace:
+    t = pd.Timestamp(ts)
+    if getattr(t, "tzinfo", None) is None and getattr(t, "tz", None) is None:
+        t = t.tz_localize("UTC")
+    else:
+        t = t.tz_convert("UTC")
+    return SimpleNamespace(
+        payload={
+            "symbol": ticker,
+            "t": t.isoformat(),
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+            "volume": float(row["volume"]) if "volume" in row else 0.0,
+        },
+        unixtime=int(t.timestamp()),
+    )
+
+
+def _run_has_strategy_input_phase(session, *, run_id: str, phase: str) -> bool:
+    rows = (
+        session.query(LiveRunEvent)
+        .filter(
+            LiveRunEvent.run_id == run_id,
+            LiveRunEvent.event_type == "input",
+            LiveRunEvent.kind == "input",
+        )
+        .order_by(LiveRunEvent.id.asc())
+        .limit(5000)
+        .all()
+    )
+    for row in rows:
+        payload = row.payload or {}
+        if isinstance(payload, dict) and payload.get("phase") == phase:
+            return True
+    return False
+
+
+def _run_has_event_kind(session, *, run_id: str, kind: str) -> bool:
+    row = (
+        session.query(LiveRunEvent)
+        .filter(LiveRunEvent.run_id == run_id, LiveRunEvent.kind == kind)
+        .order_by(LiveRunEvent.id.asc())
+        .first()
+    )
+    return row is not None
+
+
+def _run_live_boundary_unixtime(session, *, run_id: str) -> int | None:
+    row = (
+        session.query(LiveRunEvent)
+        .filter(LiveRunEvent.run_id == run_id, LiveRunEvent.kind == "live_boundary")
+        .order_by(LiveRunEvent.id.asc())
+        .first()
+    )
+    if row is None or row.unixtime is None:
+        return None
+    try:
+        return int(row.unixtime)
+    except (TypeError, ValueError):
+        return None
 
 
 def _portfolio_snapshot_from_alpaca(
@@ -454,7 +617,7 @@ def _step_from_driver_index(
 def _event_type_for_kind(kind: str) -> str:
     if kind in {"input", "bar", "indicator_in", "portfolio", "renko", "market_bar"}:
         return "input"
-    if kind in {"status", "startup"}:
+    if kind in {"status", "startup", "live_boundary"}:
         return "system"
     return "output"
 
@@ -949,6 +1112,12 @@ def main(argv: list[str]) -> int:
         default=30.0,
         help="How often to reconcile submitted Alpaca orders by REST (seconds).",
     )
+    parser.add_argument(
+        "--backfill-bars",
+        type=int,
+        default=_live_backfill_configured_bars(),
+        help="Historical base-scale bars to feed before live trading starts; 0 disables backfill.",
+    )
     args = parser.parse_args(argv)
 
     run_id = (str(args.run_id).strip() or str(uuid.uuid4())).strip()
@@ -1114,7 +1283,14 @@ def main(argv: list[str]) -> int:
         order_reconcile_s = max(1.0, float(args.order_reconcile_s))
         last_order_reconcile_mon = time.monotonic() - order_reconcile_s
 
-        def process_market_events(session, events: list[LiveRunEvent], *, emit_outputs: bool) -> bool:
+        def process_market_events(
+            session,
+            events: list[LiveRunEvent],
+            *,
+            emit_outputs: bool,
+            phase: str,
+            execute_orders: bool,
+        ) -> bool:
             nonlocal driver_df, base_df, cached_base_len, j, running, cur_base_idx
             appended = False
             for ev in events:
@@ -1154,6 +1330,22 @@ def main(argv: list[str]) -> int:
                 cached_base_len = len(base_df.index)
 
             wrote_any = False
+            portfolio_snapshot: InputPortfolioDataPoint | None = None
+
+            def portfolio_provider() -> InputPortfolioDataPoint:
+                nonlocal portfolio_snapshot
+                if phase == "backfill":
+                    if portfolio_snapshot is None:
+                        portfolio_snapshot = _portfolio_snapshot_from_alpaca(
+                            client,
+                            strategy_tickers=tickers,
+                        )
+                    return portfolio_snapshot.model_copy(deep=True)
+                return _portfolio_snapshot_from_alpaca(
+                    client,
+                    strategy_tickers=tickers,
+                )
+
             while j < len(driver_df):
                 step, running, cur_base_idx = _step_from_driver_index(
                     driver_df=driver_df,
@@ -1176,50 +1368,55 @@ def main(argv: list[str]) -> int:
 
                 for line in expand_step_to_lines(
                     step,
-                    portfolio_provider=lambda: _portfolio_snapshot_from_alpaca(
-                        client,
-                        strategy_tickers=tickers,
-                    ),
+                    portfolio_provider=portfolio_provider,
                 ):
                     _emit_db_event(
                         session,
                         run_id=run_id,
                         kind="input",
                         unixtime=int(line.unixtime),
-                        payload={"input": json.loads(line.model_dump_json())},
+                        payload={"input": json.loads(line.model_dump_json()), "phase": phase},
                     )
                     for pt in line.points:
                         if pt.kind == "ohlc":
+                            payload = pt.model_dump(mode="json")
+                            payload["phase"] = phase
                             _emit_db_event(
                                 session,
                                 run_id=run_id,
                                 kind="bar",
                                 unixtime=int(line.unixtime),
-                                payload=pt.model_dump(mode="json"),
+                                payload=payload,
                             )
                         elif pt.kind == "indicator":
+                            payload = pt.model_dump(mode="json")
+                            payload["phase"] = phase
                             _emit_db_event(
                                 session,
                                 run_id=run_id,
                                 kind="indicator_in",
                                 unixtime=int(line.unixtime),
-                                payload=pt.model_dump(mode="json"),
+                                payload=payload,
                             )
                         elif pt.kind == "portfolio":
+                            payload = pt.model_dump(mode="json")
+                            payload["phase"] = phase
                             _emit_db_event(
                                 session,
                                 run_id=run_id,
                                 kind="portfolio",
                                 unixtime=int(line.unixtime),
-                                payload=pt.model_dump(mode="json"),
+                                payload=payload,
                             )
                         elif pt.kind == "renko":
+                            payload = pt.model_dump(mode="json")
+                            payload["phase"] = phase
                             _emit_db_event(
                                 session,
                                 run_id=run_id,
                                 kind="renko",
                                 unixtime=int(line.unixtime),
-                                payload=pt.model_dump(mode="json"),
+                                payload=payload,
                             )
 
                     _log_strategy_input(line)
@@ -1230,11 +1427,13 @@ def main(argv: list[str]) -> int:
                         run_id=run_id,
                         kind="output",
                         unixtime=int(line.unixtime),
-                        payload={"output": json.loads(out.model_dump_json())},
+                        payload={"output": json.loads(out.model_dump_json()), "phase": phase},
                     )
 
                     for item in out.root:
                         if isinstance(item, OutputMarketTradeOrder):
+                            if not execute_orders:
+                                continue
                             id_meta = _maybe_execute_market_order(
                                 client,
                                 session=session,
@@ -1247,6 +1446,7 @@ def main(argv: list[str]) -> int:
                             if id_meta is not None:
                                 os_payload.update(id_meta)
                                 _add_rejection_comment(os_payload)
+                            os_payload["phase"] = phase
                             _emit_db_event(
                                 session,
                                 run_id=run_id,
@@ -1255,20 +1455,24 @@ def main(argv: list[str]) -> int:
                                 payload=os_payload,
                             )
                         elif isinstance(item, OutputIndicatorDataPoint):
+                            payload = item.model_dump(mode="json")
+                            payload["phase"] = phase
                             _emit_db_event(
                                 session,
                                 run_id=run_id,
                                 kind="indicator_out",
                                 unixtime=int(line.unixtime),
-                                payload=item.model_dump(mode="json"),
+                                payload=payload,
                             )
                         elif isinstance(item, OutputChart):
+                            payload = item.model_dump(mode="json")
+                            payload["phase"] = phase
                             _emit_db_event(
                                 session,
                                 run_id=run_id,
                                 kind="chart",
                                 unixtime=int(line.unixtime),
-                                payload=item.model_dump(mode="json"),
+                                payload=payload,
                             )
                         elif isinstance(item, OutputTimeAck):
                             continue
@@ -1298,11 +1502,51 @@ def main(argv: list[str]) -> int:
                     rt.send(StrategyInput.model_validate(stored_input))
                     replayed += 1
 
+        def hydrate_backfill_driver_state(live_start_unixtime: int) -> None:
+            backfill_count = _live_backfill_bar_count(
+                startup,
+                int(args.backfill_bars),
+                base_scale=base_scale,
+                simulation_scale=simulation_scale,
+            )
+            if backfill_count <= 0:
+                return
+            live_start_ts = pd.Timestamp(int(live_start_unixtime), unit="s", tz="UTC")
+            backfill_df = _fetch_live_backfill_driver_df(
+                ticker=ticker,
+                simulation_scale=simulation_scale,
+                live_start_ts=live_start_ts,
+                bars=backfill_count,
+            )
+            backfill_events = [
+                _live_market_event_from_row(ticker, ts, row)
+                for ts, row in backfill_df.iterrows()
+            ]
+            if not backfill_events:
+                return
+            with SessionLocal() as session:
+                process_market_events(
+                    session,
+                    backfill_events,
+                    emit_outputs=False,
+                    phase="backfill",
+                    execute_orders=False,
+                )
+
         with SessionLocal() as session:
             run = session.get(LiveRun, run_id)
             last_event_id = int(run.last_input_event_id or 0) if run is not None else 0
 
         if last_event_id > 0:
+            with SessionLocal() as session:
+                has_backfill = _run_has_strategy_input_phase(
+                    session,
+                    run_id=run_id,
+                    phase="backfill",
+                )
+                live_boundary_unixtime = _run_live_boundary_unixtime(session, run_id=run_id)
+            if has_backfill and live_boundary_unixtime is not None:
+                hydrate_backfill_driver_state(live_boundary_unixtime)
             after = 0
             while True:
                 with SessionLocal() as session:
@@ -1314,12 +1558,78 @@ def main(argv: list[str]) -> int:
                         through_id=last_event_id,
                     )
                     if replay_events:
-                        process_market_events(session, replay_events, emit_outputs=False)
+                        process_market_events(
+                            session,
+                            replay_events,
+                            emit_outputs=False,
+                            phase="live",
+                            execute_orders=False,
+                        )
                 if not replay_events:
                     break
                 after = int(replay_events[-1].id)
             replayed = replay_strategy_inputs()
             logger.info("replayed %s strategy input event(s)", replayed)
+        else:
+            live_start_unixtime = int(time.time())
+            with SessionLocal() as session:
+                has_backfill = _run_has_strategy_input_phase(
+                    session,
+                    run_id=run_id,
+                    phase="backfill",
+                )
+                has_boundary = _run_has_event_kind(session, run_id=run_id, kind="live_boundary")
+                existing_boundary_unixtime = _run_live_boundary_unixtime(session, run_id=run_id)
+            if has_backfill:
+                if existing_boundary_unixtime is not None:
+                    hydrate_backfill_driver_state(existing_boundary_unixtime)
+                replayed = replay_strategy_inputs()
+                logger.info("replayed %s strategy input event(s)", replayed)
+                if not has_boundary:
+                    with SessionLocal() as session:
+                        _emit_db_event(
+                            session,
+                            run_id=run_id,
+                            kind="live_boundary",
+                            unixtime=live_start_unixtime,
+                            payload={"label": "Live trading starts"},
+                        )
+                        session.commit()
+            else:
+                backfill_count = _live_backfill_bar_count(
+                    startup,
+                    int(args.backfill_bars),
+                    base_scale=base_scale,
+                    simulation_scale=simulation_scale,
+                )
+                live_start_ts = pd.Timestamp(live_start_unixtime, unit="s", tz="UTC")
+                backfill_df = _fetch_live_backfill_driver_df(
+                    ticker=ticker,
+                    simulation_scale=simulation_scale,
+                    live_start_ts=live_start_ts,
+                    bars=backfill_count,
+                )
+                backfill_events = [
+                    _live_market_event_from_row(ticker, ts, row)
+                    for ts, row in backfill_df.iterrows()
+                ]
+                with SessionLocal() as session:
+                    if backfill_events:
+                        process_market_events(
+                            session,
+                            backfill_events,
+                            emit_outputs=True,
+                            phase="backfill",
+                            execute_orders=False,
+                        )
+                    _emit_db_event(
+                        session,
+                        run_id=run_id,
+                        kind="live_boundary",
+                        unixtime=live_start_unixtime,
+                        payload={"label": "Live trading starts"},
+                    )
+                    session.commit()
 
         while True:
             if time.monotonic() - last_stop_mon >= stop_poll_s:
@@ -1357,7 +1667,13 @@ def main(argv: list[str]) -> int:
 
             last_event_id = int(events[-1].id)
             with SessionLocal() as session:
-                process_market_events(session, events, emit_outputs=True)
+                process_market_events(
+                    session,
+                    events,
+                    emit_outputs=True,
+                    phase="live",
+                    execute_orders=True,
+                )
                 run = session.get(LiveRun, run_id)
                 if run is not None:
                     run.last_input_event_id = int(last_event_id)

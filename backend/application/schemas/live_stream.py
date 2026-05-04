@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LiveSeriesMeta(BaseModel):
@@ -100,6 +100,14 @@ class LiveStatusPatchData(BaseModel):
     base_scale: str = ""
 
 
+class LiveAnnotationPatchData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    time: int
+    kind: Literal["live_start"] = "live_start"
+    label: str = "Live trading starts"
+
+
 class LiveSnapshotData(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -109,6 +117,7 @@ class LiveSnapshotData(BaseModel):
     indicators: list[LiveIndicatorPatchData]
     positions: list[LivePositionPatchData]
     trades: list[LiveTradePatchData]
+    annotations: list[LiveAnnotationPatchData] = Field(default_factory=list)
     status: LiveStatusPatchData | None = None
 
 
@@ -172,12 +181,23 @@ class LiveStatusPatchEvent(BaseModel):
     data: LiveStatusPatchData
 
 
+class LiveAnnotationPatchEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["annotation"] = "annotation"
+    seq: int
+    run_id: str
+    unixtime: int
+    data: LiveAnnotationPatchData
+
+
 LivePatchEvent = (
     LiveBarPatchEvent
     | LiveIndicatorPatchEvent
     | LiveTradePatchEvent
     | LivePositionPatchEvent
     | LiveStatusPatchEvent
+    | LiveAnnotationPatchEvent
 )
 LiveStreamEvent = LiveSnapshotEvent | LivePatchEvent
 
@@ -198,6 +218,7 @@ def build_live_stream_snapshot(
     bar_by_key: dict[tuple[str, int], LiveBarPatchData] = {}
     indicator_by_key: dict[tuple[str, int], LiveIndicatorPatchData] = {}
     position_by_time: dict[int, LivePositionPatchData] = {}
+    annotation_by_key: dict[tuple[str, int], LiveAnnotationPatchData] = {}
     trades: list[LiveTradePatchData] = []
     last_seq = 0
 
@@ -214,10 +235,13 @@ def build_live_stream_snapshot(
             position_by_time[patch.data.time] = patch.data
         elif patch.kind == "trade":
             trades.append(patch.data)
+        elif patch.kind == "annotation":
+            annotation_by_key[(patch.data.kind, patch.data.time)] = patch.data
 
     bars = sorted(bar_by_key.values(), key=lambda x: (x.series_id, x.time))
     indicators = sorted(indicator_by_key.values(), key=lambda x: (x.series_id, x.time))
     positions = sorted(position_by_time.values(), key=lambda x: x.time)
+    annotations = sorted(annotation_by_key.values(), key=lambda x: (x.time, x.kind))
     snapshot = LiveSnapshotEvent(
         seq=last_seq,
         run_id=run_id,
@@ -229,6 +253,7 @@ def build_live_stream_snapshot(
             indicators=indicators,
             positions=positions,
             trades=trades,
+            annotations=annotations,
             status=ctx.status,
         ),
     )
@@ -253,6 +278,8 @@ def live_stream_patch_from_event(row: Any, ctx: LiveStreamContext) -> LivePatchE
         return _position_event(row, ctx, payload)
     if kind in {"order_signal", "order_update"}:
         return _trade_event(row, ctx, payload)
+    if kind == "live_boundary":
+        return _annotation_event(row, ctx, payload)
     return None
 
 
@@ -431,6 +458,22 @@ def _status_event(
         seq=_seq(row),
         run_id=_run_id(row),
         unixtime=_event_unixtime(row),
+        data=data,
+    )
+
+
+def _annotation_event(
+    row: Any, ctx: LiveStreamContext, payload: dict[str, Any]
+) -> LiveAnnotationPatchEvent | None:
+    event_time = _event_unixtime(row)
+    data = LiveAnnotationPatchData(
+        time=event_time,
+        label=_str_field(payload, "label") or "Live trading starts",
+    )
+    return LiveAnnotationPatchEvent(
+        seq=_seq(row),
+        run_id=_run_id(row),
+        unixtime=event_time,
         data=data,
     )
 

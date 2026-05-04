@@ -5,6 +5,7 @@ const EMPTY_STATE = {
   positions: {},
   positionTickers: new Set(),
   trades: [],
+  annotations: [],
   status: null,
 };
 
@@ -16,6 +17,7 @@ function cloneEmptyState() {
     positions: {},
     positionTickers: new Set(),
     trades: [],
+    annotations: [],
     status: null,
   };
 }
@@ -232,6 +234,25 @@ function applyStatus(state, data) {
   return Boolean(state.status.status);
 }
 
+function applyAnnotation(state, data) {
+  const time = pointTime(data);
+  const kind = asString(data?.kind) || 'live_start';
+  if (time == null) return false;
+  const next = {
+    time,
+    kind,
+    label: asString(data?.label) || (kind === 'live_start' ? 'Live trading starts' : kind),
+  };
+  const idx = state.annotations.findIndex((row) => row.time === time && row.kind === kind);
+  if (idx >= 0) {
+    state.annotations[idx] = next;
+  } else {
+    state.annotations.push(next);
+    state.annotations.sort((a, b) => a.time - b.time || a.kind.localeCompare(b.kind));
+  }
+  return true;
+}
+
 export function applyLiveStreamEvent(state, event) {
   const nextState = state || cloneEmptyState();
   const kind = asString(event?.kind);
@@ -246,12 +267,14 @@ export function applyLiveStreamEvent(state, event) {
     for (const row of Array.isArray(data.indicators) ? data.indicators : []) applyIndicator(fresh, row);
     for (const row of Array.isArray(data.positions) ? data.positions : []) applyPosition(fresh, row);
     for (const row of Array.isArray(data.trades) ? data.trades : []) applyTrade(fresh, row);
+    for (const row of Array.isArray(data.annotations) ? data.annotations : []) applyAnnotation(fresh, row);
     if (data.status) applyStatus(fresh, data.status);
     Object.assign(nextState, fresh);
     result.changed =
       Object.keys(fresh.bars).length > 0 ||
       Object.keys(fresh.indicators).length > 0 ||
-      Object.keys(fresh.positions).length > 0;
+      Object.keys(fresh.positions).length > 0 ||
+      fresh.annotations.length > 0;
     result.tradesChanged = true;
     result.statusChanged = Boolean(fresh.status?.status);
     return result;
@@ -268,6 +291,8 @@ export function applyLiveStreamEvent(state, event) {
     result.changed = result.tradesChanged;
   } else if (kind === 'status') {
     result.statusChanged = applyStatus(nextState, data);
+  } else if (kind === 'annotation') {
+    result.changed = applyAnnotation(nextState, data);
   }
   return result;
 }
@@ -289,8 +314,28 @@ function seriesLabel(state, seriesId, fallback) {
   return meta.label || fallback || seriesId;
 }
 
+function annotationMarkers(state) {
+  return [...(state.annotations || [])].map((row) => ({
+    time: row.time,
+    label: row.label,
+    kind: row.kind,
+    color: row.kind === 'live_start' ? '#f59e0b' : '#94a3b8',
+  }));
+}
+
+function withAnnotationTimes(data, annotations) {
+  const rows = Array.isArray(data) ? [...data] : [];
+  for (const marker of annotations) {
+    if (marker.time == null || rows.some((row) => row?.time === marker.time)) continue;
+    rows.push({ time: marker.time });
+  }
+  rows.sort((a, b) => Number(a.time) - Number(b.time));
+  return rows;
+}
+
 function buildOhlcvCharts(state) {
   const priceSeries = [];
+  const annotations = annotationMarkers(state);
   for (const [seriesId, bucket] of Object.entries(state.bars)) {
     const meta = state.series[seriesId] || {};
     const ticker = meta.ticker || '';
@@ -298,7 +343,7 @@ function buildOhlcvCharts(state) {
     priceSeries.push({
       type: 'Candlestick',
       label: seriesLabel(state, seriesId, 'Price'),
-      data: bucket.data || [],
+      data: withAnnotationTimes(bucket.data || [], annotations),
       markers: matchingTrades.map(markerForTrade),
     });
   }
@@ -308,18 +353,20 @@ function buildOhlcvCharts(state) {
       type: 'lightweight-charts',
       title: 'Live Price',
       series: priceSeries,
+      verticalMarkers: annotations,
     });
   }
   return charts;
 }
 
 function buildPositionCharts(state) {
+  const annotations = annotationMarkers(state);
   const series = Object.entries(state.positions)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([seriesId, data]) => ({
       type: 'Line',
       label: seriesLabel(state, seriesId, seriesId),
-      data,
+      data: withAnnotationTimes(data, annotations),
     }))
     .filter((row) => row.data.length > 0);
   if (series.length === 0) return [];
@@ -328,12 +375,14 @@ function buildPositionCharts(state) {
       type: 'lightweight-charts',
       title: 'Current position value',
       series,
+      verticalMarkers: annotations,
     },
   ];
 }
 
 function buildIndicatorCharts(state) {
   const grouped = {};
+  const annotations = annotationMarkers(state);
   for (const [seriesId, data] of Object.entries(state.indicators)) {
     const meta = state.series[seriesId] || {};
     const chartId = meta.chart_id || (meta.source === 'output_indicator' ? 'output_indicators' : 'input_indicators');
@@ -341,7 +390,7 @@ function buildIndicatorCharts(state) {
     grouped[chartId].push({
       type: 'Line',
       label: seriesLabel(state, seriesId, seriesId),
-      data,
+      data: withAnnotationTimes(data, annotations),
     });
   }
   const charts = [];
@@ -350,6 +399,7 @@ function buildIndicatorCharts(state) {
       type: 'lightweight-charts',
       title: 'Live Input Indicators',
       series: grouped.input_indicators,
+      verticalMarkers: annotations,
     });
   }
   if (grouped.output_indicators?.length) {
@@ -357,6 +407,7 @@ function buildIndicatorCharts(state) {
       type: 'lightweight-charts',
       title: 'Live Output Indicators',
       series: grouped.output_indicators,
+      verticalMarkers: annotations,
     });
   }
   for (const [chartId, series] of Object.entries(grouped)) {
@@ -365,6 +416,7 @@ function buildIndicatorCharts(state) {
       type: 'lightweight-charts',
       title: chartId.replace(/_/g, ' '),
       series,
+      verticalMarkers: annotations,
     });
   }
   return charts;

@@ -77,6 +77,13 @@ describe('applyLiveStreamEvent', () => {
           },
         ],
         trades: [],
+        annotations: [
+          {
+            time: 1050,
+            kind: 'live_start',
+            label: 'Live trading starts',
+          },
+        ],
         status: { status: 'running' },
       },
     });
@@ -169,6 +176,7 @@ describe('applyLiveStreamEvent', () => {
               label: 'SPY',
               data: [
                 { time: 1000, open: 10, high: 12, low: 9, close: 11 },
+                { time: 1050 },
                 { time: 1060, open: 11, high: 13, low: 10, close: 12 },
               ],
               markers: [
@@ -182,6 +190,14 @@ describe('applyLiveStreamEvent', () => {
               ],
             },
           ],
+          verticalMarkers: [
+            {
+              time: 1050,
+              label: 'Live trading starts',
+              kind: 'live_start',
+              color: '#f59e0b',
+            },
+          ],
         },
         {
           type: 'lightweight-charts',
@@ -190,7 +206,15 @@ describe('applyLiveStreamEvent', () => {
             {
               type: 'Line',
               label: 'SPY position value',
-              data: [{ time: 1000, value: 3000 }],
+              data: [{ time: 1000, value: 3000 }, { time: 1050 }],
+            },
+          ],
+          verticalMarkers: [
+            {
+              time: 1050,
+              label: 'Live trading starts',
+              kind: 'live_start',
+              color: '#f59e0b',
             },
           ],
         },
@@ -201,7 +225,15 @@ describe('applyLiveStreamEvent', () => {
             {
               type: 'Line',
               label: 'output:edge',
-              data: [{ time: 1000, value: 0.4 }],
+              data: [{ time: 1000, value: 0.4 }, { time: 1050 }],
+            },
+          ],
+          verticalMarkers: [
+            {
+              time: 1050,
+              label: 'Live trading starts',
+              kind: 'live_start',
+              color: '#f59e0b',
             },
           ],
         },

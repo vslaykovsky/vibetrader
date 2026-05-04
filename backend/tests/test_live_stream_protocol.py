@@ -112,11 +112,12 @@ def test_build_live_stream_snapshot_serializes_chart_patches():
             },
             1002,
         ),
+        _event(9, "live_boundary", {"label": "Live trading starts"}, 1050),
     ]
 
     snapshot, ctx = build_live_stream_snapshot("run-1", rows)
     assert snapshot.model_dump()["data"] == {
-        "last_seq": 8,
+        "last_seq": 9,
         "series": [
             {
                 "chart_id": "ohlcv",
@@ -251,6 +252,13 @@ def test_build_live_stream_snapshot_serializes_chart_patches():
                 ),
             }
         ],
+        "annotations": [
+            {
+                "time": 1050,
+                "kind": "live_start",
+                "label": "Live trading starts",
+            }
+        ],
         "status": {
             "status": "running",
             "message": "",
@@ -261,7 +269,7 @@ def test_build_live_stream_snapshot_serializes_chart_patches():
 
     patch = live_stream_patch_from_event(
         _event(
-            9,
+            10,
             "bar",
             {
                 "kind": "ohlc",
@@ -275,7 +283,7 @@ def test_build_live_stream_snapshot_serializes_chart_patches():
     )
     assert patch.model_dump() == {
         "kind": "bar",
-        "seq": 9,
+        "seq": 10,
         "run_id": "run-1",
         "unixtime": 1060,
         "data": {
