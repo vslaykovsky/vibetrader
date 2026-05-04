@@ -24,11 +24,11 @@ spec:
             - scripts/alpaca_live_listener.py
           resources:
             requests:
-              cpu: "250m"
-              memory: "512Mi"
+              cpu: "100m"
+              memory: "128Mi"
             limits:
-              cpu: "250m"
-              memory: "512Mi"
+              cpu: "100m"
+              memory: "128Mi"
           envFrom:
             - configMapRef:
                 name: vibetrader-config
