@@ -162,7 +162,7 @@ export function TradingSettingsPage() {
     <div className="dashboard-page">
       <header className="dashboard-topbar">
         <div className="dashboard-topbar-left">
-          <Link to="/dashboard" className="app-home-link" aria-label="Go to dashboard">
+          <Link to="/" className="app-home-link" aria-label="Go to home page">
             <span className="app-logo">TraderChat</span>
           </Link>
           <span className="dashboard-topbar-sep" aria-hidden>
@@ -171,6 +171,9 @@ export function TradingSettingsPage() {
           <span className="dashboard-topbar-crumb">Trading settings</span>
         </div>
         <div className="dashboard-topbar-right">
+          <Link className="dashboard-topbar-crumb dashboard-topbar-link" to="/dashboard">
+            Dashboard
+          </Link>
           <button
             type="button"
             className="theme-toggle"
@@ -199,11 +202,6 @@ export function TradingSettingsPage() {
               Keep broker access, account notes, and chart timestamps in one place. Credentials stay server-side and
               are never shown in full after saving.
             </p>
-          </div>
-          <div className="dashboard-hero-actions">
-            <Link to="/dashboard" className="dashboard-link-btn">
-              Dashboard
-            </Link>
           </div>
         </section>
 

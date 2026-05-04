@@ -3169,14 +3169,15 @@ html[data-theme='dark'] .canvas-header-action.is-active {
 }
 
 .message-view-strategy-button {
-  border: 1px solid var(--view-strategy-border);
-  border-radius: 999px;
-  padding: 4px 10px;
-  background: var(--view-strategy-bg);
+  border: 0;
+  padding: 0;
+  background: transparent;
   color: var(--accent-strong);
   cursor: pointer;
   font-size: 0.82rem;
   font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .message-view-strategy-row {
@@ -3186,8 +3187,7 @@ html[data-theme='dark'] .canvas-header-action.is-active {
 }
 
 .message-view-strategy-button:hover {
-  background: var(--view-strategy-bg-hover);
-  border-color: var(--view-strategy-border-hover);
+  color: var(--accent);
 }
 
 .message-view-strategy-button:focus-visible {
@@ -4818,11 +4818,19 @@ html[data-theme='dark'] .dashboard-pill--local {
   border-bottom: none;
 }
 
+.dashboard-live-row-shell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .dashboard-live-row {
   display: flex;
   align-items: baseline;
   gap: 12px;
   padding: 12px 10px;
+  flex: 1;
+  min-width: 0;
 }
 
 .dashboard-live-row-link {
@@ -4839,9 +4847,46 @@ html[data-theme='dark'] .dashboard-pill--local {
   background: var(--sidebar-hover-bg);
 }
 
+.dashboard-live-row-shell .dashboard-live-row-link {
+  margin-right: 0;
+}
+
 .dashboard-live-row-link:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
+}
+
+.dashboard-live-delete-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #b91c1c;
+  cursor: pointer;
+}
+
+.dashboard-live-delete-btn:hover:not(:disabled) {
+  background: transparent;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.dashboard-live-delete-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.dashboard-live-delete-btn .home-ms {
+  font-size: 1.2rem;
+}
+
+html[data-theme='dark'] .dashboard-live-delete-btn {
+  color: #fecaca;
 }
 
 .dashboard-live-status {
@@ -5104,6 +5149,91 @@ html[data-theme='dark'] .deploy-live-account-option:has(input:checked) {
   margin-left: auto;
 }
 
+.confirm-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 13000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.confirm-dialog-scrim {
+  position: absolute;
+  inset: 0;
+  border: none;
+  margin: 0;
+  padding: 0;
+  background: rgba(15, 23, 42, 0.45);
+  cursor: pointer;
+}
+
+html[data-theme='dark'] .confirm-dialog-scrim {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.confirm-dialog-panel {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 420px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  box-shadow: var(--shadow);
+  padding: 22px;
+}
+
+.confirm-dialog-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  margin-bottom: 12px;
+  color: #b91c1c;
+}
+
+html[data-theme='dark'] .confirm-dialog-icon {
+  color: #fecaca;
+}
+
+.confirm-dialog-title {
+  margin: 0 0 8px;
+  font-size: 1.1rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.confirm-dialog-message {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.confirm-dialog-confirm--danger {
+  background: #dc2626;
+  box-shadow: 0 8px 24px rgba(220, 38, 38, 0.24);
+}
+
+.confirm-dialog-confirm--danger:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+html[data-theme='dark'] .confirm-dialog-confirm--danger {
+  background: #ef4444;
+  color: #fff;
+}
+
 .live-run-page .dashboard-inner {
   max-width: 1200px;
 }
@@ -5163,6 +5293,10 @@ html[data-theme='dark'] .deploy-live-account-option:has(input:checked) {
   margin-top: 18px;
 }
 
+.live-run-artifacts {
+  margin-top: 18px;
+}
+
 .live-run-trades-empty {
   margin: 0;
   padding: 8px 0 12px;
@@ -5203,6 +5337,12 @@ html[data-theme='dark'] .deploy-live-account-option:has(input:checked) {
   word-break: break-word;
 }
 
+.live-run-order-id-link {
+  color: var(--accent-strong);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .live-run-stop-btn {
   background: rgba(220, 38, 38, 0.12);
   border: 1px solid rgba(220, 38, 38, 0.35);
@@ -5216,5 +5356,51 @@ html[data-theme='dark'] .deploy-live-account-option:has(input:checked) {
 html[data-theme='dark'] .live-run-stop-btn {
   background: rgba(248, 113, 113, 0.12);
   border-color: rgba(248, 113, 113, 0.35);
+  color: #fecaca;
+}
+
+.live-run-action-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 8px;
+  padding: 4px 2px;
+  background: transparent;
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.live-run-action-link:hover:not(:disabled) {
+  background: transparent;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.live-run-action-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
+.live-run-action-link:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.live-run-delete-btn {
+  min-width: 1.5rem;
+  justify-content: center;
+  color: #b91c1c;
+}
+
+.live-run-delete-btn:hover:not(:disabled) {
+  background: transparent;
+}
+
+html[data-theme='dark'] .live-run-delete-btn {
   color: #fecaca;
 }

@@ -95,7 +95,7 @@ Renko is not supported in multi-ticker simulations; use a single ticker when sub
 - `direction="sell"` closes long or opens/adds short; when closing long, `deposit_ratio` is the fraction of open long size to close; when opening short, it sizes exposure as a fraction of account equity.
 - For buy sizing, use a top-level tunable such as `deposit_fraction` in `[0, 1]` and pass it as `deposit_ratio`.
 - Use `1.0` for full exits/covers.
-- Optional `short_explanation` should be a concise trade reason for the Trades table.
+- Optional `short_explanation` should be a concise trade reason for the Orders table.
 
 Orders fill at the running close of the update that triggered them: intra-bar close for partial/Renko lines, closed-bar close for closed bars.
 

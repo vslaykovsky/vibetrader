@@ -381,6 +381,35 @@ def ensure_live_run_events_event_type_column(eng: Engine) -> None:
         )
 
 
+def ensure_live_run_orders_state_columns(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    insp = inspect(eng)
+    if not insp.has_table("live_run_orders"):
+        return
+    cols = {c["name"] for c in insp.get_columns("live_run_orders")}
+    with eng.begin() as conn:
+        if "status" not in cols:
+            conn.execute(
+                text("ALTER TABLE live_run_orders ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT ''")
+            )
+        if "filled_qty" not in cols:
+            conn.execute(text("ALTER TABLE live_run_orders ADD COLUMN filled_qty FLOAT"))
+        if "filled_avg_price" not in cols:
+            conn.execute(text("ALTER TABLE live_run_orders ADD COLUMN filled_avg_price FLOAT"))
+        if "position_before_order" not in cols:
+            conn.execute(text("ALTER TABLE live_run_orders ADD COLUMN position_before_order FLOAT"))
+        if "position_after_order_filled" not in cols:
+            conn.execute(text("ALTER TABLE live_run_orders ADD COLUMN position_after_order_filled FLOAT"))
+        if "updated_at" not in cols:
+            if eng.dialect.name == "postgresql":
+                conn.execute(
+                    text("ALTER TABLE live_run_orders ADD COLUMN updated_at TIMESTAMP WITH TIME ZONE")
+                )
+            else:
+                conn.execute(text("ALTER TABLE live_run_orders ADD COLUMN updated_at DATETIME"))
+
+
 def ensure_live_run_children_fk_ondelete_cascade(eng: Engine) -> None:
     from sqlalchemy import inspect
 
@@ -444,4 +473,5 @@ def init_database(eng: Engine) -> None:
     ensure_live_runs_alpaca_account_id_column(eng)
     ensure_alpaca_live_subscriptions_run_id_column(eng)
     ensure_live_run_events_event_type_column(eng)
+    ensure_live_run_orders_state_columns(eng)
     ensure_live_run_children_fk_ondelete_cascade(eng)

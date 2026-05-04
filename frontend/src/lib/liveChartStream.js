@@ -29,6 +29,11 @@ function asNumber(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+function asOptionalNumber(v) {
+  if (v == null || v === '') return null;
+  return asNumber(v);
+}
+
 function asString(v) {
   return typeof v === 'string' ? v : '';
 }
@@ -135,10 +140,34 @@ function applyPosition(state, data) {
   return true;
 }
 
+function mergeTradeComment(prevComment, nextComment) {
+  const prev = asString(prevComment).trim();
+  const next = asString(nextComment).trim();
+  if (!prev) return next;
+  if (!next) return prev;
+  if (prev === next || prev.includes(next)) return prev;
+  if (next.includes(prev)) return next;
+  return `${prev}; ${next}`;
+}
+
+function tradeValueUsd(data) {
+  const value = asOptionalNumber(data?.value_usd);
+  if (value != null) return Math.abs(value);
+  const notional = asOptionalNumber(data?.notional);
+  if (notional != null) return Math.abs(notional);
+  const price = asOptionalNumber(data?.price);
+  const qty = asOptionalNumber(data?.qty);
+  if (price != null && qty != null) return Math.abs(price * qty);
+  const filledAvgPrice = asOptionalNumber(data?.filled_avg_price);
+  const filledQty = asOptionalNumber(data?.filled_qty);
+  if (filledAvgPrice != null && filledQty != null) return Math.abs(filledAvgPrice * filledQty);
+  return null;
+}
+
 function applyTrade(state, data) {
   const time = pointTime(data);
   if (time == null) return false;
-  state.trades.push({
+  const next = {
     rowKey: data?.seq ?? `${time}-${state.trades.length}`,
     time,
     unixtime: time,
@@ -148,6 +177,7 @@ function applyTrade(state, data) {
     label: asString(data?.label),
     price: data?.price ?? null,
     qty: data?.qty ?? null,
+    value_usd: tradeValueUsd(data),
     deposit_ratio: data?.deposit_ratio ?? null,
     position_before_order: data?.position_before_order ?? null,
     position_after_order_filled: data?.position_after_order_filled ?? null,
@@ -155,7 +185,39 @@ function applyTrade(state, data) {
     client_order_id: asString(data?.client_order_id),
     status: asString(data?.status),
     comment: asString(data?.comment) || asString(data?.reason),
-  });
+  };
+  const cid = next.client_order_id;
+  const aid = next.alpaca_order_id;
+  const idx =
+    cid || aid
+      ? state.trades.findIndex(
+          (row) =>
+            (cid && row.client_order_id === cid) ||
+            (aid && row.alpaca_order_id === aid),
+        )
+      : -1;
+  if (idx >= 0) {
+    const prev = state.trades[idx];
+    state.trades[idx] = {
+      ...prev,
+      ticker: next.ticker || prev.ticker,
+      direction: next.direction || prev.direction,
+      action: next.action || prev.action,
+      label: next.label || prev.label,
+      price: next.price ?? prev.price,
+      qty: next.qty ?? prev.qty,
+      value_usd: next.value_usd ?? prev.value_usd,
+      deposit_ratio: next.deposit_ratio ?? prev.deposit_ratio,
+      position_before_order: next.position_before_order ?? prev.position_before_order,
+      position_after_order_filled: next.position_after_order_filled ?? prev.position_after_order_filled,
+      alpaca_order_id: next.alpaca_order_id || prev.alpaca_order_id,
+      client_order_id: next.client_order_id || prev.client_order_id,
+      status: next.status || prev.status,
+      comment: mergeTradeComment(prev.comment, next.comment),
+    };
+  } else {
+    state.trades.push(next);
+  }
   return true;
 }
 

@@ -46,7 +46,7 @@ def test_serialize_data_json():
                 layout={"xaxis": {"title": "Return %"}, "yaxis": {"title": "Count"}},
             ),
             utils.TableChart(
-                title="Trades",
+                title="Orders",
                 rows=[
                     {"entry_time": "2024-01-15", "exit_time": "2024-02-10", "pnl": 3.1, "comment": "EMA cross up"},
                     {"entry_time": "2024-03-02", "exit_time": "2024-03-20", "pnl": -1.2, "comment": "Signal flip"},
@@ -104,7 +104,7 @@ def test_serialize_data_json():
             },
             {
                 "type": "table",
-                "title": "Trades",
+                "title": "Orders",
                 "description": "",
                 "rows": [
                     {"entry_time": "2024-01-15", "exit_time": "2024-02-10", "pnl": 3.1, "comment": "EMA cross up"},

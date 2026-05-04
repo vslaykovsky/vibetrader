@@ -62,6 +62,7 @@ class LiveTradePatchData(BaseModel):
     label: str = ""
     price: float | None = None
     qty: float | None = None
+    value_usd: float | None = None
     deposit_ratio: float | None = None
     position_before_order: float | None = None
     position_after_order_filled: float | None = None
@@ -250,7 +251,7 @@ def live_stream_patch_from_event(row: Any, ctx: LiveStreamContext) -> LivePatchE
         return _indicator_event(row, ctx, payload, source="output")
     if kind == "portfolio":
         return _position_event(row, ctx, payload)
-    if kind == "order_signal":
+    if kind in {"order_signal", "order_update"}:
         return _trade_event(row, ctx, payload)
     return None
 
@@ -511,8 +512,11 @@ def _order_comment(payload: dict[str, Any]) -> str:
     comment = (
         _str_field(payload, "short_explanation")
         or _str_field(payload, "reason")
-        or "strategy signal"
+        or _str_field(payload, "comment")
     )
+    if not comment:
+        event = _str_field(payload, "broker_event") or _str_field(payload, "event")
+        comment = f"Alpaca {event}" if event else "strategy signal"
     error = _str_field(payload, "alpaca_error_message") or _str_field(payload, "error")
     if not error:
         return comment
@@ -537,6 +541,24 @@ def _order_comment(payload: dict[str, Any]) -> str:
     return f"{comment}; {detail}" if comment else detail
 
 
+def _order_value_usd(payload: dict[str, Any]) -> float | None:
+    value = _float_field(payload, "value_usd")
+    if value is not None:
+        return abs(value)
+    notional = _float_field(payload, "notional")
+    if notional is not None:
+        return abs(notional)
+    price = _float_field(payload, "price")
+    qty = _float_field(payload, "qty")
+    if price is not None and qty is not None:
+        return abs(price * qty)
+    filled_avg_price = _float_field(payload, "filled_avg_price")
+    filled_qty = _float_field(payload, "filled_qty")
+    if filled_avg_price is not None and filled_qty is not None:
+        return abs(filled_avg_price * filled_qty)
+    return None
+
+
 def _trade_event(
     row: Any, ctx: LiveStreamContext, payload: dict[str, Any]
 ) -> LiveTradePatchEvent | None:
@@ -549,6 +571,7 @@ def _trade_event(
         label=_str_field(payload, "label"),
         price=_float_field(payload, "price"),
         qty=_float_field(payload, "qty"),
+        value_usd=_order_value_usd(payload),
         deposit_ratio=_float_field(payload, "deposit_ratio"),
         position_before_order=_float_field(payload, "position_before_order"),
         position_after_order_filled=_float_field(payload, "position_after_order_filled"),

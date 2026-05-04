@@ -946,7 +946,7 @@ function buildMetricsPanelItems(metrics) {
     { label: 'Max Drawdown', value: fmtPercent3(metrics.max_drawdown), color: '#ef5350' },
     { label: 'Win Rate', value: fmtPercent3(metrics.win_rate), color: '#d1d4dc' },
     {
-      label: '# Trades',
+      label: '# Orders',
       value:
         typeof metrics.num_trades === 'number' && Number.isFinite(metrics.num_trades)
           ? fmtNumber0(metrics.num_trades)

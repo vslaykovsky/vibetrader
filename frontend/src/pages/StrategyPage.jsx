@@ -13,6 +13,7 @@ import { useTheme } from '../ThemeContext';
 import { useTimeZone } from '../TimeZoneContext.jsx';
 import { dateKeyFromIso as zonedDateKeyFromIso, parseIsoInstant, todayDateKey } from '../lib/dateTime.js';
 import { ProfileMenu } from '../ProfileMenu';
+import { ConfirmDialog } from '../components/ConfirmDialog.jsx';
 import { SimulationPanel } from '../components/SimulationPanel.jsx';
 
 hljs.registerLanguage('python', python);
@@ -502,6 +503,7 @@ export function StrategyPage() {
   const [threadsError, setThreadsError] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [deletingThread, setDeletingThread] = useState(false);
+  const [deleteThreadDialogOpen, setDeleteThreadDialogOpen] = useState(false);
   const chatEndRef = useRef(null);
   const chatFormRef = useRef(null);
   const chatPanelRef = useRef(null);
@@ -532,6 +534,7 @@ export function StrategyPage() {
   const [historicalStrategyPythonCode, setHistoricalStrategyPythonCode] = useState('');
   const [algorithmLoading, setAlgorithmLoading] = useState(false);
   const [reverting, setReverting] = useState(false);
+  const [revertRunRequest, setRevertRunRequest] = useState('');
   const [isNarrow, setIsNarrow] = useState(false);
   const [mobileCanvasOpen, setMobileCanvasOpen] = useState(false);
   const [chatPanelWidthPx, setChatPanelWidthPx] = useState(null);
@@ -993,10 +996,6 @@ export function StrategyPage() {
     setViewingRunId(null);
     setHistoricalCanvas(null);
     setHistoricalStrategyPythonCode('');
-    const ok = window.confirm(
-      'Revert this thread to this agent message? This will delete all later strategy runs for this thread.',
-    );
-    if (!ok) return;
     setReverting(true);
     setError('');
     try {
@@ -1030,6 +1029,7 @@ export function StrategyPage() {
         statusText: next.status_text || '',
       });
       mergeStrategyNameFromPayload(next);
+      setRevertRunRequest('');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1056,8 +1056,6 @@ export function StrategyPage() {
     if (viewingRunId) {
       return;
     }
-    const ok = window.confirm('Delete this strategy thread? This cannot be undone.');
-    if (!ok) return;
 
     setDeletingThread(true);
     setError('');
@@ -1071,6 +1069,7 @@ export function StrategyPage() {
         throw new Error(payload.error || 'Failed to delete strategy');
       }
       const list = await refreshThreads();
+      setDeleteThreadDialogOpen(false);
       const sorted = [...list].sort((a, b) => {
         const at = parseIsoTime(a?.latest_created_at) ?? -1;
         const bt = parseIsoTime(b?.latest_created_at) ?? -1;
@@ -1733,11 +1732,12 @@ export function StrategyPage() {
           <span className="dashboard-topbar-sep" aria-hidden>
             /
           </span>
-          <Link to="/dashboard" className="dashboard-topbar-crumb dashboard-topbar-link">
-            Dashboard
-          </Link>
+          <span className="dashboard-topbar-crumb">Strategy</span>
         </div>
         <div className="dashboard-topbar-right">
+          <Link className="dashboard-topbar-crumb dashboard-topbar-link" to="/dashboard">
+            Dashboard
+          </Link>
           <button
             type="button"
             className="theme-toggle"
@@ -1803,7 +1803,7 @@ export function StrategyPage() {
               activeRunId={viewingRunId}
               onViewRun={handleViewRun}
               onViewStrategy={handleViewStrategy}
-              onRevertRun={handleRevertRun}
+              onRevertRun={(runId) => setRevertRunRequest(String(runId || '').trim())}
               revertDisabled={reverting || showProcessing}
               showViewStrategy={isNarrow && !mobileCanvasOpen && hasAnyCanvasData}
             />
@@ -2027,7 +2027,7 @@ export function StrategyPage() {
               <button
                 type="button"
                 className="canvas-header-action canvas-header-action-icon canvas-header-action-danger"
-                onClick={handleDeleteThread}
+                onClick={() => setDeleteThreadDialogOpen(true)}
                 disabled={deletingThread || showProcessing || Boolean(viewingRunId)}
                 aria-label="Delete strategy"
                 title={viewingRunId ? 'Return to current thread to delete' : 'Delete strategy'}
@@ -2239,6 +2239,31 @@ export function StrategyPage() {
       </aside>
     </main>
     </div>
+    <ConfirmDialog
+      open={Boolean(revertRunRequest)}
+      title="Revert thread?"
+      message="Revert this thread to this agent message? This will delete all later strategy runs for this thread."
+      confirmLabel={reverting ? 'Reverting…' : 'Revert'}
+      icon="history"
+      busy={reverting}
+      danger
+      onCancel={() => {
+        if (!reverting) setRevertRunRequest('');
+      }}
+      onConfirm={() => void handleRevertRun(revertRunRequest)}
+    />
+    <ConfirmDialog
+      open={deleteThreadDialogOpen}
+      title="Delete strategy thread?"
+      message={`Delete "${threadDisplayName(currentThreadMeta)}"? This cannot be undone.`}
+      confirmLabel={deletingThread ? 'Deleting…' : 'Delete'}
+      busy={deletingThread}
+      danger
+      onCancel={() => {
+        if (!deletingThread) setDeleteThreadDialogOpen(false);
+      }}
+      onConfirm={() => void handleDeleteThread()}
+    />
     {deployModalOpen
       ? createPortal(
           <div className="deploy-live-modal" role="dialog" aria-modal="true" aria-label="Deploy to Alpaca">

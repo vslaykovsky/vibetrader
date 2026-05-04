@@ -821,7 +821,7 @@ class StrategySimulateCommandHandler:
                 )
                 return
             # Wall-clock anchor: the absolute Unix start of ``cmd.start_date`` (UTC).
-            # Trades / equity emitted at ``unixtime < sim_start_unix`` belong to the
+            # Orders / equity emitted at ``unixtime < sim_start_unix`` belong to the
             # warmup window and must never reach the chart.
             sim_start_unix = int(
                 pd.Timestamp(cmd.start_date).tz_localize("UTC").timestamp()

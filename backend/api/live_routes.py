@@ -64,6 +64,13 @@ def _utc_isoformat(dt: datetime | None) -> str | None:
     return dt.isoformat().replace("+00:00", "Z")
 
 
+_LIVE_RUN_DELETABLE_STATUSES = {"stopped", "failure", "error", "failed"}
+
+
+def _live_run_can_delete(status: str | None) -> bool:
+    return str(status or "").strip().lower() in _LIVE_RUN_DELETABLE_STATUSES
+
+
 _SA_TOKEN_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
 _SA_CA_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
 
@@ -491,6 +498,28 @@ def live_stop() -> tuple:
         session.close()
 
     return jsonify({"ok": True, "run_id": run_id, "deployment": name, "deleted": deleted}), 200
+
+
+@live_blueprint.delete("/live/runs/<run_id>")
+@require_auth
+def live_delete(run_id: str) -> tuple:
+    uid = str(g.user_id)
+    rid = str(run_id or "").strip()
+    if not rid:
+        return _bad("missing run_id")
+
+    session = SessionLocal()
+    try:
+        row = session.get(LiveRun, rid)
+        if row is None or row.created_by != uid:
+            return _bad("live run not found", 404)
+        if not _live_run_can_delete(row.status):
+            return _bad("live run must be stopped before deletion", 409)
+        session.delete(row)
+        session.commit()
+        return jsonify({"ok": True, "run_id": rid, "deleted": True}), 200
+    finally:
+        session.close()
 
 
 @live_blueprint.get("/live/status")

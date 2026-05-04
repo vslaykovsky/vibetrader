@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { formatDistanceStrict } from 'date-fns';
+import hljs from 'highlight.js/lib/core';
+import python from 'highlight.js/lib/languages/python';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useAuth } from '../AuthContext';
 import { useTheme } from '../ThemeContext';
 import { useTimeZone } from '../TimeZoneContext.jsx';
 import { formatUnixDateTime, parseIsoInstant } from '../lib/dateTime.js';
 import { ProfileMenu } from '../ProfileMenu';
+import { ConfirmDialog } from '../components/ConfirmDialog.jsx';
 import { renderCharts } from '../strategyChartRenderer.js';
 import { attachSyncedCrosshair, attachSyncedTimeScales } from '../lib/lwcSync.js';
 import {
@@ -14,6 +19,8 @@ import {
   liveChartsDataJson,
   liveTrades,
 } from '../lib/liveChartStream.js';
+
+hljs.registerLanguage('python', python);
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
@@ -84,7 +91,12 @@ function fmtUnixTime(u, timeZone) {
 
 function liveRunCanStop(status) {
   const s = String(status || '').toLowerCase();
-  return s !== 'stopping' && s !== 'stopped';
+  return Boolean(s) && s !== 'stopping' && !liveRunCanDelete(s);
+}
+
+function liveRunCanDelete(status) {
+  const s = String(status || '').toLowerCase();
+  return s === 'stopped' || s === 'failure' || s === 'error' || s === 'failed';
 }
 
 function liveOrderIdLabel(t) {
@@ -95,14 +107,179 @@ function liveOrderIdLabel(t) {
   return '—';
 }
 
+function liveAlpacaOrderHref(t) {
+  const a = typeof t?.alpaca_order_id === 'string' ? t.alpaca_order_id.trim() : '';
+  if (!a) return '';
+  return `https://app.alpaca.markets/dashboard/order/${encodeURIComponent(a)}`;
+}
+
 function fmtTradeNumber(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return '—';
   return n.toLocaleString('en-US', { maximumFractionDigits: 6 });
 }
 
+function fmtUsdNumber(v) {
+  if (v == null || v === '') return '—';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '—';
+  return n.toLocaleString('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function optionalTradeNumber(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function liveTradeValueUsd(t) {
+  const value = optionalTradeNumber(t?.value_usd);
+  if (value != null) return Math.abs(value);
+  const price = optionalTradeNumber(t?.price);
+  const qty = optionalTradeNumber(t?.qty);
+  if (price != null && qty != null) return Math.abs(price * qty);
+  return null;
+}
+
+function CanvasPanelCopyButton({ text, ariaLabel, disabled }) {
+  const [copied, setCopied] = useState(false);
+  const payload = typeof text === 'string' ? text : '';
+  const isDisabled = Boolean(disabled) || !payload;
+
+  async function handleCopy(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (isDisabled) return;
+    try {
+      await navigator.clipboard.writeText(payload);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className={`canvas-panel-copy-btn${copied ? ' is-copied' : ''}`}
+      aria-label={ariaLabel}
+      title={copied ? 'Copied' : 'Copy to clipboard'}
+      disabled={isDisabled}
+      onClick={handleCopy}
+    >
+      {copied ? (
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+          <path
+            d="M5 13l4 4L19 7"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+          <rect
+            x="8.25"
+            y="8.25"
+            width="11.5"
+            height="11.5"
+            rx="2"
+            stroke="currentColor"
+            strokeWidth="1.75"
+          />
+          <rect
+            x="4.25"
+            y="4.25"
+            width="11.5"
+            height="11.5"
+            rx="2"
+            stroke="currentColor"
+            strokeWidth="1.75"
+          />
+        </svg>
+      )}
+    </button>
+  );
+}
+
+function escapeHtml(code) {
+  const source = typeof code === 'string' ? code : '';
+  return source
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function highlightedPythonHtml(code) {
+  const source = typeof code === 'string' ? code : '';
+  try {
+    return hljs.highlight(source, { language: 'python', ignoreIllegals: true }).value;
+  } catch {
+    return escapeHtml(source);
+  }
+}
+
+function PythonSourceCode({ code }) {
+  const highlighted = useMemo(() => highlightedPythonHtml(code), [code]);
+  return (
+    <pre className="canvas-pseudocode canvas-python-code">
+      <code dangerouslySetInnerHTML={{ __html: highlighted }} />
+    </pre>
+  );
+}
+
+function paramsJsonFromOutput(output) {
+  if (!output || typeof output !== 'object') {
+    return null;
+  }
+  const raw = output['params.json'];
+  if (raw == null) {
+    return null;
+  }
+  if (typeof raw === 'string') {
+    const t = raw.trim();
+    return t.length ? t : null;
+  }
+  try {
+    const s = JSON.stringify(raw, null, 2);
+    return s.trim().length ? s : null;
+  } catch {
+    return null;
+  }
+}
+
+function paramsHyperoptJsonFromOutput(output) {
+  if (!output || typeof output !== 'object') {
+    return null;
+  }
+  const raw = output['params-hyperopt.json'];
+  if (raw == null) {
+    return null;
+  }
+  if (typeof raw === 'string') {
+    const t = raw.trim();
+    return t.length ? t : null;
+  }
+  try {
+    const s = JSON.stringify(raw, null, 2);
+    return s.trim().length ? s : null;
+  } catch {
+    return null;
+  }
+}
+
 export function LiveRunStreamPage() {
   const { runId = '' } = useParams();
+  const navigate = useNavigate();
   const { user, signOut, getAccessToken } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { timeZone } = useTimeZone();
@@ -116,10 +293,17 @@ export function LiveRunStreamPage() {
   const [chartError, setChartError] = useState('');
   const [actionError, setActionError] = useState('');
   const [stopping, setStopping] = useState(false);
+  const [stopDialogOpen, setStopDialogOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [strategyDetails, setStrategyDetails] = useState(null);
+  const [strategyError, setStrategyError] = useState('');
+  const [algorithmLoading, setAlgorithmLoading] = useState(false);
 
   const chartsMountRef = useRef(null);
   const liveChartStateRef = useRef(createLiveChartState());
   const lastEventIdRef = useRef(0);
+  const strategyFetchAbortRef = useRef(null);
 
   const authFetch = useCallback(
     async (url, options = {}) => {
@@ -289,13 +473,85 @@ export function LiveRunStreamPage() {
     return '';
   }, [runMeta]);
 
+  const deployedStrategyId = useMemo(() => {
+    const fromRuns = String(runMeta?.strategy_id || runMeta?.deployed_from_run_id || '').trim();
+    if (fromRuns) return fromRuns;
+    return String(dbRow?.strategy_id || dbRow?.deployed_from_run_id || '').trim();
+  }, [runMeta, dbRow]);
+
+  useEffect(() => {
+    strategyFetchAbortRef.current?.abort();
+    strategyFetchAbortRef.current = null;
+    setStrategyDetails(null);
+    setStrategyError('');
+    setAlgorithmLoading(false);
+
+    const sid = String(deployedStrategyId || '').trim();
+    if (!sid) return undefined;
+
+    const ac = new AbortController();
+    strategyFetchAbortRef.current = ac;
+    (async () => {
+      try {
+        const res = await authFetch(`${API_BASE_URL}/strategy?id=${encodeURIComponent(sid)}`, {
+          signal: ac.signal,
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (ac.signal.aborted) return;
+        if (!res.ok) {
+          throw new Error(payload.error || `Strategy details failed (${res.status})`);
+        }
+        setStrategyDetails(payload && typeof payload === 'object' ? payload : null);
+      } catch (e) {
+        if (e?.name === 'AbortError') return;
+        setStrategyError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (strategyFetchAbortRef.current === ac) {
+          strategyFetchAbortRef.current = null;
+        }
+      }
+    })();
+
+    return () => {
+      ac.abort();
+      if (strategyFetchAbortRef.current === ac) {
+        strategyFetchAbortRef.current = null;
+      }
+    };
+  }, [authFetch, deployedStrategyId]);
+
+  const fetchStrategyAlgorithm = useCallback(async () => {
+    const sid = String(deployedStrategyId || strategyDetails?.id || '').trim();
+    if (!sid || algorithmLoading) return;
+    if (String(strategyDetails?.algorithm || '').trim()) return;
+    setAlgorithmLoading(true);
+    setStrategyError('');
+    try {
+      const response = await authFetch(`${API_BASE_URL}/strategy/algorithm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: sid }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setStrategyError(typeof data.error === 'string' ? data.error : 'Failed to load strategy algorithm');
+        return;
+      }
+      const text = typeof data.algorithm === 'string' ? data.algorithm : '';
+      setStrategyDetails((prev) => {
+        if (!prev || String(prev.id || '').trim() !== sid) return prev;
+        return { ...prev, algorithm: text };
+      });
+    } catch (err) {
+      setStrategyError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAlgorithmLoading(false);
+    }
+  }, [authFetch, deployedStrategyId, strategyDetails, algorithmLoading]);
+
   const stopLive = useCallback(async () => {
     const rid = String(runId || '').trim();
     if (!rid) return;
-    const ok = window.confirm(
-      'Stop live trading for this deployment? Open positions will not be closed automatically; only the live runner stops.',
-    );
-    if (!ok) return;
     setStopping(true);
     setActionError('');
     try {
@@ -306,6 +562,7 @@ export function LiveRunStreamPage() {
       });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || `Stop failed (${res.status})`);
+      setStopDialogOpen(false);
       await loadMeta();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
@@ -314,16 +571,51 @@ export function LiveRunStreamPage() {
     }
   }, [authFetch, runId, loadMeta]);
 
+  const deleteLiveRun = useCallback(async () => {
+    const rid = String(runId || '').trim();
+    if (!rid || deleting) return;
+    setDeleting(true);
+    setActionError('');
+    try {
+      const res = await authFetch(`${API_BASE_URL}/live/runs/${encodeURIComponent(rid)}`, {
+        method: 'DELETE',
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || `Delete failed (${res.status})`);
+      navigate('/dashboard#live-deployments');
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeleting(false);
+    }
+  }, [authFetch, runId, navigate, deleting]);
+
   const title = strategyTitleFromRun(runMeta);
   const accountDisp = liveAccountLabel(runMeta || {});
   const showStop = liveRunCanStop(displayStatus);
+  const showDelete = Boolean(runMeta) && liveRunCanDelete(displayStatus);
   const isLocal = String(runMeta?.runner_backend || '').toLowerCase() === 'local';
+  const strategyOutput = strategyDetails?.canvas?.output;
+  const paramsJsonText = paramsJsonFromOutput(strategyOutput);
+  const showParamsPanel = paramsJsonText != null;
+  const paramsHyperoptJsonText = paramsHyperoptJsonFromOutput(strategyOutput);
+  const showHyperoptParamsPanel = paramsHyperoptJsonText != null;
+  const strategyAlgorithmText = String(strategyDetails?.algorithm || '').trim();
+  const showAlgorithmPanel = Boolean(deployedStrategyId && strategyDetails);
+  const pythonCodeText = typeof strategyDetails?.python_code === 'string' ? strategyDetails.python_code : '';
+  const showPythonCodePanel = pythonCodeText.trim().length > 0;
+  const showStrategyArtifactPanels =
+    showParamsPanel ||
+    showHyperoptParamsPanel ||
+    showAlgorithmPanel ||
+    showPythonCodePanel ||
+    Boolean(strategyError);
 
   return (
     <div className="dashboard-page live-run-page">
       <header className="dashboard-topbar">
         <div className="dashboard-topbar-left">
-          <Link to="/dashboard" className="app-home-link" aria-label="Go to dashboard">
+          <Link to="/" className="app-home-link" aria-label="Go to home page">
             <span className="app-logo">TraderChat</span>
           </Link>
           <span className="dashboard-topbar-sep" aria-hidden>
@@ -332,6 +624,9 @@ export function LiveRunStreamPage() {
           <span className="dashboard-topbar-crumb">Live stream</span>
         </div>
         <div className="dashboard-topbar-right">
+          <Link className="dashboard-topbar-crumb dashboard-topbar-link" to="/dashboard#live-deployments">
+            Dashboard
+          </Link>
           <button
             type="button"
             className="theme-toggle"
@@ -388,14 +683,8 @@ export function LiveRunStreamPage() {
             </div>
           </div>
           <div className="dashboard-hero-actions live-run-hero-actions">
-            <Link className="dashboard-btn-ghost" to="/dashboard#live-deployments">
-              <span className="home-ms dashboard-btn-icon" aria-hidden>
-                arrow_back
-              </span>
-              Dashboard
-            </Link>
             {backtestHref ? (
-              <Link className="dashboard-link-btn" to={backtestHref}>
+              <Link className="live-run-action-link" to={backtestHref}>
                 <span className="home-ms dashboard-btn-icon" aria-hidden>
                   analytics
                 </span>
@@ -407,9 +696,23 @@ export function LiveRunStreamPage() {
                 type="button"
                 className="dashboard-btn-primary live-run-stop-btn"
                 disabled={stopping}
-                onClick={() => void stopLive()}
+                onClick={() => setStopDialogOpen(true)}
               >
                 {stopping ? 'Stopping…' : 'Stop live'}
+              </button>
+            ) : null}
+            {showDelete ? (
+              <button
+                type="button"
+                className="live-run-action-link live-run-delete-btn"
+                disabled={deleting}
+                aria-label="Delete live deployment"
+                title="Delete live deployment"
+                onClick={() => setDeleteDialogOpen(true)}
+              >
+                <span className="home-ms dashboard-btn-icon" aria-hidden>
+                  {deleting ? 'hourglass_top' : 'delete'}
+                </span>
               </button>
             ) : null}
           </div>
@@ -436,7 +739,7 @@ export function LiveRunStreamPage() {
 
         <section className="dashboard-panel live-run-trades-panel">
           <div className="dashboard-panel-head">
-            <h2 className="dashboard-panel-title">Trades</h2>
+            <h2 className="dashboard-panel-title">Orders</h2>
             <span className="dashboard-panel-count">{trades.length}</span>
           </div>
           {trades.length === 0 ? (
@@ -451,6 +754,7 @@ export function LiveRunStreamPage() {
                     <th>Direction</th>
                     <th>Price</th>
                     <th>Qty</th>
+                    <th>Value USD</th>
                     <th>Fraction</th>
                     <th>Position Before</th>
                     <th>Position After</th>
@@ -460,27 +764,141 @@ export function LiveRunStreamPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {[...trades].reverse().map((t) => (
-                    <tr key={t.rowKey}>
-                      <td>{fmtUnixTime(t.unixtime, timeZone)}</td>
-                      <td>{t.ticker ?? '—'}</td>
-                      <td>{t.direction ?? '—'}</td>
-                      <td>{fmtTradeNumber(t.price)}</td>
-                      <td>{fmtTradeNumber(t.qty)}</td>
-                      <td>{fmtTradeNumber(t.deposit_ratio)}</td>
-                      <td>{fmtTradeNumber(t.position_before_order)}</td>
-                      <td>{fmtTradeNumber(t.position_after_order_filled)}</td>
-                      <td>{t.status || '—'}</td>
-                      <td>{t.comment || '—'}</td>
-                      <td className="live-run-order-id-cell">{liveOrderIdLabel(t)}</td>
-                    </tr>
-                  ))}
+                  {[...trades].reverse().map((t) => {
+                    const orderIdLabel = liveOrderIdLabel(t);
+                    const alpacaOrderHref = liveAlpacaOrderHref(t);
+                    const valueUsd = liveTradeValueUsd(t);
+                    return (
+                      <tr key={t.rowKey}>
+                        <td>{fmtUnixTime(t.unixtime, timeZone)}</td>
+                        <td>{t.ticker ?? '—'}</td>
+                        <td>{t.direction ?? '—'}</td>
+                        <td>{fmtTradeNumber(t.price)}</td>
+                        <td>{fmtTradeNumber(t.qty)}</td>
+                        <td>{fmtUsdNumber(valueUsd)}</td>
+                        <td>{fmtTradeNumber(t.deposit_ratio)}</td>
+                        <td>{fmtTradeNumber(t.position_before_order)}</td>
+                        <td>{fmtTradeNumber(t.position_after_order_filled)}</td>
+                        <td>{t.status || '—'}</td>
+                        <td>{t.comment || '—'}</td>
+                        <td className="live-run-order-id-cell">
+                          {alpacaOrderHref ? (
+                            <a
+                              className="live-run-order-id-link"
+                              href={alpacaOrderHref}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              {orderIdLabel}
+                            </a>
+                          ) : (
+                            orderIdLabel
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           )}
         </section>
+
+        {showStrategyArtifactPanels ? (
+          <section className="live-run-artifacts" aria-label="Live strategy artifacts">
+            {strategyError ? <p className="dashboard-banner-error">{strategyError}</p> : null}
+            {showParamsPanel ? (
+              <details className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details">
+                <summary className="canvas-pseudocode-summary">Strategy parameters</summary>
+                <CanvasPanelCopyButton
+                  text={paramsJsonText}
+                  ariaLabel="Copy strategy parameters JSON"
+                />
+                <pre className="canvas-pseudocode">{paramsJsonText}</pre>
+              </details>
+            ) : null}
+            {showHyperoptParamsPanel ? (
+              <details className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details">
+                <summary className="canvas-pseudocode-summary">Hyperopt parameters</summary>
+                <CanvasPanelCopyButton
+                  text={paramsHyperoptJsonText}
+                  ariaLabel="Copy hyperopt parameters JSON"
+                />
+                <pre className="canvas-pseudocode">{paramsHyperoptJsonText}</pre>
+              </details>
+            ) : null}
+            {showAlgorithmPanel ? (
+              <details
+                key={`algorithm:${deployedStrategyId}`}
+                className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details"
+                onToggle={(e) => {
+                  if (!e.currentTarget.open) return;
+                  if (!strategyAlgorithmText) {
+                    void fetchStrategyAlgorithm();
+                  }
+                }}
+              >
+                <summary className="canvas-pseudocode-summary">Strategy Algorithm</summary>
+                <CanvasPanelCopyButton
+                  text={strategyAlgorithmText}
+                  ariaLabel="Copy strategy algorithm overview"
+                  disabled={algorithmLoading}
+                />
+                {algorithmLoading ? (
+                  <div className="chat-spinner-row canvas-algorithm-spinner" role="status" aria-live="polite">
+                    <span className="chat-spinner" aria-hidden />
+                    <span className="chat-processing-label">Generating overview…</span>
+                  </div>
+                ) : (
+                  <div className="canvas-algorithm-markdown message-markdown">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {strategyAlgorithmText}
+                    </ReactMarkdown>
+                  </div>
+                )}
+              </details>
+            ) : null}
+            {showPythonCodePanel ? (
+              <details
+                key={`source:${deployedStrategyId}`}
+                className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details"
+              >
+                <summary className="canvas-pseudocode-summary">Python Source Code</summary>
+                <CanvasPanelCopyButton
+                  text={pythonCodeText}
+                  ariaLabel="Copy Python source code"
+                />
+                <PythonSourceCode code={pythonCodeText} />
+              </details>
+            ) : null}
+          </section>
+        ) : null}
       </div>
+      <ConfirmDialog
+        open={stopDialogOpen}
+        title="Stop live trading?"
+        message="Open positions will not be closed automatically; only the live runner stops."
+        confirmLabel={stopping ? 'Stopping…' : 'Stop live'}
+        icon="stop_circle"
+        busy={stopping}
+        danger
+        onCancel={() => {
+          if (!stopping) setStopDialogOpen(false);
+        }}
+        onConfirm={() => void stopLive()}
+      />
+      <ConfirmDialog
+        open={deleteDialogOpen}
+        title="Delete live deployment?"
+        message={`Delete "${title}"? This removes its saved stream and orders.`}
+        confirmLabel={deleting ? 'Deleting…' : 'Delete'}
+        busy={deleting}
+        danger
+        onCancel={() => {
+          if (!deleting) setDeleteDialogOpen(false);
+        }}
+        onConfirm={() => void deleteLiveRun()}
+      />
     </div>
   );
 }

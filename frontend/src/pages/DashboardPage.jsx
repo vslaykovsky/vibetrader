@@ -7,6 +7,7 @@ import { useTheme } from '../ThemeContext';
 import { useTimeZone } from '../TimeZoneContext.jsx';
 import { formatIsoDateTime, parseIsoInstant } from '../lib/dateTime.js';
 import { ProfileMenu } from '../ProfileMenu';
+import { ConfirmDialog } from '../components/ConfirmDialog.jsx';
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
@@ -110,6 +111,8 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [threadsExpanded, setThreadsExpanded] = useState(false);
+  const [deletingRunId, setDeletingRunId] = useState('');
+  const [deleteRunRequest, setDeleteRunRequest] = useState(null);
 
   const authFetch = useCallback(
     async (url, options = {}) => {
@@ -161,11 +164,6 @@ export function DashboardPage() {
     [navigate],
   );
 
-  const visibleThreads = useMemo(() => {
-    if (threadsExpanded || threads.length <= THREAD_PREVIEW_LIMIT) return threads;
-    return threads.slice(0, THREAD_PREVIEW_LIMIT);
-  }, [threads, threadsExpanded]);
-
   const threadsByThreadId = useMemo(() => {
     const m = new Map();
     for (const t of threads) {
@@ -174,6 +172,36 @@ export function DashboardPage() {
     }
     return m;
   }, [threads]);
+
+  const deleteLiveRun = useCallback(
+    async (run) => {
+      const rid = String(run?.run_id || '').trim();
+      if (!rid || deletingRunId) return;
+      setDeletingRunId(rid);
+      setError('');
+      try {
+        const response = await authFetch(`${API_BASE_URL}/live/runs/${encodeURIComponent(rid)}`, {
+          method: 'DELETE',
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.error || `Delete failed (${response.status})`);
+        }
+        setRuns((prev) => prev.filter((x) => String(x?.run_id || '').trim() !== rid));
+        setDeleteRunRequest(null);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setDeletingRunId('');
+      }
+    },
+    [authFetch, deletingRunId, threadsByThreadId],
+  );
+
+  const visibleThreads = useMemo(() => {
+    if (threadsExpanded || threads.length <= THREAD_PREVIEW_LIMIT) return threads;
+    return threads.slice(0, THREAD_PREVIEW_LIMIT);
+  }, [threads, threadsExpanded]);
 
   const email = user?.email || '';
 
@@ -190,6 +218,9 @@ export function DashboardPage() {
           <span className="dashboard-topbar-crumb">Dashboard</span>
         </div>
         <div className="dashboard-topbar-right">
+          <Link className="dashboard-topbar-crumb dashboard-topbar-link" to="/dashboard">
+            Dashboard
+          </Link>
           <button
             type="button"
             className="theme-toggle"
@@ -316,12 +347,15 @@ export function DashboardPage() {
                 {runs.map((r) => {
                   const threadId = String(r.thread_id || '').trim();
                   const runId = String(r.run_id || '').trim();
+                  const title = liveStrategyTitle(r, threadsByThreadId);
+                  const canDelete = runId && liveDeploymentStopped(r.status);
+                  const isDeleting = deletingRunId === runId;
                   const inner = (
                     <>
                       <LiveDeploymentStatusIcon status={r.status} />
                       <div className="dashboard-live-row-text">
                         <div className="dashboard-live-name-line">
-                          <span className="dashboard-live-name">{liveStrategyTitle(r, threadsByThreadId)}</span>
+                          <span className="dashboard-live-name">{title}</span>
                           {String(r.runner_backend || '').toLowerCase() === 'local' ? (
                             <span className="dashboard-pill dashboard-pill--local">local</span>
                           ) : null}
@@ -336,13 +370,29 @@ export function DashboardPage() {
                   );
                   return (
                     <li key={runId || `${threadId}:${r.created_at}`}>
-                      {runId ? (
-                        <Link className="dashboard-live-row dashboard-live-row-link" to={`/live/${runId}`}>
-                          {inner}
-                        </Link>
-                      ) : (
-                        <div className="dashboard-live-row">{inner}</div>
-                      )}
+                      <div className="dashboard-live-row-shell">
+                        {runId ? (
+                          <Link className="dashboard-live-row dashboard-live-row-link" to={`/live/${runId}`}>
+                            {inner}
+                          </Link>
+                        ) : (
+                          <div className="dashboard-live-row">{inner}</div>
+                        )}
+                        {canDelete ? (
+                          <button
+                            type="button"
+                            className="dashboard-live-delete-btn"
+                            disabled={isDeleting}
+                            aria-label={`Delete ${title} live deployment`}
+                            title="Delete live deployment"
+                            onClick={() => setDeleteRunRequest(r)}
+                          >
+                            <span className="home-ms" aria-hidden>
+                              {isDeleting ? 'hourglass_top' : 'delete'}
+                            </span>
+                          </button>
+                        ) : null}
+                      </div>
                     </li>
                   );
                 })}
@@ -351,6 +401,18 @@ export function DashboardPage() {
           </section>
         </div>
       </div>
+      <ConfirmDialog
+        open={Boolean(deleteRunRequest)}
+        title="Delete live deployment?"
+        message={`Delete "${liveStrategyTitle(deleteRunRequest, threadsByThreadId)}"? This removes its saved stream and orders.`}
+        confirmLabel={deletingRunId ? 'Deleting…' : 'Delete'}
+        busy={Boolean(deletingRunId)}
+        danger
+        onCancel={() => {
+          if (!deletingRunId) setDeleteRunRequest(null);
+        }}
+        onConfirm={() => void deleteLiveRun(deleteRunRequest)}
+      />
     </div>
   );
 }

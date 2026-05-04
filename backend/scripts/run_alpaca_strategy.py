@@ -7,6 +7,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ from alpaca.trading.client import TradingClient
 from alpaca.common.exceptions import APIError
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.stream import TradingStream
 from sqlalchemy.exc import IntegrityError
 
 from application.services.live_run_control import live_run_row_requests_stop
@@ -136,6 +138,68 @@ def _float_attr(obj, name: str, default: float = 0.0) -> float:
         return float(default)
 
 
+def _float_value(value) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if pd.notna(out) else None
+
+
+def _enum_value(value) -> str:
+    raw = getattr(value, "value", value)
+    return str(raw or "").strip().lower()
+
+
+def _compact_alpaca_symbol(symbol: str) -> str:
+    return str(symbol or "").strip().upper().replace("/", "")
+
+
+def _strategy_symbol_for_alpaca_position(symbol: str, strategy_tickers: list[str] | None) -> str:
+    sym = str(symbol or "").strip().upper()
+    compact = _compact_alpaca_symbol(sym)
+    for ticker in strategy_tickers or []:
+        t = str(ticker or "").strip().upper()
+        if t == sym or _compact_alpaca_symbol(t) == compact:
+            return t
+    return sym
+
+
+def _alpaca_symbols_match(left: str, right: str) -> bool:
+    l = str(left or "").strip().upper()
+    r = str(right or "").strip().upper()
+    return bool(l and r and (l == r or _compact_alpaca_symbol(l) == _compact_alpaca_symbol(r)))
+
+
+def _alpaca_position_qty_from_positions(positions, symbol: str) -> float:
+    for p in positions:
+        if _alpaca_symbols_match(str(getattr(p, "symbol", "")), symbol):
+            return _float_attr(p, "qty")
+    return 0.0
+
+
+def _dt_iso(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _dt_unixtime(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        ts = pd.Timestamp(value)
+    except Exception:
+        return None
+    if getattr(ts, "tzinfo", None) is None and getattr(ts, "tz", None) is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+    return int(ts.timestamp())
+
+
 def _alpaca_client(*, paper: bool) -> TradingClient:
     return TradingClient(
         api_key=_require_env("ALPACA_API_KEY"),
@@ -168,7 +232,11 @@ def _subscription_specs_for_live_bars(startup: StrategyOutput) -> list[LiveSubsc
     return [LiveSubscriptionSpec(channel="bars", symbol=t, scale=_SIMULATION_SCALE) for t in tickers]
 
 
-def _portfolio_snapshot_from_alpaca(client: TradingClient) -> InputPortfolioDataPoint:
+def _portfolio_snapshot_from_alpaca(
+    client: TradingClient,
+    *,
+    strategy_tickers: list[str] | None = None,
+) -> InputPortfolioDataPoint:
     acct = client.get_account()
     cash = max(0.0, _float_attr(acct, "cash"))
     equity = _float_attr(acct, "equity", cash)
@@ -185,7 +253,7 @@ def _portfolio_snapshot_from_alpaca(client: TradingClient) -> InputPortfolioData
         deposit_ratio = market_value / equity if equity > 0 else 0.0
         positions.append(
             {
-                "ticker": sym,
+                "ticker": _strategy_symbol_for_alpaca_position(sym, strategy_tickers),
                 "order_type": "long" if qty > 0 else "short",
                 "deposit_ratio": max(0.0, min(1.0, float(deposit_ratio))),
                 "volume_weighted_avg_entry_price": float(avg),
@@ -487,6 +555,198 @@ def _submit_market_order(client: TradingClient, req: MarketOrderRequest) -> tupl
     return str(getattr(placed, "id", "") or ""), {}
 
 
+def _order_update_payload_from_alpaca(update_or_order) -> dict[str, object]:
+    order = getattr(update_or_order, "order", update_or_order)
+    event = _enum_value(getattr(update_or_order, "event", ""))
+    timestamp = getattr(update_or_order, "timestamp", None) or getattr(order, "updated_at", None)
+    filled_qty = _float_value(getattr(order, "filled_qty", None))
+    filled_avg_price = _float_value(getattr(order, "filled_avg_price", None))
+    event_qty = _float_value(getattr(update_or_order, "qty", None))
+    event_price = _float_value(getattr(update_or_order, "price", None))
+    payload: dict[str, object] = {
+        "ticker": str(getattr(order, "symbol", "") or "").strip().upper(),
+        "direction": _enum_value(getattr(order, "side", "")),
+        "action": event,
+        "status": _enum_value(getattr(order, "status", "")) or event,
+        "alpaca_order_id": str(getattr(order, "id", "") or ""),
+        "client_order_id": str(getattr(order, "client_order_id", "") or ""),
+        "filled_qty": filled_qty,
+        "filled_avg_price": filled_avg_price,
+        "qty": filled_qty if filled_qty is not None else event_qty,
+        "price": filled_avg_price if filled_avg_price is not None else event_price,
+        "broker_event": event,
+        "submitted_at": _dt_iso(getattr(order, "submitted_at", None)),
+        "filled_at": _dt_iso(getattr(order, "filled_at", None)),
+        "updated_at": _dt_iso(getattr(order, "updated_at", None)),
+    }
+    unixtime = _dt_unixtime(timestamp)
+    if unixtime is not None:
+        payload["unixtime"] = unixtime
+    return payload
+
+
+def _live_order_update_changed(row: LiveRunOrder, payload: dict[str, object]) -> bool:
+    status = str(payload.get("status") or "").strip()
+    alpaca_order_id = str(payload.get("alpaca_order_id") or "").strip()
+    filled_qty = _float_value(payload.get("filled_qty"))
+    filled_avg_price = _float_value(payload.get("filled_avg_price"))
+    position_before_order = _float_value(payload.get("position_before_order"))
+    position_after_order_filled = _float_value(payload.get("position_after_order_filled"))
+    return (
+        (bool(status) and status != (row.status or ""))
+        or (bool(alpaca_order_id) and alpaca_order_id != (row.alpaca_order_id or ""))
+        or filled_qty != row.filled_qty
+        or filled_avg_price != row.filled_avg_price
+        or position_before_order != row.position_before_order
+        or position_after_order_filled != row.position_after_order_filled
+    )
+
+
+def _record_order_update(session, *, run_id: str, payload: dict[str, object]) -> bool:
+    client_order_id = str(payload.get("client_order_id") or "").strip()
+    alpaca_order_id = str(payload.get("alpaca_order_id") or "").strip()
+    query = session.query(LiveRunOrder).filter(LiveRunOrder.run_id == run_id)
+    row = None
+    if client_order_id:
+        row = query.filter(LiveRunOrder.client_order_id == client_order_id).one_or_none()
+    if row is None and alpaca_order_id:
+        row = query.filter(LiveRunOrder.alpaca_order_id == alpaca_order_id).one_or_none()
+    if row is None:
+        return False
+    position_before_order = _float_value(payload.get("position_before_order"))
+    if position_before_order is None:
+        position_before_order = row.position_before_order
+        if position_before_order is not None:
+            payload["position_before_order"] = position_before_order
+    position_after_order_filled = _float_value(payload.get("position_after_order_filled"))
+    if position_after_order_filled is None:
+        filled_qty = _float_value(payload.get("filled_qty"))
+        direction = str(payload.get("direction") or "").strip().lower()
+        if position_before_order is not None and filled_qty is not None:
+            qty = abs(float(filled_qty))
+            if direction == "buy":
+                position_after_order_filled = float(position_before_order) + qty
+            elif direction == "sell":
+                position_after_order_filled = float(position_before_order) - qty
+            if position_after_order_filled is not None:
+                payload["position_after_order_filled"] = position_after_order_filled
+        elif row.position_after_order_filled is not None:
+            position_after_order_filled = row.position_after_order_filled
+            payload["position_after_order_filled"] = position_after_order_filled
+    if not _live_order_update_changed(row, payload):
+        return False
+    status = str(payload.get("status") or "").strip()
+    if status:
+        row.status = status
+    if alpaca_order_id:
+        row.alpaca_order_id = alpaca_order_id
+    row.filled_qty = _float_value(payload.get("filled_qty"))
+    row.filled_avg_price = _float_value(payload.get("filled_avg_price"))
+    row.position_before_order = _float_value(payload.get("position_before_order"))
+    row.position_after_order_filled = _float_value(payload.get("position_after_order_filled"))
+    row.updated_at = datetime.now(timezone.utc)
+    session.add(row)
+    _emit_db_event(
+        session,
+        run_id=run_id,
+        kind="order_update",
+        unixtime=int(payload.get("unixtime") or time.time()),
+        payload=payload,
+    )
+    return True
+
+
+def _order_status_terminal(status: str) -> bool:
+    return str(status or "").strip().lower() in {
+        "filled",
+        "canceled",
+        "cancelled",
+        "expired",
+        "rejected",
+        "replaced",
+    }
+
+
+def _reconcile_live_run_orders(client: TradingClient, *, session, run_id: str) -> int:
+    rows = (
+        session.query(LiveRunOrder)
+        .filter(LiveRunOrder.run_id == run_id, LiveRunOrder.alpaca_order_id != "")
+        .order_by(LiveRunOrder.created_at.desc())
+        .limit(200)
+        .all()
+    )
+    changed = 0
+    for row in rows:
+        if _order_status_terminal(row.status):
+            continue
+        try:
+            order = client.get_order_by_id(row.alpaca_order_id)
+        except APIError:
+            logger.exception("failed to reconcile Alpaca order %s", row.alpaca_order_id)
+            continue
+        if _record_order_update(
+            session,
+            run_id=run_id,
+            payload=_order_update_payload_from_alpaca(order),
+        ):
+            changed += 1
+    return changed
+
+
+class _AlpacaOrderUpdateStream:
+    def __init__(self, *, run_id: str, paper: bool):
+        self.run_id = run_id
+        self.paper = paper
+        self.stream: TradingStream | None = None
+        self.thread: threading.Thread | None = None
+        self.stopping = False
+
+    def start(self) -> None:
+        try:
+            self.stream = TradingStream(
+                _require_env("ALPACA_API_KEY"),
+                _require_env("ALPACA_SECRET_KEY"),
+                paper=self.paper,
+            )
+
+            async def handle(update) -> None:
+                self.handle_update(update)
+
+            self.stream.subscribe_trade_updates(handle)
+            self.thread = threading.Thread(target=self.run, name=f"alpaca-order-updates-{self.run_id}", daemon=True)
+            self.thread.start()
+        except Exception:
+            logger.exception("failed to start Alpaca order update stream")
+
+    def run(self) -> None:
+        try:
+            if self.stream is not None:
+                self.stream.run()
+        except Exception:
+            if not self.stopping:
+                logger.exception("Alpaca order update stream stopped unexpectedly")
+
+    def handle_update(self, update) -> None:
+        payload = _order_update_payload_from_alpaca(update)
+        client_order_id = str(payload.get("client_order_id") or "")
+        alpaca_order_id = str(payload.get("alpaca_order_id") or "")
+        if not client_order_id and not alpaca_order_id:
+            return
+        with SessionLocal() as session:
+            if _record_order_update(session, run_id=self.run_id, payload=payload):
+                session.commit()
+
+    def stop(self) -> None:
+        self.stopping = True
+        if self.stream is not None:
+            try:
+                self.stream.stop()
+            except Exception:
+                logger.exception("failed to stop Alpaca order update stream")
+        if self.thread is not None and self.thread.is_alive():
+            self.thread.join(timeout=5.0)
+
+
 def _maybe_execute_market_order(
     client: TradingClient,
     *,
@@ -503,9 +763,22 @@ def _maybe_execute_market_order(
     dr = float(getattr(order, "deposit_ratio", 1.0) or 1.0)
     dr = max(0.0, min(1.0, dr))
     cid = _client_order_id_for_signal(run_id, int(unixtime), order)
+    positions = None
+
+    def get_positions():
+        nonlocal positions
+        if positions is None:
+            positions = client.get_all_positions()
+        return positions
+
     try:
+        position_before_order = _alpaca_position_qty_from_positions(get_positions(), sym)
         with session.begin_nested():
-            row = LiveRunOrder(run_id=run_id, client_order_id=cid)
+            row = LiveRunOrder(
+                run_id=run_id,
+                client_order_id=cid,
+                position_before_order=position_before_order,
+            )
             session.add(row)
             session.flush()
             if side == OrderSide.BUY:
@@ -515,6 +788,9 @@ def _maybe_execute_market_order(
                 basis = cash if _USE_CASH_ONLY_FOR_BUY_NOTIONAL else min(cash, buying_power)
                 notional = round(basis * dr, 2)
                 if notional <= 0:
+                    row.status = "skipped"
+                    row.position_after_order_filled = position_before_order
+                    row.updated_at = datetime.now(timezone.utc)
                     return {
                         "client_order_id": cid,
                         "alpaca_order_id": "",
@@ -522,6 +798,8 @@ def _maybe_execute_market_order(
                         "reason": "insufficient buying power",
                         "cash": cash,
                         "buying_power": buying_power,
+                        "position_before_order": position_before_order,
+                        "position_after_order_filled": position_before_order,
                     }
                 req = MarketOrderRequest(
                     symbol=sym,
@@ -533,6 +811,9 @@ def _maybe_execute_market_order(
                 aid, err = _submit_market_order(client, req)
                 row.alpaca_order_id = aid
                 if err:
+                    row.status = "rejected"
+                    row.position_after_order_filled = position_before_order
+                    row.updated_at = datetime.now(timezone.utc)
                     return {
                         "client_order_id": cid,
                         "alpaca_order_id": "",
@@ -540,7 +821,11 @@ def _maybe_execute_market_order(
                         "notional": notional,
                         "cash": cash,
                         "buying_power": buying_power,
+                        "position_before_order": position_before_order,
+                        "position_after_order_filled": position_before_order,
                     } | err
+                row.status = "submitted"
+                row.updated_at = datetime.now(timezone.utc)
                 return {
                     "client_order_id": cid,
                     "alpaca_order_id": aid,
@@ -548,27 +833,38 @@ def _maybe_execute_market_order(
                     "notional": notional,
                     "cash": cash,
                     "buying_power": buying_power,
+                    "position_before_order": position_before_order,
                 }
             pos = None
-            for p in client.get_all_positions():
-                if str(getattr(p, "symbol", "")).strip().upper() == sym:
+            for p in get_positions():
+                if _alpaca_symbols_match(str(getattr(p, "symbol", "")), sym):
                     pos = p
                     break
             if pos is None:
+                row.status = "skipped"
+                row.position_after_order_filled = position_before_order
+                row.updated_at = datetime.now(timezone.utc)
                 return {
                     "client_order_id": cid,
                     "alpaca_order_id": "",
                     "status": "skipped",
                     "reason": "no open position",
+                    "position_before_order": position_before_order,
+                    "position_after_order_filled": position_before_order,
                 }
             qty = float(getattr(pos, "qty", 0.0) or 0.0)
             sell_qty = abs(qty) * dr
             if sell_qty <= 0:
+                row.status = "skipped"
+                row.position_after_order_filled = position_before_order
+                row.updated_at = datetime.now(timezone.utc)
                 return {
                     "client_order_id": cid,
                     "alpaca_order_id": "",
                     "status": "skipped",
                     "reason": "zero sell quantity",
+                    "position_before_order": position_before_order,
+                    "position_after_order_filled": position_before_order,
                 }
             req = MarketOrderRequest(
                 symbol=sym,
@@ -580,20 +876,32 @@ def _maybe_execute_market_order(
             aid, err = _submit_market_order(client, req)
             row.alpaca_order_id = aid
             if err:
+                row.status = "rejected"
+                row.position_after_order_filled = position_before_order
+                row.updated_at = datetime.now(timezone.utc)
                 return {
                     "client_order_id": cid,
                     "alpaca_order_id": "",
                     "status": "rejected",
                     "qty": sell_qty,
+                    "position_before_order": position_before_order,
+                    "position_after_order_filled": position_before_order,
                 } | err
+            row.status = "submitted"
+            row.updated_at = datetime.now(timezone.utc)
             return {
                 "client_order_id": cid,
                 "alpaca_order_id": aid,
                 "status": "submitted",
                 "qty": sell_qty,
+                "position_before_order": position_before_order,
             }
     except IntegrityError:
-        return {"client_order_id": cid, "alpaca_order_id": ""}
+        return {
+            "client_order_id": cid,
+            "alpaca_order_id": "",
+            "position_before_order": position_before_order,
+        }
 
 
 def main(argv: list[str]) -> int:
@@ -634,6 +942,12 @@ def main(argv: list[str]) -> int:
         type=float,
         default=1.0,
         help="How often to read live_runs.status for stopping/stopped (seconds).",
+    )
+    parser.add_argument(
+        "--order-reconcile-s",
+        type=float,
+        default=30.0,
+        help="How often to reconcile submitted Alpaca orders by REST (seconds).",
     )
     args = parser.parse_args(argv)
 
@@ -683,6 +997,7 @@ def main(argv: list[str]) -> int:
     last_touch = 0.0
     touch_every_s = 10.0
     enable_trading = bool(args.enable_trading)
+    order_stream: _AlpacaOrderUpdateStream | None = None
 
     logger.info(
         "start run_id=%s runner_id=%s workspace=%s entry=%s paper=%s enable_trading=%s poll_ms=%s",
@@ -773,6 +1088,10 @@ def main(argv: list[str]) -> int:
             )
             session.commit()
 
+        if enable_trading:
+            order_stream = _AlpacaOrderUpdateStream(run_id=run_id, paper=bool(args.paper))
+            order_stream.start()
+
         driver_rows: list[dict] = []
         driver_index: list[pd.Timestamp] = []
         driver_df = pd.DataFrame()
@@ -792,6 +1111,8 @@ def main(argv: list[str]) -> int:
         j = 0
         stop_poll_s = max(0.25, float(args.stop_poll_s))
         last_stop_mon = time.monotonic() - stop_poll_s
+        order_reconcile_s = max(1.0, float(args.order_reconcile_s))
+        last_order_reconcile_mon = time.monotonic() - order_reconcile_s
 
         def process_market_events(session, events: list[LiveRunEvent], *, emit_outputs: bool) -> bool:
             nonlocal driver_df, base_df, cached_base_len, j, running, cur_base_idx
@@ -855,7 +1176,10 @@ def main(argv: list[str]) -> int:
 
                 for line in expand_step_to_lines(
                     step,
-                    portfolio_provider=lambda: _portfolio_snapshot_from_alpaca(client),
+                    portfolio_provider=lambda: _portfolio_snapshot_from_alpaca(
+                        client,
+                        strategy_tickers=tickers,
+                    ),
                 ):
                     _emit_db_event(
                         session,
@@ -1012,6 +1336,12 @@ def main(argv: list[str]) -> int:
                     prune_stale_subscriptions(session, max_age_seconds=float(args.subs_ttl_s))
                     session.commit()
                 last_touch = now
+            if enable_trading and time.monotonic() - last_order_reconcile_mon >= order_reconcile_s:
+                last_order_reconcile_mon = time.monotonic()
+                with SessionLocal() as session:
+                    changed = _reconcile_live_run_orders(client, session=session, run_id=run_id)
+                    if changed:
+                        session.commit()
 
             with SessionLocal() as session:
                 events = read_run_market_events_after(
@@ -1039,6 +1369,11 @@ def main(argv: list[str]) -> int:
         logger.info("received KeyboardInterrupt, shutting down")
         return 0
     finally:
+        try:
+            if order_stream is not None:
+                order_stream.stop()
+        except Exception:
+            logger.exception("failed to stop order update stream")
         try:
             with SessionLocal() as session:
                 run = session.get(LiveRun, run_id)

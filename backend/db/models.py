@@ -226,9 +226,15 @@ class LiveRunOrder(Base):
     )
     client_order_id: Mapped[str] = mapped_column(String(128), nullable=False)
     alpaca_order_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    filled_qty: Mapped[float | None] = mapped_column(Float, nullable=True)
+    filled_avg_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    position_before_order: Mapped[float | None] = mapped_column(Float, nullable=True)
+    position_after_order_filled: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, index=True
     )
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("run_id", "client_order_id", name="uq_live_run_orders_run_client_id"),

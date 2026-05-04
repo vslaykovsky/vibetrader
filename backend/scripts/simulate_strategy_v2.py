@@ -1158,7 +1158,7 @@ def simulate(
         ],
     )
     position_value_chart = _build_position_value_chart(position_value_points)
-    trades_chart = backtest_utils.TableChart(title="Trades", rows=table_rows)
+    trades_chart = backtest_utils.TableChart(title="Orders", rows=table_rows)
 
     metrics = backtest_utils.Metrics(
         total_return=float(total_return) * 100.0,

@@ -119,7 +119,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
   // ── Right-side pointer (bar open unix in current chartTf). Left side is implicit (= bars[0]).
   const [rightBarUnix, setRightBarUnix] = useState(0);
 
-  // ── Trades / equity (from /simulation/stream) ─────────────────────────
+  // ── Orders / equity (from /simulation/stream) ─────────────────────────
   const [trades, setTrades] = useState([]);
   const [equityPts, setEquityPts] = useState([]);
 
@@ -889,7 +889,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
 
   const markers = useMemo(() => {
     if (!trades.length || !rightBarUnix) return [];
-    // Trades are emitted at the strategy's native timeframe. Only show their
+    // Orders are emitted at the strategy's native timeframe. Only show their
     // markers when the user is looking at *that* timeframe; otherwise the
     // bucketing across TFs would visually shift each trade away from its real
     // bar.

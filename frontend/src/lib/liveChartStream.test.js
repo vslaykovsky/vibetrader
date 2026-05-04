@@ -107,16 +107,35 @@ describe('applyLiveStreamEvent', () => {
         time: 1060,
         ticker: 'SPY',
         direction: 'buy',
+        value_usd: null,
         deposit_ratio: 0.5,
         client_order_id: 'client-1',
         status: 'submitted',
         comment: 'crossed above EMA',
       },
     });
+    const orderUpdateResult = applyLiveStreamEvent(state, {
+      kind: 'trade',
+      seq: 5,
+      run_id: 'run-1',
+      unixtime: 1061,
+      data: {
+        time: 1061,
+        ticker: 'SPY',
+        direction: 'buy',
+        price: 12.25,
+        qty: 3,
+        alpaca_order_id: 'alpaca-1',
+        client_order_id: 'client-1',
+        status: 'filled',
+        comment: 'Alpaca fill',
+      },
+    });
 
     expect(snapshotResult).toEqual({ changed: true, tradesChanged: true, statusChanged: true });
     expect(barResult).toEqual({ changed: true, tradesChanged: false, statusChanged: false });
     expect(tradeResult).toEqual({ changed: true, tradesChanged: true, statusChanged: false });
+    expect(orderUpdateResult).toEqual({ changed: true, tradesChanged: true, statusChanged: false });
     expect(liveTrades(state)).toEqual([
       {
         rowKey: 4,
@@ -126,15 +145,16 @@ describe('applyLiveStreamEvent', () => {
         direction: 'buy',
         action: '',
         label: '',
-        price: null,
-        qty: null,
+        price: 12.25,
+        qty: 3,
+        value_usd: 36.75,
         deposit_ratio: 0.5,
         position_before_order: null,
         position_after_order_filled: null,
-        alpaca_order_id: '',
+        alpaca_order_id: 'alpaca-1',
         client_order_id: 'client-1',
-        status: 'submitted',
-        comment: 'crossed above EMA',
+        status: 'filled',
+        comment: 'crossed above EMA; Alpaca fill',
       },
     ]);
     expect(liveChartsDataJson(state)).toEqual({
@@ -157,7 +177,7 @@ describe('applyLiveStreamEvent', () => {
                   position: 'belowBar',
                   color: '#26a69a',
                   shape: 'arrowUp',
-                  text: 'buy submitted',
+                  text: 'buy filled',
                 },
               ],
             },
