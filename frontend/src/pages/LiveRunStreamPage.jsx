@@ -148,6 +148,64 @@ function liveTradeValueUsd(t) {
   return null;
 }
 
+function escapeCsvField(value) {
+  const s = value == null ? '' : String(value);
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function liveOrdersToCsv(trades, timeZone) {
+  const columns = [
+    'Time',
+    'Ticker',
+    'Direction',
+    'Price',
+    'Qty',
+    'Value USD',
+    'Fraction',
+    'Position Before',
+    'Position After',
+    'Status',
+    'Comment',
+    'Order ID',
+  ];
+  const lines = [columns.map(escapeCsvField).join(',')];
+  for (const t of [...trades].reverse()) {
+    const valueUsd = liveTradeValueUsd(t);
+    const row = [
+      fmtUnixTime(t.unixtime, timeZone),
+      t.ticker ?? '',
+      t.direction ?? '',
+      fmtTradeNumber(t.price),
+      fmtTradeNumber(t.qty),
+      fmtUsdNumber(valueUsd),
+      fmtTradeNumber(t.deposit_ratio),
+      fmtTradeNumber(t.position_before_order),
+      fmtTradeNumber(t.position_after_order_filled),
+      t.status || '',
+      t.comment || '',
+      liveOrderIdLabel(t) === '—' ? '' : liveOrderIdLabel(t),
+    ];
+    lines.push(row.map(escapeCsvField).join(','));
+  }
+  return lines.join('\r\n');
+}
+
+function triggerCsvDownload(filename, csvText) {
+  const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function CanvasPanelCopyButton({ text, ariaLabel, disabled }) {
   const [copied, setCopied] = useState(false);
   const payload = typeof text === 'string' ? text : '';
@@ -318,6 +376,12 @@ export function LiveRunStreamPage() {
   );
 
   const bumpCharts = useCallback(() => setChartEpoch((n) => n + 1), []);
+
+  const handleDownloadOrdersCsv = useCallback(() => {
+    if (!trades.length) return;
+    const rid = String(runId || 'live-run').trim() || 'live-run';
+    triggerCsvDownload(`live-orders-${rid}.csv`, liveOrdersToCsv(trades, timeZone));
+  }, [runId, timeZone, trades]);
 
   const loadMeta = useCallback(async () => {
     const rid = String(runId || '').trim();
@@ -751,6 +815,14 @@ export function LiveRunStreamPage() {
               >
                 Alpaca orders
               </a>
+              <button
+                type="button"
+                className="live-run-orders-download-btn"
+                disabled={trades.length === 0}
+                onClick={handleDownloadOrdersCsv}
+              >
+                Download CSV
+              </button>
             </div>
             <span className="dashboard-panel-count">{trades.length}</span>
           </div>

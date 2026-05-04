@@ -5296,11 +5296,17 @@ html[data-theme='dark'] .confirm-dialog-confirm--danger {
 .live-run-orders-heading {
   display: flex;
   align-items: baseline;
+  flex: 1;
   gap: 10px;
   min-width: 0;
 }
 
-.live-run-orders-link {
+.live-run-orders-heading .dashboard-panel-title {
+  margin-right: auto;
+}
+
+.live-run-orders-link,
+.live-run-orders-download-btn {
   display: inline-flex;
   align-items: center;
   min-height: 24px;
@@ -5315,7 +5321,17 @@ html[data-theme='dark'] .confirm-dialog-confirm--danger {
   white-space: nowrap;
 }
 
-.live-run-orders-link:hover {
+.live-run-orders-download-btn {
+  cursor: pointer;
+}
+
+.live-run-orders-download-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.live-run-orders-link:hover,
+.live-run-orders-download-btn:hover:not(:disabled) {
   border-color: var(--accent-strong);
 }
 
