@@ -31,8 +31,7 @@ from langchain_openrouter import ChatOpenRouter
 
 CHAT_MODEL = os.getenv("CHAT_MODEL", "openai/gpt-5.4")
 CHAT_REASONING_EFFORT = os.getenv("CHAT_REASONING_EFFORT", "medium")
-# OPENROUTER_PROVIDER = {"sort": "throughput"}
-OPENROUTER_PROVIDER = None
+OPENROUTER_PROVIDER = {"only": ["OpenAI", "Anthropic"], "allow_fallbacks": False}
 
 CODEX_MODEL = os.getenv("CODEX_MODEL", "gpt-5.4")
 CODEX_REASONING_EFFORT = os.getenv("CODEX_REASONING_EFFORT", "high")
