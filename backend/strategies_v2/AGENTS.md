@@ -8,8 +8,11 @@ These instructions apply inside each strategy workspace copied from `backend/str
 - Always import contracts with `from utils import *`.
 - Do not replace or hand-edit `utils.py` or `hyperopt.py` in a thread workspace; update the templates under `backend/strategies_v2/` when contracts change.
 - Do not run `strategy.py` or `hyperopt.py` here. The platform runs `scripts/simulate_strategy_v2.py`, streams historical OHLC to stdin, and writes `backtest.json` plus `metrics.json` when applicable.
-- Fail fast. If required params, subscriptions, files, data, or model artifacts are missing or invalid, raise an explicit error. Do not fabricate data, add broad catch-and-continue handlers, mock results, or hide broken invariants.
+- Implement requested behavior directly. Do not add alternative behavior, fallback behavior, broad catch-and-continue handlers, fabricated data, mocked results, or hidden invariant recovery.
 - Keep strategy code small and direct. Put subscription and signal logic in `strategy.py`; add functions or classes only when they reduce real duplication or complexity.
+- Prefer platform subscriptions for market data and built-in indicators whenever they can provide the requested data. Do not reimplement subscribed indicators in `strategy.py` unless the request needs a genuinely custom calculation that the platform cannot provide.
+- Prefer compact code over maintainability. 
+- Do not validate params from params.json! Do not use ValueError to validate input parameters. Input parameter validation is not needed!
 
 ## Strategy Outputs
 
@@ -24,7 +27,7 @@ These instructions apply inside each strategy workspace copied from `backend/str
 - Strategy metadata: `ticker`, native bar `scale`, `strategy_name` without ticker text, and short UI `description`.
 - Host inputs: `start_date`, `end_date`, positive `initial_deposit`, optional `provider` (`alpaca`, `moex`, `auto`), optional `simulation_scale` (`1m`, `15m`, `1h`, `4h`, `1d`, `1w`; defaults to `scale`), and optional `max_leverage` (defaults to `1.0`, no margin).
 - Strategy tunables: periods, thresholds, lookbacks, sizing, Renko brick settings, model hyperparameters chosen before fitting, and similar knobs.
-- `run_mode: "train" | "test"` only for real trainable model strategies like boosted trees and ANNs, not simple indicator or rule strategies.
+- `run_mode: "train" | "test"` only for real trainable model strategies like boosted trees and ANNs, not simple indicator or rule strategies. Each process must use exactly one exclusive `run_mode` selected at startup.
 
 Do not hardcode tunables in `strategy.py`. Load `params.json` once at startup, bind values from it, and use those variables for subscriptions, thresholds, lookbacks, sizing, and signal logic. Fixed structural literals are fine when they are not knobs.
 
@@ -56,6 +59,8 @@ Do not re-emit raw subscribed OHLC or built-in indicator values as custom chart 
 
 Set a short, stable, unique `id` on every `OutputTickerSubscription` and `*IndicatorSubscription` (`price`, `fast_ema`, `trend_rsi`, `renko_2`, etc.). Input points echo this id. For multi-output indicators, also use `InputIndicatorDataPoint.name` to distinguish lines such as MACD `signal`, Bollinger `bb_upper`, or Fibonacci keys.
 
+Before calculating an indicator from raw OHLC in `strategy.py`, check whether `utils.py` already exposes a matching subscription. For SMA, EMA, MACD, RSI, ATR, Bollinger Bands, Stochastic, Fibonacci, and Renko, subscribe and consume the returned `indicator` or `renko` points instead of recomputing the same values from OHLC. Local calculations are appropriate only for derived/custom series that are not available through a subscription.
+
 Subscriptions support `session="regular" | "extended" | "all"` and default to `all`. Daily and weekly bars are regular regardless of this value.
 
 `MacdIndicatorSubscription`, `BollingerBandsIndicatorSubscription`, `StochasticIndicatorSubscription`, and `FibonacciIndicatorSubscription` support an `outputs` list. Request only the series the strategy needs.
@@ -76,6 +81,8 @@ Each `ohlc` and `indicator` input has `closed`:
 ## Renko
 
 Subscribe with `OutputIndicatorSubscriptionOrder` wrapping `RenkoIndicatorSubscription`. Renko is close-based: a brick forms when the running close crosses `anchor +/- brick_size`; the first firing bar seeds the anchor. Reversals require one full current brick size move. Use `partial=True` for intra-bar brick detection; `partial=False` limits detection to base-scale closes.
+
+Do not manually build Renko bricks from OHLC bars when `RenkoIndicatorSubscription` can express the requested brick-size mode, scale, session, and partial/update behavior. For ATR Renko, use `brick_size_mode="atr"` with `atr_period` and `atr_multiplier`, then handle incoming `InputRenkoDataPoint` objects by subscription `id`.
 
 Brick-size modes:
 
@@ -112,11 +119,26 @@ Use `trained_model_params` only for strategies with a real fitted model whose le
 
 Training and testing are separate simulator runs with different `params.json` date windows. Learned weights, scalers, encoders, fitted trees, and calibration values belong in `OutputTrainedModelParams.data`, not `params.json`.
 
-## Custom Charts
+## Charts and Output Data
 
-Emit charts as `OutputChart` wrapping `LightweightChartsChart`, `PlotlyChart`, or `TableChart` from `utils.py`.
+What the user can see in both the backtest canvas page and live trading canvas:
+- All indicators the startegy subscribed to using OutputIndicatorSubscriptionOrder 
+- Candlestick diagrams of ticker pricedata for all tickers in OutputTickerSubscription
+- All data that the strategy emits with OutputIndicatorDataPoint
+- Positions over time chart
+- Equity curve vs benchmark chart
+- Orders table
 
+What the user can see in backtest canvas only:
+- Custom charts produced by the strategy using LightweightChartsChart | PlotlyChart | TableChart
+
+Charts rules:
 - Use subscriptions for all market data. Do not fetch data with yfinance or any other source inside `strategy.py`.
+- Do not produce duplicate charts. Check what is already emitted automatically and only produce new unique charts. 
+- Only output charts, OutputIndicatorDataPoint items for data that was explicitly mentioned in the user request!
+- Prefer OutputIndicatorDataPoint when producing new charts as they are accessible in both backtest and live trading. 
+- Only use LightweightChartsChart, PlotlyChart, TableChart if the data cannot be rendered and is not already rendered by using OutputIndicatorSubscriptionOrder, OutputTickerSubscription and OutputIndicatorDataPoint
+- Use `PlotlyChart` only as a last resort; it is backtest-only, not interactive, and not synchronized with lightweight charts. When deciding between LightweightChartsChart and PlotlyChart choose LightweightChartsChart if possible. 
 - Do not use matplotlib, PNG, SVG, or standalone chart files.
 - Do not write `backtest.json` or `metrics.json`; stdout is the only strategy output channel.
 - For lightweight-charts time values, use `YYYY-MM-DD` for daily/weekly bars and ISO 8601 UTC datetime or Unix seconds for intraday. Pick one format per chart.

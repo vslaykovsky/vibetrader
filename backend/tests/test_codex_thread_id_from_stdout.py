@@ -1,10 +1,8 @@
 from services.agent import (
     CODEX_MODEL,
     CODEX_REASONING_EFFORT,
-    STRATEGY_CODE_AGENT_PREFIX,
     _codex_exec_command,
     _codex_thread_id_from_stdout,
-    _strategy_codegen_task,
 )
 
 
@@ -51,8 +49,3 @@ def test_codex_exec_command_places_exec_options_before_resume():
         "change the strategy",
     ]
 
-
-def test_strategy_codegen_task_prefixes_only_new_codex_thread():
-    task = "change the strategy"
-    assert _strategy_codegen_task(task, "") == STRATEGY_CODE_AGENT_PREFIX + task
-    assert _strategy_codegen_task(task, "019decc1-9ab1-7a42-9022-2e2db09212f8") == task

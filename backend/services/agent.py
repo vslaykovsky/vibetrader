@@ -112,7 +112,7 @@ Strategy workflow
 * Before the first update_strategy, ask only for missing build/run details: ticker, scale, start/end dates, indicators, entry/exit, sizing, and parameters. If the user wants defaults, choose sensible defaults. If they supplied a complete spec, implement it.
 * update_strategy delegates implementation to the coding agent in the strategy workspace.
 * First update_strategy task: write English instructions with the full user spec because the coding agent may have no prior context. Resumed Codex thread: send a concise delta plus every new or changed requirement; omitted new details are lost.
-* For update_strategy tasks, ask for direct implementation of the requested behavior. Do not ask the coding agent to add alternatives, fallback behavior, broad catch-and-continue handlers, fabricated data, mocked results, or hidden invariant recovery; required invalid or missing inputs should fail with explicit errors.
+* For update_strategy tasks, ask for direct implementation of the requested behavior. Do not ask the coding agent to add alternatives, fallback behavior, broad catch-and-continue handlers, fabricated data, mocked results, or hidden invariant recovery; 
 * For trainable update_strategy tasks, ask update_strategy to implement support for both exclusive params.json run_mode values, selected at process start: train or test. Do not ask the coding agent to create two active training/testing segments inside one strategy run. Train mode fits and emits trained_model_params, and must not trade. Test mode loads trained_model_params, trades or infers only after loading them, and must not train.
 * After successful update_strategy, refresh outputs. For ordinary strategies, call run_backtest or run_hyperopt. For trainable strategies, run train and test as separate run_backtest calls: first with run_mode="train" and the training date segment, then with run_mode="test" and the test date segment.
 * If the user only changes parameters (ticker, dates, thresholds, deposit, etc.), call run_backtest with parameters_json merged into params.json. Do not edit code, add a --params flag, or make strategy.py parse CLI params.
@@ -139,20 +139,6 @@ STRATEGY_UTILS_TEMPLATE = STRATEGIES_DIR / "utils.py"
 STRATEGY_PARAMS_TEMPLATE = STRATEGIES_DIR / "params.json"
 STRATEGY_HYPEROPT_TEMPLATE = STRATEGIES_DIR / "hyperopt.py"
 SIMULATE_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "simulate_strategy_v2.py"
-STRATEGY_CODE_AGENT_PREFIX = (
-    "Implement the requested strategy change directly.  Do not add "
-    "alternative behavior, fallback behavior, broad catch-and-continue handlers, fabricated "
-    "data, mocked results, or hidden invariant recovery. For trainable strategies like boosted trees and ANNs, implement "
-    "exactly one exclusive params.json run_mode per process: train or test. Train mode fits "
-    "and emits trained_model_params without trading; test mode loads trained_model_params, "
-    "trades or infers only after loading them, and must not train.\n\n"
-)
-
-
-def _strategy_codegen_task(task: str, codex_thread_id: str | None) -> str:
-    if _clean_codex_thread_id(codex_thread_id):
-        return task
-    return STRATEGY_CODE_AGENT_PREFIX + task
 
 
 UPDATE_STRATEGY_TOOL_NAME = "update_strategy"
@@ -1368,7 +1354,7 @@ def run_update_strategy(
         on_progress("Updating strategy, this may take a few minutes…")
     existing_codex_thread_id = _clean_codex_thread_id(codex_thread_id)
     runner, codegen = _run_coding_agent_exec(
-        _strategy_codegen_task(task, existing_codex_thread_id),
+        task,
         root,
         codex_thread_id=existing_codex_thread_id,
     )
@@ -1676,7 +1662,7 @@ def run_backtest(
                     ],
                     cwd=str(root),
                     timeout=int(os.getenv("STRATEGY_BACKTEST_TIMEOUT_S", "1800")),
-                    freeze_timeout=int(os.getenv("STRATEGY_BACKTEST_FREEZE_TIMEOUT_S", "120")),
+                    freeze_timeout=int(os.getenv("STRATEGY_BACKTEST_FREEZE_TIMEOUT_S", "180")),
                     on_stderr_line=_on_sim_stderr_line if on_progress else None,
                 )
             else:

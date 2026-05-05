@@ -408,7 +408,6 @@ def patch_strategy() -> tuple:
 
 @strategy_blueprint.get("/strategy")
 @require_auth
-@traceable(name="get_strategy")
 def get_strategy() -> tuple:
     uid = g.user_id
     run_id = request.args.get("id", "").strip()
