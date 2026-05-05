@@ -230,6 +230,24 @@ def _subscribed_tickers_and_base_scale(startup: StrategyOutput) -> tuple[list[st
     return tickers, next(iter(scales))
 
 
+def _startup_ticker_sessions(startup: StrategyOutput) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for p in startup.root:
+        if not isinstance(p, OutputTickerSubscription):
+            continue
+        ticker = p.ticker.strip().upper()
+        session = str(getattr(p, "session", "all") or "all").strip().lower()
+        if session not in {"regular", "extended", "all"}:
+            raise ValueError("session must be one of: regular, extended, all")
+        prev = out.get(ticker)
+        if prev is not None and prev != session:
+            raise ValueError(
+                f"All ticker_subscription entries for {ticker!r} must use the same session"
+            )
+        out[ticker] = session
+    return out
+
+
 def _subscription_specs_for_live_bars(startup: StrategyOutput) -> list[LiveSubscriptionSpec]:
     tickers, _base_scale = _subscribed_tickers_and_base_scale(startup)
     return [LiveSubscriptionSpec(channel="bars", symbol=t, scale=_SIMULATION_SCALE) for t in tickers]
@@ -296,6 +314,7 @@ def _fetch_live_backfill_driver_df(
     *,
     ticker: str,
     simulation_scale: str,
+    session: str,
     live_start_ts: pd.Timestamp,
     bars: int,
 ) -> pd.DataFrame:
@@ -317,6 +336,7 @@ def _fetch_live_backfill_driver_df(
         fetch_start,
         fetch_end,
         provider="alpaca",
+        session=session,
     )
     if df is None or df.empty:
         return pd.DataFrame()
@@ -1234,6 +1254,7 @@ def main(argv: list[str]) -> int:
         if len(tickers) != 1:
             raise RuntimeError("live runner currently supports single-ticker strategies only")
         ticker = tickers[0]
+        ticker_session = _startup_ticker_sessions(startup).get(ticker, "all")
         simulation_scale = normalize_scale(_SIMULATION_SCALE)
         base_scale = normalize_scale(base_scale)
         if not is_finer_or_equal(simulation_scale, base_scale):
@@ -1520,6 +1541,7 @@ def main(argv: list[str]) -> int:
             backfill_df = _fetch_live_backfill_driver_df(
                 ticker=ticker,
                 simulation_scale=simulation_scale,
+                session=ticker_session,
                 live_start_ts=live_start_ts,
                 bars=backfill_count,
             )
@@ -1611,6 +1633,7 @@ def main(argv: list[str]) -> int:
                 backfill_df = _fetch_live_backfill_driver_df(
                     ticker=ticker,
                     simulation_scale=simulation_scale,
+                    session=ticker_session,
                     live_start_ts=live_start_ts,
                     bars=backfill_count,
                 )

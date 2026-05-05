@@ -20,6 +20,7 @@ from db.session import SessionLocal, engine
 from application.services import backtest_data as utils
 
 logger = logging.getLogger(__name__)
+_CANDLE_SESSIONS = ("regular", "extended")
 
 
 def scale_to_timeframe(scale: str) -> TimeFrame:
@@ -121,7 +122,27 @@ def _df_from_candles(rows: list[Candle]) -> pd.DataFrame:
     return df
 
 
-def _records_from_df(ticker: str, tf: CandleTimeframe, df: pd.DataFrame) -> list[dict]:
+def _is_daily_or_larger_scale(scale: str) -> bool:
+    return (scale or "").strip().lower() in {"1d", "1w"}
+
+
+def normalize_candle_session(session: str | None, scale: str, asset_class: str | None = None) -> str:
+    value = (session or "all").strip().lower()
+    if value not in {"regular", "extended", "all"}:
+        raise ValueError("session must be one of: regular, extended, all")
+    if _is_daily_or_larger_scale(scale) or (asset_class or "").strip().lower() == "crypto":
+        return "regular"
+    return value
+
+
+def _records_from_df(
+    ticker: str,
+    tf: CandleTimeframe,
+    df: pd.DataFrame,
+    *,
+    session: str,
+    asset_class: str,
+) -> list[dict]:
     if df is None or df.empty:
         return []
     shaped = df.copy()
@@ -134,9 +155,14 @@ def _records_from_df(ticker: str, tf: CandleTimeframe, df: pd.DataFrame) -> list
     else:
         shaped.index = shaped.index.tz_convert("UTC")
     shaped = shaped.sort_index()
+    if session == "all" and asset_class == "us_equity" and tf not in {CandleTimeframe.D1, CandleTimeframe.W1}:
+        sessions = utils.stock_session_labels_for_index(pd.DatetimeIndex(shaped.index))
+    else:
+        record_session = "extended" if session == "extended" else "regular"
+        sessions = [record_session] * len(shaped.index)
 
     out: list[dict] = []
-    for idx, row in shaped.iterrows():
+    for (idx, row), record_session in zip(shaped.iterrows(), sessions):
         o = float(row["open"]) if "open" in cols else float("nan")
         h = float(row["high"]) if "high" in cols else float("nan")
         l = float(row["low"]) if "low" in cols else float("nan")
@@ -154,6 +180,7 @@ def _records_from_df(ticker: str, tf: CandleTimeframe, df: pd.DataFrame) -> list
                 "low": l,
                 "close": c,
                 "volume": v,
+                "session": record_session,
             }
         )
     return out
@@ -168,6 +195,7 @@ class _CacheKey:
     padding_days: int
     provider: str
     asset_class: str
+    session: str
 
 
 @dataclass
@@ -204,6 +232,7 @@ class HistoricalBarsQuery:
         asset_class: Optional[str] = None,
         drop_wide_spread_bars: bool = True,
         force_refresh: bool = False,
+        session: str = "all",
     ) -> pd.DataFrame:
         timeframe = scale_to_timeframe(scale)
         start_s = start.isoformat()
@@ -214,14 +243,16 @@ class HistoricalBarsQuery:
             raise ValueError("asset_class must be one of: us_equity, crypto")
         asset = asset or infer_asset_class(ticker, provider=prov) or "us_equity"
         norm_ticker = utils.normalize_crypto_symbol(ticker) if asset == "crypto" else ticker
+        candle_session = normalize_candle_session(session, scale, asset)
         logger.info(
-            "fetch begin ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s",
+            "fetch begin ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s session=%s",
             norm_ticker.strip(),
             (scale or "").strip().lower(),
             start,
             end,
             padding_days,
             provider if isinstance(provider, str) and provider.strip() else provider,
+            candle_session,
         )
         key = _CacheKey(
             ticker=norm_ticker.strip(),
@@ -231,6 +262,7 @@ class HistoricalBarsQuery:
             padding_days=int(padding_days),
             provider=prov,
             asset_class=asset,
+            session=candle_session,
         )
         now = time.monotonic()
         if not force_refresh:
@@ -265,13 +297,16 @@ class HistoricalBarsQuery:
 
                 session = SessionLocal()
                 try:
-                    cached_rows: list[Candle] = (
+                    query = (
                         session.query(Candle)
                         .filter(Candle.ticker == key.ticker, Candle.timeframe == tf)
                         .filter(Candle.timestamp >= s_naive, Candle.timestamp <= e_naive)
-                        .order_by(Candle.timestamp.asc())
-                        .all()
                     )
+                    if key.session == "all":
+                        query = query.filter(Candle.session.in_(_CANDLE_SESSIONS))
+                    else:
+                        query = query.filter(Candle.session == key.session)
+                    cached_rows: list[Candle] = query.order_by(Candle.timestamp.asc()).all()
                 finally:
                     session.close()
 
@@ -331,12 +366,19 @@ class HistoricalBarsQuery:
                 timeframe=timeframe,
                 provider=provider if prov else None,
                 drop_wide_spread_bars=drop_wide_spread_bars,
+                session=key.session,
             )
 
         # Best-effort write-through to Postgres candles cache.
         try:
             tf = _scale_to_candle_timeframe(key.scale)
-            records = _records_from_df(key.ticker, tf, df)
+            records = _records_from_df(
+                key.ticker,
+                tf,
+                df,
+                session=key.session,
+                asset_class=key.asset_class,
+            )
             if records:
                 session = SessionLocal()
                 try:
@@ -357,6 +399,7 @@ class HistoricalBarsQuery:
                                     "low": stmt.excluded.low,
                                     "close": stmt.excluded.close,
                                     "volume": stmt.excluded.volume,
+                                    "session": stmt.excluded.session,
                                 },
                             )
                             session.execute(stmt)
@@ -384,6 +427,7 @@ class HistoricalBarsQuery:
         provider: Optional[str] = None,
         asset_class: Optional[str] = None,
         force_refresh: bool = False,
+        session: str = "all",
     ) -> tuple[pd.DataFrame, int]:
         chunks = plan_display_bars_fetch_chunks(
             start, end, scale, max_bars_per_chunk=max_bars_per_chunk
@@ -412,6 +456,7 @@ class HistoricalBarsQuery:
                 provider=provider,
                 asset_class=asset_class,
                 force_refresh=force_refresh,
+                session=session,
             )
             if part is not None and not part.empty:
                 frames.append(part)

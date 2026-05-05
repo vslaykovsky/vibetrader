@@ -25,6 +25,7 @@ class FakeBarsQuery:
         padding_days: int = 0,
         *,
         provider: str | None = None,
+        session: str = "all",
     ) -> pd.DataFrame:
         return self._df
 
@@ -38,8 +39,9 @@ class FakeBarsQuery:
         *,
         max_bars_per_chunk: int = 100_000,
         provider: str | None = None,
+        session: str = "all",
     ) -> tuple[pd.DataFrame, int]:
-        _ = (ticker, scale, start, end, padding_days, max_bars_per_chunk, provider)
+        _ = (ticker, scale, start, end, padding_days, max_bars_per_chunk, provider, session)
         return self._df, 1
 
 

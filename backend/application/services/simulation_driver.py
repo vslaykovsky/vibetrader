@@ -68,6 +68,7 @@ class SubscriptionSpec:
     id: str
     ticker: str
     scale: str
+    session: str
     update_scale: str
     source: object
     indicator_name: str | None = None
@@ -230,6 +231,7 @@ def compile_subscriptions(
                     id=str(p.id),
                     ticker=p.ticker,
                     scale=p.scale,
+                    session=p.session,
                     update_scale=us,
                     source=p,
                 )
@@ -245,6 +247,7 @@ def compile_subscriptions(
                         id=str(ind.id),
                         ticker=ind.ticker,
                         scale=ind.scale,
+                        session=ind.session,
                         update_scale=us,
                         source=ind,
                         indicator_name=ind.kind,
@@ -259,6 +262,7 @@ def compile_subscriptions(
                         id=str(ind.id),
                         ticker=ind.ticker,
                         scale=ind.scale,
+                        session=ind.session,
                         update_scale=us,
                         source=ind,
                         indicator_name=ind.kind,

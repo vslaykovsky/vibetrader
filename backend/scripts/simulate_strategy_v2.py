@@ -67,6 +67,7 @@ from strategies_v2.utils import (
 logger = logging.getLogger(__name__)
 
 _DAILY_SCALES = {"1d", "1w"}
+_MARKET_SESSIONS = {"regular", "extended", "all"}
 
 _INDICATOR_COLORS = [
     "#1e88e5",
@@ -115,6 +116,33 @@ def _subscribed_tickers_and_base_scale(startup: StrategyOutput) -> tuple[list[st
         )
     tickers = list(dict.fromkeys(t for t, _ in rows))
     return tickers, next(iter(scales))
+
+
+def _subscription_session(spec) -> str:
+    value = str(getattr(spec, "session", "all") or "all").strip().lower()
+    if value not in _MARKET_SESSIONS:
+        raise ValueError("session must be one of: regular, extended, all")
+    return value
+
+
+def _subscribed_ticker_sessions(startup: StrategyOutput) -> dict[str, str]:
+    rows: list[tuple[str, str]] = []
+    for p in startup.root:
+        if isinstance(p, OutputTickerSubscription):
+            rows.append((p.ticker.strip(), _subscription_session(p)))
+    for spec in _indicator_subscriptions_from_startup(startup):
+        t = getattr(spec, "ticker", None)
+        if isinstance(t, str) and t.strip():
+            rows.append((t.strip(), _subscription_session(spec)))
+    out: dict[str, str] = {}
+    for ticker, session in rows:
+        prev = out.get(ticker)
+        if prev is not None and prev != session:
+            raise ValueError(
+                f"All subscriptions for ticker {ticker!r} must use the same session; got {prev!r} and {session!r}"
+            )
+        out[ticker] = session
+    return out
 
 
 def _max_drawdown(equity: list[float]) -> float:
@@ -512,6 +540,7 @@ def simulate(
             json.dumps(startup.model_dump(mode="json")),
         )
         tickers, base_scale = _subscribed_tickers_and_base_scale(startup)
+        ticker_sessions = _subscribed_ticker_sessions(startup)
         logger.info(
             "startup workspace=%s entry_script=%s tickers=%s base_scale=%s",
             workspace,
@@ -580,7 +609,13 @@ def simulate(
                 provider,
             )
             driver_df_t, _ = bars_query.fetch_chunked_merge(
-                t, sim_scale, start_d, end_d, padding_days=padding, provider=provider
+                t,
+                sim_scale,
+                start_d,
+                end_d,
+                padding_days=padding,
+                provider=provider,
+                session=ticker_sessions.get(t, "all"),
             )
             if driver_df_t.empty:
                 logger.warning("no OHLC rows for ticker=%s; skipping", t)

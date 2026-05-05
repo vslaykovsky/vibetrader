@@ -100,3 +100,31 @@ def test_fetch_stock_bars_auto_fallback_to_moex(monkeypatch):
     assert called == {"alpaca": 1, "moex": 1}
     assert out.equals(expected)
 
+
+def test_regular_hourly_bars_align_to_session_open():
+    idx = pd.date_range("2024-01-02 14:30", periods=26, freq="15min", tz="UTC")
+    df = pd.DataFrame(
+        {
+            "open": [float(i) for i in range(26)],
+            "high": [float(i) + 0.5 for i in range(26)],
+            "low": [float(i) - 0.5 for i in range(26)],
+            "close": [float(i) + 0.25 for i in range(26)],
+            "volume": [1.0] * 26,
+        },
+        index=idx,
+    )
+
+    out = utils._regular_hourly_bars_from_intraday(df)
+
+    assert [ts.strftime("%H:%M") for ts in out.index] == [
+        "14:30",
+        "15:30",
+        "16:30",
+        "17:30",
+        "18:30",
+        "19:30",
+        "20:30",
+    ]
+    assert list(out["volume"]) == [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 2.0]
+    assert out.iloc[-1]["close"] == 25.25
+

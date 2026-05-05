@@ -19,8 +19,10 @@ def test_init_database():
         "live_run_orders",
     }
     subscription_cols = {c["name"] for c in insp.get_columns("alpaca_live_subscriptions")}
+    candle_cols = {c["name"] for c in insp.get_columns("candles")}
     live_event_cols = {c["name"] for c in insp.get_columns("live_run_events")}
     live_order_cols = {c["name"] for c in insp.get_columns("live_run_orders")}
+    assert "session" in candle_cols
     assert "run_id" in subscription_cols
     assert "event_type" in live_event_cols
     assert "position_before_order" in live_order_cols

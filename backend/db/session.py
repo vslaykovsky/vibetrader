@@ -278,6 +278,39 @@ def ensure_tickers_last_day_volume_usd_column(eng: Engine) -> None:
         conn.execute(text("ALTER TABLE tickers ADD COLUMN last_day_volume_usd FLOAT"))
 
 
+def ensure_candles_session_column(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    insp = inspect(eng)
+    if not insp.has_table("candles"):
+        return
+    cols = {c["name"] for c in insp.get_columns("candles")}
+    with eng.begin() as conn:
+        if "session" not in cols:
+            conn.execute(
+                text("ALTER TABLE candles ADD COLUMN session VARCHAR(16) NOT NULL DEFAULT 'regular'")
+            )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_candles_ticker_timeframe_session_timestamp "
+                "ON candles (ticker, timeframe, session, timestamp)"
+            )
+        )
+    if eng.dialect.name != "postgresql":
+        return
+    checks = {c.get("name") for c in insp.get_check_constraints("candles")}
+    if "ck_candles_session" in checks:
+        return
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE candles ADD CONSTRAINT ck_candles_session "
+                "CHECK (session IN ('regular', 'extended')) NOT VALID"
+            )
+        )
+        conn.execute(text("ALTER TABLE candles VALIDATE CONSTRAINT ck_candles_session"))
+
+
 def ensure_live_runs_deployed_from_run_id_column(eng: Engine) -> None:
     from sqlalchemy import inspect
 
@@ -468,6 +501,7 @@ def init_database(eng: Engine) -> None:
     ensure_strategy_language_column(eng)
     ensure_strategy_messages_count_column(eng)
     ensure_tickers_last_day_volume_usd_column(eng)
+    ensure_candles_session_column(eng)
     ensure_live_runs_deployed_from_run_id_column(eng)
     ensure_live_runs_runner_backend_column(eng)
     ensure_live_runs_alpaca_account_id_column(eng)

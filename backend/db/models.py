@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -105,10 +106,13 @@ class Candle(Base):
     low: Mapped[float] = mapped_column(Float, nullable=False)
     close: Mapped[float] = mapped_column(Float, nullable=False)
     volume: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    session: Mapped[str] = mapped_column(String(16), nullable=False, default="regular")
 
     __table_args__ = (
+        CheckConstraint("session IN ('regular', 'extended')", name="ck_candles_session"),
         UniqueConstraint("ticker", "timeframe", "timestamp", name="uq_candles_ticker_tf_ts"),
         Index("ix_candles_ticker_timeframe_timestamp", "ticker", "timeframe", "timestamp"),
+        Index("ix_candles_ticker_timeframe_session_timestamp", "ticker", "timeframe", "session", "timestamp"),
     )
 
 

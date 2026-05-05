@@ -2,10 +2,11 @@ import json
 import logging
 import math
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Annotated, Any, Callable, Literal, Optional
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,10 @@ AVAILABLE_PROVIDERS = {"auto", "alpaca", "moex"}
 
 _ALPACA_CRYPTO_BAR_CHUNK_BUDGET = 100_000
 ALPACA_STOCK_ADJUSTMENT = Adjustment.ALL
+StockSession = Literal["regular", "extended", "all"]
+_US_EASTERN_TZ = ZoneInfo("America/New_York")
+_REGULAR_OPEN_MINUTE = 9 * 60 + 30
+_REGULAR_CLOSE_MINUTE = 16 * 60
 
 
 class LwcMarker(BaseModel):
@@ -259,6 +264,82 @@ def _as_ohlcv_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _as_ohlcv_dataframe_utc(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out = out.rename(columns=str.lower)
+    out = out[["open", "high", "low", "close", "volume"]]
+    out.index = pd.to_datetime(out.index)
+    if getattr(out.index, "tz", None) is None:
+        out.index = out.index.tz_localize("UTC")
+    else:
+        out.index = out.index.tz_convert("UTC")
+    out = out.sort_index()
+    out.index.name = None
+    return out
+
+
+def _is_daily_or_larger_timeframe(tf: TimeFrame) -> bool:
+    return tf.unit in {TimeFrameUnit.Day, TimeFrameUnit.Week, TimeFrameUnit.Month}
+
+
+def _is_one_hour_timeframe(tf: TimeFrame) -> bool:
+    return tf.unit == TimeFrameUnit.Hour and int(tf.amount) == 1
+
+
+def normalize_stock_session(session: str | None, timeframe: TimeFrame | None = None) -> StockSession:
+    value = (session or "all").strip().lower()
+    if value not in {"regular", "extended", "all"}:
+        raise ValueError("session must be one of: regular, extended, all")
+    if timeframe is not None and _is_daily_or_larger_timeframe(timeframe):
+        return "regular"
+    return value
+
+
+def _regular_session_mask(index: pd.DatetimeIndex) -> Any:
+    idx = pd.DatetimeIndex(index)
+    if getattr(idx, "tz", None) is None:
+        idx = idx.tz_localize("UTC")
+    else:
+        idx = idx.tz_convert("UTC")
+    local = idx.tz_convert(_US_EASTERN_TZ)
+    minute = local.hour * 60 + local.minute
+    return (local.dayofweek < 5) & (minute >= _REGULAR_OPEN_MINUTE) & (minute < _REGULAR_CLOSE_MINUTE)
+
+
+def stock_session_labels_for_index(index: pd.DatetimeIndex) -> list[str]:
+    mask = _regular_session_mask(index)
+    return ["regular" if bool(is_regular) else "extended" for is_regular in mask]
+
+
+def _filter_stock_session_utc_df(df: pd.DataFrame, session: StockSession) -> pd.DataFrame:
+    if session == "all" or df.empty:
+        return df
+    mask = _regular_session_mask(pd.DatetimeIndex(df.index))
+    if session == "regular":
+        return df.loc[mask]
+    return df.loc[~mask]
+
+
+def _regular_hourly_bars_from_intraday(df: pd.DataFrame) -> pd.DataFrame:
+    regular = _filter_stock_session_utc_df(df, "regular")
+    if regular.empty:
+        return regular
+    local_index = pd.DatetimeIndex(regular.index).tz_convert(_US_EASTERN_TZ)
+    session_dates = pd.Series(local_index.date, index=regular.index)
+    frames: list[pd.DataFrame] = []
+    agg_map = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+    for session_date, part in regular.groupby(session_dates):
+        part_local_index = pd.DatetimeIndex(part.index).tz_convert(_US_EASTERN_TZ)
+        session_open = pd.Timestamp(datetime.combine(session_date, time(9, 30), tzinfo=_US_EASTERN_TZ))
+        bucket_num = ((part_local_index - session_open) // pd.Timedelta(hours=1)).astype("int64")
+        bucket_local = session_open + pd.to_timedelta(bucket_num, unit="h")
+        bucket_utc = pd.DatetimeIndex(bucket_local).tz_convert("UTC")
+        frames.append(part.groupby(bucket_utc).agg(agg_map))
+    out = pd.concat(frames).sort_index()
+    out.index.name = None
+    return out
+
+
 def _drop_wide_spread_bars(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     hi = out["high"].astype(float)
@@ -373,7 +454,9 @@ def _fetch_moex_bars(
     timeframe: TimeFrame,
     *,
     drop_wide_spread_bars: bool = True,
+    session: str = "all",
 ) -> pd.DataFrame:
+    normalize_stock_session(session, timeframe)
     moex_session.TOKEN = _moex_keys()
     period = period_from_timeframe(timeframe)
 
@@ -413,19 +496,23 @@ def _fetch_alpaca_bars(
     timeframe: TimeFrame,
     *,
     drop_wide_spread_bars: bool = True,
+    session: str = "all",
 ) -> pd.DataFrame:
+    stock_session = normalize_stock_session(session, timeframe)
     api_key, secret_key = _alpaca_keys()
     client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
     start = datetime.fromisoformat(start_test_date) - timedelta(days=int(history_padding_days))
-    # ``end`` is *inclusive* end-of-day (next-midnight UTC, capped at
-    # subscription cap). Without this, intraday bars on the boundary day
-    # are silently dropped because ``2026-03-24`` parses to ``00:00:00``.
     end = _end_datetime_inclusive_eod(end_test_date)
+    request_timeframe = (
+        TimeFrame(15, TimeFrameUnit.Minute)
+        if stock_session == "regular" and _is_one_hour_timeframe(timeframe)
+        else timeframe
+    )
     request = StockBarsRequest(
         symbol_or_symbols=ticker,
         start=start,
         end=end,
-        timeframe=timeframe,
+        timeframe=request_timeframe,
         adjustment=ALPACA_STOCK_ADJUSTMENT,
     )
     bars = client.get_stock_bars(request)
@@ -436,7 +523,13 @@ def _fetch_alpaca_bars(
         df = df.xs(ticker, level=0).copy()
     else:
         df = df.copy()
-    out = _as_ohlcv_dataframe(df)
+    out_utc = _as_ohlcv_dataframe_utc(df)
+    if not _is_daily_or_larger_timeframe(timeframe):
+        if stock_session == "regular" and _is_one_hour_timeframe(timeframe):
+            out_utc = _regular_hourly_bars_from_intraday(out_utc)
+        else:
+            out_utc = _filter_stock_session_utc_df(out_utc, stock_session)
+    out = _as_ohlcv_dataframe(out_utc)
     return _drop_wide_spread_bars(out) if drop_wide_spread_bars else out
 
 
@@ -609,6 +702,7 @@ def _fetch_alpaca_bars_with_429_backoff(
     timeframe: TimeFrame,
     *,
     drop_wide_spread_bars: bool = True,
+    session: str = "all",
 ) -> pd.DataFrame:
     return _fetch_alpaca_bars(
         ticker=ticker,
@@ -617,6 +711,7 @@ def _fetch_alpaca_bars_with_429_backoff(
         history_padding_days=history_padding_days,
         timeframe=timeframe,
         drop_wide_spread_bars=drop_wide_spread_bars,
+        session=session,
     )
 
 
@@ -685,6 +780,7 @@ def _fetch_with_shrink_retry(
     history_padding_days: int,
     timeframe: TimeFrame,
     drop_wide_spread_bars: bool = True,
+    session: str = "all",
 ) -> pd.DataFrame:
     """Call ``fetcher``; on failure, halve the request window from the *left* (move
     ``start`` toward ``end``) and retry until the window collapses. Returns an empty
@@ -706,6 +802,7 @@ def _fetch_with_shrink_retry(
                 history_padding_days=history_padding_days,
                 timeframe=timeframe,
                 drop_wide_spread_bars=drop_wide_spread_bars,
+                session=session,
             )
         except Exception as exc:
             last_exc = exc
@@ -733,6 +830,7 @@ def _fetch_alpaca_with_retry(
     timeframe: TimeFrame,
     *,
     drop_wide_spread_bars: bool = True,
+    session: str = "all",
 ) -> pd.DataFrame:
     return _fetch_with_shrink_retry(
         _fetch_alpaca_bars_with_429_backoff,
@@ -742,6 +840,7 @@ def _fetch_alpaca_with_retry(
         history_padding_days=history_padding_days,
         timeframe=timeframe,
         drop_wide_spread_bars=drop_wide_spread_bars,
+        session=session,
     )
 
 
@@ -753,6 +852,7 @@ def _fetch_moex_with_retry(
     timeframe: TimeFrame,
     *,
     drop_wide_spread_bars: bool = True,
+    session: str = "all",
 ) -> pd.DataFrame:
     return _fetch_with_shrink_retry(
         _fetch_moex_bars,
@@ -762,6 +862,7 @@ def _fetch_moex_with_retry(
         history_padding_days=history_padding_days,
         timeframe=timeframe,
         drop_wide_spread_bars=drop_wide_spread_bars,
+        session=session,
     )
 
 
@@ -774,8 +875,10 @@ def fetch_stock_bars(
     provider: Optional[str] = None,
     *,
     drop_wide_spread_bars: bool = True,
+    session: str = "all",
 ) -> pd.DataFrame:
     provider = _market_data_provider_name(provider=provider)
+    stock_session = normalize_stock_session(session, timeframe)
     if provider == "alpaca":
         return _fetch_alpaca_with_retry(
             ticker=ticker,
@@ -784,6 +887,7 @@ def fetch_stock_bars(
             history_padding_days=history_padding_days,
             timeframe=timeframe,
             drop_wide_spread_bars=drop_wide_spread_bars,
+            session=stock_session,
         )
     if provider == "moex":
         return _fetch_moex_with_retry(
@@ -793,6 +897,7 @@ def fetch_stock_bars(
             history_padding_days=history_padding_days,
             timeframe=timeframe,
             drop_wide_spread_bars=drop_wide_spread_bars,
+            session=stock_session,
         )
 
     # auto mode: try Alpaca first for global symbols; fallback to MOEX.
@@ -812,6 +917,7 @@ def fetch_stock_bars(
             history_padding_days=history_padding_days,
             timeframe=timeframe,
             drop_wide_spread_bars=drop_wide_spread_bars,
+            session=stock_session,
         )
         if not df.empty:
             return df
@@ -826,6 +932,7 @@ def fetch_stock_bars(
             history_padding_days=history_padding_days,
             timeframe=timeframe,
             drop_wide_spread_bars=drop_wide_spread_bars,
+            session=stock_session,
         )
         if not df.empty:
             return df

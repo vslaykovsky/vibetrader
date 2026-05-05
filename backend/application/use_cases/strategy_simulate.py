@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+_MARKET_SESSIONS = {"regular", "extended", "all"}
 
 from application.queries.historical_bars import HistoricalBarsQuery
 from application.schemas.simulation_dto import InitSimulationCommand, simulation_event
@@ -135,6 +136,33 @@ def _subscribed_tickers_and_base_scale(startup: StrategyOutput) -> tuple[list[st
     return list(dict.fromkeys(t for t, _ in rows)), next(iter(scales))
 
 
+def _subscription_session(spec: Any) -> str:
+    value = str(getattr(spec, "session", "all") or "all").strip().lower()
+    if value not in _MARKET_SESSIONS:
+        raise ValueError("session must be one of: regular, extended, all")
+    return value
+
+
+def _subscribed_ticker_sessions(startup: StrategyOutput) -> dict[str, str]:
+    rows: list[tuple[str, str]] = []
+    for p in startup.root:
+        if isinstance(p, OutputTickerSubscription):
+            rows.append((p.ticker.strip(), _subscription_session(p)))
+    for spec in _indicator_subscriptions_from_startup(startup):
+        t = getattr(spec, "ticker", None)
+        if isinstance(t, str) and t.strip():
+            rows.append((t.strip(), _subscription_session(spec)))
+    out: dict[str, str] = {}
+    for ticker, session in rows:
+        prev = out.get(ticker)
+        if prev is not None and prev != session:
+            raise ValueError(
+                f"All subscriptions for ticker {ticker!r} must use the same session; got {prev!r} and {session!r}"
+            )
+        out[ticker] = session
+    return out
+
+
 def _indicator_subscriptions_from_startup(startup: StrategyOutput) -> list[Any]:
     out: list[Any] = []
     for p in startup.root:
@@ -231,6 +259,7 @@ def _ensure_loaded_through_abs_base_row(
     base_holder: dict[str, pd.DataFrame],
     engine: IndicatorEngine,
     ticker: str,
+    session: str,
     sim_scale: str,
     base_scale: str,
     scale_for_fetch: str,
@@ -265,6 +294,7 @@ def _ensure_loaded_through_abs_base_row(
             extra_end,
             padding_days=0,
             provider=None,
+            session=session,
         )
         if part.empty:
             return
@@ -470,6 +500,7 @@ class StrategySimulateCommandHandler:
         per_base_df: dict[str, pd.DataFrame] = {}
         per_engine: dict[str, IndicatorEngine] = {}
         per_engine_ind_subs: dict[str, list] = {}
+        ticker_sessions = _subscribed_ticker_sessions(startup)
         for t in tickers:
             driver_df_t, _ = self._bars.fetch_chunked_merge(
                 t,
@@ -478,6 +509,7 @@ class StrategySimulateCommandHandler:
                 fetch_end,
                 padding_days=padding,
                 provider=None,
+                session=ticker_sessions.get(t, "all"),
             )
             if driver_df_t.empty:
                 logger.warning("simulation got empty OHLC for ticker=%s", t)
@@ -716,7 +748,9 @@ class StrategySimulateCommandHandler:
             startup = rt.start()
             startup = assign_subscription_ids(startup)
             tickers, base_scale = _subscribed_tickers_and_base_scale(startup)
+            ticker_sessions = _subscribed_ticker_sessions(startup)
             ticker = tickers[0]
+            ticker_session = ticker_sessions.get(ticker, "all")
             base_scale = normalize_scale(base_scale)
             sess.emit(
                 simulation_event("status", status="starting", strategy_scale=base_scale)
@@ -763,6 +797,7 @@ class StrategySimulateCommandHandler:
                 fetch_end,
                 padding_days=padding,
                 provider=None,
+                session=ticker_session,
             )
             if driver_df.empty:
                 logger.info(
@@ -843,6 +878,7 @@ class StrategySimulateCommandHandler:
                 base_holder=base_holder,
                 engine=engine,
                 ticker=ticker,
+                session=ticker_session,
                 sim_scale=sim_scale,
                 base_scale=base_scale,
                 scale_for_fetch=scale_for_fetch,
@@ -956,6 +992,7 @@ class StrategySimulateCommandHandler:
                         base_holder=base_holder,
                         engine=engine,
                         ticker=ticker,
+                        session=ticker_session,
                         sim_scale=sim_scale,
                         base_scale=base_scale,
                         scale_for_fetch=scale_for_fetch,

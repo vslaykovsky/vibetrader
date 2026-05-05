@@ -16,6 +16,7 @@ FibonacciOutputKey = Literal[
     "fib_0p786",
 ]
 Scale = Literal["1m", "15m", "1h", "4h", "1d", "1w"]
+Session = Literal["regular", "extended", "all"]
 
 
 def fibonacci_output_retracement_ratio(key: FibonacciOutputKey) -> float:
@@ -231,6 +232,7 @@ class OutputTickerSubscription(BaseModel):
     id: str | None = None
     ticker: str
     scale: Scale
+    session: Session = "all"
     update_scale: Scale | None = None
     partial: bool = False
 
@@ -241,6 +243,7 @@ class SmaIndicatorSubscription(BaseModel):
     id: str | None = None
     ticker: str
     scale: Scale
+    session: Session = "all"
     period: int
     update_scale: Scale | None = None
     partial: bool = False
@@ -252,6 +255,7 @@ class EmaIndicatorSubscription(BaseModel):
     id: str | None = None
     ticker: str
     scale: Scale
+    session: Session = "all"
     period: int
     update_scale: Scale | None = None
     partial: bool = False
@@ -263,6 +267,7 @@ class MacdIndicatorSubscription(BaseModel):
     id: str | None = None
     ticker: str
     scale: Scale
+    session: Session = "all"
     fast_period: int
     slow_period: int
     signal_period: int
@@ -287,6 +292,7 @@ class RsiIndicatorSubscription(BaseModel):
     id: str | None = None
     ticker: str
     scale: Scale
+    session: Session = "all"
     period: int
     update_scale: Scale | None = None
     partial: bool = False
@@ -298,6 +304,7 @@ class AtrIndicatorSubscription(BaseModel):
     id: str | None = None
     ticker: str
     scale: Scale
+    session: Session = "all"
     period: int
     update_scale: Scale | None = None
     partial: bool = False
@@ -309,6 +316,7 @@ class BollingerBandsIndicatorSubscription(BaseModel):
     id: str | None = None
     ticker: str
     scale: Scale
+    session: Session = "all"
     period: int = Field(default=20, ge=1)
     std_dev: float = Field(default=2.0, gt=0)
     outputs: list[BbOutputKey] = Field(
@@ -332,6 +340,7 @@ class StochasticIndicatorSubscription(BaseModel):
     id: str | None = None
     ticker: str
     scale: Scale
+    session: Session = "all"
     k_period: int = Field(default=14, ge=1)
     k_slowing: int = Field(default=3, ge=1)
     d_period: int = Field(default=3, ge=1)
@@ -356,6 +365,7 @@ class FibonacciIndicatorSubscription(BaseModel):
     id: str | None = None
     ticker: str
     scale: Scale
+    session: Session = "all"
     lookback: int = Field(default=50, ge=2)
     outputs: list[FibonacciOutputKey] = Field(
         default_factory=lambda: [
@@ -384,6 +394,7 @@ class RenkoIndicatorSubscription(BaseModel):
     id: str | None = None
     ticker: str
     scale: Scale
+    session: Session = "all"
     brick_size_mode: Literal["fixed", "atr"] = "fixed"
     brick_size: float | None = Field(default=None, gt=0)
     atr_period: int = Field(default=14, ge=1)

@@ -56,6 +56,8 @@ Do not re-emit raw subscribed OHLC or built-in indicator values as custom chart 
 
 Set a short, stable, unique `id` on every `OutputTickerSubscription` and `*IndicatorSubscription` (`price`, `fast_ema`, `trend_rsi`, `renko_2`, etc.). Input points echo this id. For multi-output indicators, also use `InputIndicatorDataPoint.name` to distinguish lines such as MACD `signal`, Bollinger `bb_upper`, or Fibonacci keys.
 
+Subscriptions support `session="regular" | "extended" | "all"` and default to `all`. Daily and weekly bars are regular regardless of this value.
+
 `MacdIndicatorSubscription`, `BollingerBandsIndicatorSubscription`, `StochasticIndicatorSubscription`, and `FibonacciIndicatorSubscription` support an `outputs` list. Request only the series the strategy needs.
 
 If emitting `OutputIndicatorDataPoint`, optionally emit one `OutputIndicatorSeriesCatalog` on the startup stdout line after subscriptions. Each catalog entry is `{ "name", "description" }`; names must be unique and must exactly match emitted indicator data point names. Do not emit later catalogs or repeat long descriptions on every data point.

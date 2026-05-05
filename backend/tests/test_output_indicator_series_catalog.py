@@ -36,3 +36,15 @@ def test_output_indicator_series_catalog_rejects_duplicate_names():
                 OutputIndicatorSeriesCatalogEntry(name="x", description="b"),
             ]
         )
+
+
+def test_ticker_subscription_accepts_session_values():
+    default_sub = OutputTickerSubscription(id="price", ticker="SPY", scale="1h")
+    regular_sub = OutputTickerSubscription(
+        id="regular_price", ticker="SPY", scale="1h", session="regular"
+    )
+
+    assert default_sub.session == "all"
+    assert regular_sub.session == "regular"
+    with pytest.raises(ValidationError):
+        OutputTickerSubscription(id="bad", ticker="SPY", scale="1h", session="overnight")
