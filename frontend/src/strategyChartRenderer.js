@@ -44,6 +44,8 @@ const PLOTLY_CONFIG = {
   displayModeBar: false,
 };
 
+const PLOTLY_DEFAULT_HEIGHT = 450;
+
 const INTRADAY_TIME_RE = /[T ]\d{2}:\d{2}/;
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -666,22 +668,65 @@ function renderPlotlyChart(container, chartSpec, openStore, panelKey, helpText, 
     helpText,
     onRemove,
   );
-  el.style.minHeight = '300px';
 
   const layout = {
     ...PLOTLY_LAYOUT_DEFAULTS,
+    autosize: true,
     ...(chartSpec.layout || {}),
     font: { ...PLOTLY_LAYOUT_DEFAULTS.font, ...(chartSpec.layout?.font || {}) },
     xaxis: { ...PLOTLY_LAYOUT_DEFAULTS.xaxis, ...(chartSpec.layout?.xaxis || {}) },
     yaxis: { ...PLOTLY_LAYOUT_DEFAULTS.yaxis, ...(chartSpec.layout?.yaxis || {}) },
   };
+  const layoutHeight = Number(layout.height);
+  const plotHeight = Number.isFinite(layoutHeight) && layoutHeight > 0 ? layoutHeight : PLOTLY_DEFAULT_HEIGHT;
+  el.style.minHeight = '300px';
+  el.style.height = `${plotHeight}px`;
 
-  Plotly.newPlot(el, chartSpec.data || [], layout, PLOTLY_CONFIG);
+  let disposed = false;
+  let resizeRaf = 0;
+  let initialResizeTimer = 0;
+  const resizePlot = () => {
+    if (disposed || !details.open || !el.isConnected) return;
+    try {
+      Plotly.Plots.resize(el);
+    } catch {}
+  };
+  const scheduleResize = () => {
+    if (resizeRaf) cancelAnimationFrame(resizeRaf);
+    resizeRaf = requestAnimationFrame(() => {
+      resizeRaf = 0;
+      resizePlot();
+    });
+  };
+
+  Promise.resolve(Plotly.newPlot(el, chartSpec.data || [], layout, PLOTLY_CONFIG)).then(() => {
+    if (disposed) return;
+    scheduleResize();
+    initialResizeTimer = window.setTimeout(scheduleResize, 100);
+  });
+
+  let resizeObserver = null;
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(scheduleResize);
+    resizeObserver.observe(el);
+  }
 
   details.addEventListener('toggle', () => {
     if (!details.open) return;
-    requestAnimationFrame(() => Plotly.Plots.resize(el));
+    scheduleResize();
   });
+
+  return {
+    cleanup: () => {
+      disposed = true;
+      resizeObserver?.disconnect();
+      if (resizeRaf) cancelAnimationFrame(resizeRaf);
+      if (initialResizeTimer) window.clearTimeout(initialResizeTimer);
+      try {
+        Plotly.purge(el);
+      } catch {}
+    },
+  };
 }
 
 function escapeCsvField(value) {
@@ -1102,8 +1147,7 @@ function renderOneChartPanel(panelHost, spec, openStore, srcIdx, catalogMap, tim
     return renderLightweightChart(panelHost, spec, openStore, panelKey, helpText, timeZone, hourFormat, onCrosshairMove, onRemove, alignRightEdge);
   }
   if (spec.type === 'plotly') {
-    renderPlotlyChart(panelHost, spec, openStore, panelKey, chartDesc || null, onRemove);
-    return { chart: null, primarySeries: null };
+    return { chart: null, primarySeries: null, ...renderPlotlyChart(panelHost, spec, openStore, panelKey, chartDesc || null, onRemove) };
   }
   if (spec.type === 'table') {
     const tableSync = renderTablePanel(panelHost, spec.rows, spec.title, openStore, panelKey, chartDesc || null, timeZone, hourFormat, onRowHover, onRowLeave);
@@ -1120,6 +1164,7 @@ export function renderCharts(container, dataJson, options) {
   const lwSyncFns = [];
   const tableSyncers = [];
   const crosshairUnsubs = [];
+  const cleanupFns = [];
   let dndSignal = null;
   const charts = dataJson?.charts;
   const base = options?.chartOrderStorageBase;
@@ -1165,7 +1210,7 @@ export function renderCharts(container, dataJson, options) {
   };
 
   const collectResult = (result) => {
-    const { chart, primarySeries, setCrosshairAt, clearCrosshair, crosshairUnsub, scrollToTime, clearHighlight } = result ?? {};
+    const { chart, primarySeries, setCrosshairAt, clearCrosshair, crosshairUnsub, scrollToTime, clearHighlight, cleanup } = result ?? {};
     if (chart) {
       lwCharts.push(chart);
       lwCrosshairBindings.push({ chart, series: primarySeries });
@@ -1174,6 +1219,9 @@ export function renderCharts(container, dataJson, options) {
     }
     if (scrollToTime) {
       tableSyncers.push({ scrollToTime, clearHighlight: clearHighlight ?? (() => {}) });
+    }
+    if (cleanup) {
+      cleanupFns.push(cleanup);
     }
   };
 
@@ -1237,6 +1285,7 @@ export function renderCharts(container, dataJson, options) {
     detachChartDnD: () => {
       dndSignal?.abort();
       for (const unsub of crosshairUnsubs) unsub();
+      for (const cleanup of cleanupFns) cleanup();
     },
   };
 }
