@@ -86,8 +86,8 @@ function liveAccountLabel(r) {
   return '—';
 }
 
-function fmtUnixTime(u, timeZone) {
-  return formatUnixDateTime(u, timeZone);
+function fmtUnixTime(u, timeZone, hourFormat) {
+  return formatUnixDateTime(u, timeZone, hourFormat);
 }
 
 function liveRunCanStop(status) {
@@ -156,7 +156,7 @@ function escapeCsvField(value) {
   return s;
 }
 
-function liveOrdersToCsv(trades, timeZone) {
+function liveOrdersToCsv(trades, timeZone, hourFormat) {
   const columns = [
     'Time',
     'Ticker',
@@ -175,7 +175,7 @@ function liveOrdersToCsv(trades, timeZone) {
   for (const t of [...trades].reverse()) {
     const valueUsd = liveTradeValueUsd(t);
     const row = [
-      fmtUnixTime(t.unixtime, timeZone),
+      fmtUnixTime(t.unixtime, timeZone, hourFormat),
       t.ticker ?? '',
       t.direction ?? '',
       fmtTradeNumber(t.price),
@@ -342,7 +342,7 @@ export function LiveRunStreamPage() {
   const navigate = useNavigate();
   const { user, signOut, getAccessToken } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const { timeZone } = useTimeZone();
+  const { timeZone, hourFormat } = useTimeZone();
   const [runMeta, setRunMeta] = useState(null);
   const [dbRow, setDbRow] = useState(null);
   const [metaLoading, setMetaLoading] = useState(true);
@@ -380,8 +380,8 @@ export function LiveRunStreamPage() {
   const handleDownloadOrdersCsv = useCallback(() => {
     if (!trades.length) return;
     const rid = String(runId || 'live-run').trim() || 'live-run';
-    triggerCsvDownload(`live-orders-${rid}.csv`, liveOrdersToCsv(trades, timeZone));
-  }, [runId, timeZone, trades]);
+    triggerCsvDownload(`live-orders-${rid}.csv`, liveOrdersToCsv(trades, timeZone, hourFormat));
+  }, [hourFormat, runId, timeZone, trades]);
 
   const loadMeta = useCallback(async () => {
     const rid = String(runId || '').trim();
@@ -511,6 +511,7 @@ export function LiveRunStreamPage() {
         chartOrderStorageBase: rid ? `live:${rid}` : 'live',
         alignRightEdge: true,
         timeZone,
+        hourFormat,
       });
       detachChartDnD = rendered.detachChartDnD;
       detachSync = attachSyncedTimeScales(rendered.lwCharts);
@@ -525,7 +526,7 @@ export function LiveRunStreamPage() {
       detachCrosshair?.();
       mount.innerHTML = '';
     };
-  }, [chartEpoch, runId, timeZone]);
+  }, [chartEpoch, hourFormat, runId, timeZone]);
 
   const displayStatus = dbRow?.status ?? runMeta?.status ?? '';
   const createdAt = dbRow?.created_at ?? runMeta?.created_at;
@@ -854,7 +855,7 @@ export function LiveRunStreamPage() {
                     const valueUsd = liveTradeValueUsd(t);
                     return (
                       <tr key={t.rowKey}>
-                        <td>{fmtUnixTime(t.unixtime, timeZone)}</td>
+                        <td>{fmtUnixTime(t.unixtime, timeZone, hourFormat)}</td>
                         <td>{t.ticker ?? '—'}</td>
                         <td>{t.direction ?? '—'}</td>
                         <td>{fmtTradeNumber(t.price)}</td>

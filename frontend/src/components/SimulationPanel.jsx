@@ -93,7 +93,7 @@ function applyStrategyScaleFromPayload(payload, setStrategyTf) {
 }
 
 export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToken }) {
-  const { timeZone } = useTimeZone();
+  const { timeZone, hourFormat } = useTimeZone();
   // ── User input / session ──────────────────────────────────────────────
   const [startDate, setStartDate] = useState('');
   const [datePickerOpen, setDatePickerOpen] = useState(false);
@@ -287,6 +287,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
       `[init] start_date=${sd} chartTf=${chartTf} cursorEnd=${cursorEndUnix} anchorBucket=${anchorBucket} (${formatUnixDateTime(
         anchorBucket,
         timeZone,
+        hourFormat,
       )}) apiStart=${apiStart} apiEnd=${apiEnd} padBackSec=${padBack}`,
     );
     setBarsLoading(true);
@@ -313,10 +314,10 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
         if (initial.length > 0) {
           rightBarUnixRef.current = initial[initial.length - 1].unixtime;
           setRightBarUnix(initial[initial.length - 1].unixtime);
-          const firstIso = formatUnixDateTime(initial[0].unixtime, timeZone);
-          const lastIso = formatUnixDateTime(initial[initial.length - 1].unixtime, timeZone);
+          const firstIso = formatUnixDateTime(initial[0].unixtime, timeZone, hourFormat);
+          const lastIso = formatUnixDateTime(initial[initial.length - 1].unixtime, timeZone, hourFormat);
           const stamps = initial
-            .map((b) => formatChartTick(b.unixtime, timeZone, true))
+            .map((b) => formatChartTick(b.unixtime, timeZone, true, hourFormat))
             .join(',');
           appendLog(
             `[init] loaded ${initial.length} bars: first=${initial[0].unixtime}(${firstIso}) last=${initial[initial.length - 1].unixtime}(${lastIso})`,
@@ -335,7 +336,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
       alive = false;
       ac.abort();
     };
-  }, [sessionReady, startDate, threadId, chartTf, tfSec, callDisplayBars, bars.length, appendLog, timeZone]);
+  }, [sessionReady, startDate, threadId, chartTf, tfSec, callDisplayBars, bars.length, appendLog, hourFormat, timeZone]);
 
   // ── Playback loop: reveals next bar at ``liveBps``; prefetches when buffer is low. ─
   // Effect identity is stable across ``bars`` updates so the clock never resets.
@@ -575,7 +576,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
           );
           if (trimmed.length > 0) {
             const stamps = trimmed
-              .map((b) => formatChartTick(b.unixtime, timeZone, true))
+              .map((b) => formatChartTick(b.unixtime, timeZone, true, hourFormat))
               .join(',');
             appendLogRef.current?.(`[history] kept-stamps=${stamps}`);
           }
@@ -590,7 +591,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
         }
       })();
     }, PAN_HISTORY_DEBOUNCE_MS);
-  }, [sessionReady, startDate, threadId, tfSec, callDisplayBars, timeZone]);
+  }, [sessionReady, startDate, threadId, tfSec, callDisplayBars, hourFormat, timeZone]);
 
   // ── Stream: trades / equity / status (no bars consumed for chart) ────
   const openStream = useCallback(async () => {
@@ -605,9 +606,9 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     function handleStreamTradePayload(payload) {
       if (import.meta.env.DEV) {
         const tu = Number(payload.unixtime) || 0;
-        const tIso = tu > 0 ? formatUnixDateTime(tu, timeZone) : '?';
+        const tIso = tu > 0 ? formatUnixDateTime(tu, timeZone, hourFormat) : '?';
         const bucket = tu > 0 ? bucketStart(tu, chartTfRef.current) : 0;
-        const bIso = bucket > 0 ? formatUnixDateTime(bucket, timeZone) : '?';
+        const bIso = bucket > 0 ? formatUnixDateTime(bucket, timeZone, hourFormat) : '?';
         appendLog(
           `[trade-event] dir=${payload.direction} action=${payload.action || ''} price=${payload.price} ` +
             `unixtime=${tu} (${tIso}) bucket@${chartTfRef.current}=${bucket} (${bIso})`,
@@ -700,7 +701,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     es.onopen = () => {
       appendLog('[stream open]');
     };
-  }, [apiBaseUrl, threadId, getAccessToken, appendLog, stopStream, timeZone]);
+  }, [apiBaseUrl, threadId, getAccessToken, appendLog, stopStream, hourFormat, timeZone]);
   const openStreamRef = useRef(openStream);
   openStreamRef.current = openStream;
 
@@ -904,8 +905,8 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     if (import.meta.env.DEV && visible.length > 0) {
       const first = visible[0];
       const last = visible[visible.length - 1];
-      const isoFirst = formatUnixDateTime(first.unixtime || 0, timeZone);
-      const isoLast = formatUnixDateTime(last.unixtime || 0, timeZone);
+      const isoFirst = formatUnixDateTime(first.unixtime || 0, timeZone, hourFormat);
+      const isoLast = formatUnixDateTime(last.unixtime || 0, timeZone, hourFormat);
       appendLogRef.current?.(
         `[markers] count=${visible.length} first=${first.unixtime}(${isoFirst}) last=${last.unixtime}(${isoLast}) right=${rightBarUnix}`,
       );
@@ -948,7 +949,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
         };
       })
       .sort((a, b) => a.time - b.time);
-  }, [trades, rightBarUnix, chartTf, knownSourceTf, timeZone]);
+  }, [trades, rightBarUnix, chartTf, knownSourceTf, hourFormat, timeZone]);
 
   const livePlayback = busy && !paused;
   const showChartArea = sessionReady || initLoading || candles.length > 0 || barsLoading || Boolean(barsError);
@@ -1059,6 +1060,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
               viewportCapped={false}
               onVisibleTimeRangeChange={handleVisibleTimeRange}
               timeZone={timeZone}
+              hourFormat={hourFormat}
             />
           ) : (
             <p className="simulation-charts-placeholder muted">

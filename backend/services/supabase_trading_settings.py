@@ -50,6 +50,13 @@ def normalize_timezone(value: str | None) -> str:
     return tz
 
 
+def normalize_hour_format(value: str | None) -> str:
+    fmt = (value or "").strip().lower()
+    if fmt in {"auto", "12h", "24h"}:
+        return fmt
+    return ""
+
+
 def _headers() -> dict[str, str]:
     key = _service_role_key()
     return {
@@ -190,7 +197,7 @@ def fetch_trading_settings_payload(user_id: str) -> dict[str, Any] | None:
     uid = (user_id or "").strip()
     if not uid or not service_role_configured():
         return None
-    pr = _get("profiles", {"id": f"eq.{uid}", "select": "timezone,updated_at"})
+    pr = _get("profiles", {"id": f"eq.{uid}", "select": "timezone,hour_format,updated_at"})
     if pr.status_code != 200:
         logger.warning("supabase profiles read status=%s", pr.status_code)
         return None
@@ -200,6 +207,7 @@ def fetch_trading_settings_payload(user_id: str) -> dict[str, Any] | None:
         p0 = prows[0]
         prof = {
             "timezone": normalize_timezone(str(p0.get("timezone") or "")),
+            "hour_format": normalize_hour_format(str(p0.get("hour_format") or "")) or "auto",
             "updated_at": p0.get("updated_at"),
         }
     ar = _get(
@@ -237,30 +245,35 @@ def upsert_profile_settings(
     user_id: str,
     *,
     user_timezone: str | None = None,
+    hour_format: str | None = None,
 ) -> tuple[bool, str]:
     uid = (user_id or "").strip()
     if not uid or not service_role_configured():
         return False, "Trading settings are not configured on the server"
-    if user_timezone is None:
+    if user_timezone is None and hour_format is None:
         return False, "No fields to update"
-    tz = normalize_timezone(user_timezone)
-    if not tz:
-        return False, "Invalid timezone"
-    now_iso = datetime.now(timezone.utc).isoformat()
+    body: dict[str, Any] = {}
+    if user_timezone is not None:
+        tz = normalize_timezone(user_timezone)
+        if not tz:
+            return False, "Invalid timezone"
+        body["timezone"] = tz
+    if hour_format is not None:
+        fmt = normalize_hour_format(hour_format)
+        if not fmt:
+            return False, "Invalid hour format"
+        body["hour_format"] = fmt
     rget = _get(
         "profiles",
         {
             "id": f"eq.{urllib.parse.quote(uid, safe='')}",
-            "select": "timezone",
+            "select": "timezone,hour_format",
         },
     )
     has_row = False
     if rget.status_code == 200 and isinstance(rget.json(), list) and rget.json():
         has_row = True
-    body = {
-        "timezone": tz,
-        "updated_at": now_iso,
-    }
+    body["updated_at"] = datetime.now(timezone.utc).isoformat()
     if has_row:
         r = _patch(f"profiles?id=eq.{urllib.parse.quote(uid, safe='')}", body)
         if r.status_code in (200, 204):

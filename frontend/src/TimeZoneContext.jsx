@@ -1,12 +1,13 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useAuth } from './AuthContext';
-import { browserTimeZone, normalizeTimeZone } from './lib/dateTime.js';
+import { browserTimeZone, normalizeHourFormat, normalizeTimeZone } from './lib/dateTime.js';
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
   (import.meta.env.PROD ? '/api' : 'http://localhost:8080');
 
 const STORAGE_KEY = 'vibetrader.timezone';
+const HOUR_FORMAT_STORAGE_KEY = 'vibetrader.hourFormat';
 const TimeZoneContext = createContext(null);
 
 function storedTimeZone() {
@@ -27,9 +28,28 @@ function rememberTimeZone(value) {
   }
 }
 
+function storedHourFormat() {
+  if (typeof localStorage === 'undefined') return 'auto';
+  try {
+    return normalizeHourFormat(localStorage.getItem(HOUR_FORMAT_STORAGE_KEY), 'auto');
+  } catch {
+    return 'auto';
+  }
+}
+
+function rememberHourFormat(value) {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(HOUR_FORMAT_STORAGE_KEY, normalizeHourFormat(value, 'auto'));
+  } catch {
+    void 0;
+  }
+}
+
 export function TimeZoneProvider({ children }) {
   const { user, getAccessToken } = useAuth();
   const [timeZone, setTimeZoneState] = useState(storedTimeZone);
+  const [hourFormat, setHourFormatState] = useState(storedHourFormat);
   const [loading, setLoading] = useState(false);
 
   const setTimeZone = useCallback((value) => {
@@ -38,9 +58,16 @@ export function TimeZoneProvider({ children }) {
     setTimeZoneState(next);
   }, []);
 
+  const setHourFormat = useCallback((value) => {
+    const next = normalizeHourFormat(value, 'auto');
+    rememberHourFormat(next);
+    setHourFormatState(next);
+  }, []);
+
   const refreshTimeZone = useCallback(async () => {
     if (!user) {
       setTimeZone(browserTimeZone());
+      setHourFormat('auto');
       return;
     }
     setLoading(true);
@@ -52,24 +79,43 @@ export function TimeZoneProvider({ children }) {
       const payload = await res.json().catch(() => ({}));
       if (res.ok) {
         setTimeZone(payload?.profile?.timezone || browserTimeZone());
+        if (payload?.profile && Object.prototype.hasOwnProperty.call(payload.profile, 'hour_format')) {
+          setHourFormat(payload.profile.hour_format || 'auto');
+        }
       }
     } finally {
       setLoading(false);
     }
-  }, [getAccessToken, setTimeZone, user]);
+  }, [getAccessToken, setHourFormat, setTimeZone, user]);
 
   useEffect(() => {
     refreshTimeZone();
   }, [refreshTimeZone]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onStorage = (event) => {
+      if (event.key === STORAGE_KEY) {
+        setTimeZoneState(normalizeTimeZone(event.newValue, browserTimeZone()));
+      }
+      if (event.key === HOUR_FORMAT_STORAGE_KEY) {
+        setHourFormatState(normalizeHourFormat(event.newValue, 'auto'));
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
   const value = useMemo(
     () => ({
       timeZone,
+      hourFormat,
       loading,
       setTimeZone,
+      setHourFormat,
       refreshTimeZone,
     }),
-    [loading, refreshTimeZone, setTimeZone, timeZone],
+    [hourFormat, loading, refreshTimeZone, setHourFormat, setTimeZone, timeZone],
   );
 
   return <TimeZoneContext.Provider value={value}>{children}</TimeZoneContext.Provider>;

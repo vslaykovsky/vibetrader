@@ -503,7 +503,7 @@ export function StrategyPage() {
   const location = useLocation();
   const { user, signOut, getAccessToken } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const { timeZone } = useTimeZone();
+  const { timeZone, hourFormat } = useTimeZone();
   const signedInUserId = user?.id ?? null;
   const [messages, setMessages] = useState([]);
   const [canvas, setCanvas] = useState({});
@@ -1628,7 +1628,7 @@ export function StrategyPage() {
     let detachCrosshair;
     let detachChartDnD;
     try {
-      const rendered = renderCharts(root, chartData, { chartOrderStorageBase: threadId, timeZone });
+      const rendered = renderCharts(root, chartData, { chartOrderStorageBase: threadId, timeZone, hourFormat });
       detachChartDnD = rendered.detachChartDnD;
       detachSync = attachSyncedTimeScales(rendered.lwCharts);
       detachCrosshair = attachSyncedCrosshair(rendered.lwCrosshairBindings);
@@ -1642,7 +1642,7 @@ export function StrategyPage() {
       detachCrosshair?.();
       mount.innerHTML = '';
     };
-  }, [displayOutput, threadId, timeZone]);
+  }, [displayOutput, hourFormat, threadId, timeZone]);
 
   async function handleSubmit(event, messageFromField) {
     if (event && typeof event.preventDefault === 'function') {

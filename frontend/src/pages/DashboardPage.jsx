@@ -15,8 +15,8 @@ const API_BASE_URL =
 
 const THREAD_PREVIEW_LIMIT = 10;
 
-function fmtTime(iso, timeZone) {
-  return formatIsoDateTime(iso, timeZone);
+function fmtTime(iso, timeZone, hourFormat) {
+  return formatIsoDateTime(iso, timeZone, hourFormat);
 }
 
 function threadTitle(t) {
@@ -105,7 +105,7 @@ export function DashboardPage() {
   const location = useLocation();
   const { user, signOut, getAccessToken } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const { timeZone } = useTimeZone();
+  const { timeZone, hourFormat } = useTimeZone();
   const [threads, setThreads] = useState([]);
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -299,7 +299,7 @@ export function DashboardPage() {
                           <div className="dashboard-card-main">
                             <h3 className="dashboard-card-title">{threadTitle(t)}</h3>
                             <p className="dashboard-card-meta muted">
-                              Updated {fmtTime(t.latest_created_at, timeZone)}
+                              Updated {fmtTime(t.latest_created_at, timeZone, hourFormat)}
                               {Number.isFinite(Number(t.message_count)) ? ` · ${t.message_count} messages` : ''}
                             </p>
                           </div>

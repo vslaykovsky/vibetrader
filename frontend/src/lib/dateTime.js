@@ -23,6 +23,11 @@ export function normalizeTimeZone(value, fallback = browserTimeZone()) {
   return isValidTimeZone(tz) ? tz : fallback;
 }
 
+export function normalizeHourFormat(value, fallback = 'auto') {
+  const fmt = String(value || '').trim().toLowerCase();
+  return fmt === 'auto' || fmt === '12h' || fmt === '24h' ? fmt : fallback;
+}
+
 /** Calendar date in UTC for API ``start_date`` / ``end_date`` bounds from unix seconds. */
 export function unixToIsoDateUTC(sec) {
   const d = new Date(sec * 1000);
@@ -52,6 +57,20 @@ function partsFor(date, timeZone, options = {}) {
   return Object.fromEntries(fmt.formatToParts(date).map((p) => [p.type, p.value]));
 }
 
+function browserHourOptions(hourFormat = 'auto') {
+  const fmt = normalizeHourFormat(hourFormat);
+  if (fmt === '12h') return { hour12: true };
+  if (fmt === '24h') return { hour12: false, hourCycle: 'h23' };
+  try {
+    const opts = new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions();
+    if (typeof opts.hourCycle === 'string' && opts.hourCycle) return { hourCycle: opts.hourCycle };
+    if (typeof opts.hour12 === 'boolean') return { hour12: opts.hour12 };
+  } catch {
+    return {};
+  }
+  return {};
+}
+
 export function dateKeyForMs(ms, timeZone) {
   if (!Number.isFinite(ms)) return null;
   const p = partsFor(new Date(ms), timeZone, {
@@ -72,19 +91,19 @@ export function todayDateKey(timeZone) {
   return dateKeyForMs(Date.now(), timeZone);
 }
 
-export function formatIsoDateTime(value, timeZone) {
+export function formatIsoDateTime(value, timeZone, hourFormat = 'auto') {
   const ms = parseIsoInstant(value);
   if (ms == null) return typeof value === 'string' ? value : '';
-  return formatMsDateTime(ms, timeZone);
+  return formatMsDateTime(ms, timeZone, hourFormat);
 }
 
-export function formatUnixDateTime(value, timeZone) {
+export function formatUnixDateTime(value, timeZone, hourFormat = 'auto') {
   if (value == null || !Number.isFinite(Number(value))) return '—';
   const n = Number(value);
-  return formatMsDateTime(n > 2e10 ? n : n * 1000, timeZone);
+  return formatMsDateTime(n > 2e10 ? n : n * 1000, timeZone, hourFormat);
 }
 
-export function formatMsDateTime(ms, timeZone) {
+export function formatMsDateTime(ms, timeZone, hourFormat = 'auto') {
   if (!Number.isFinite(ms)) return '';
   return new Intl.DateTimeFormat('en-US', {
     timeZone: normalizeTimeZone(timeZone),
@@ -94,32 +113,111 @@ export function formatMsDateTime(ms, timeZone) {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-    hour12: false,
-    hourCycle: 'h23',
+    ...browserHourOptions(hourFormat),
   }).format(new Date(ms));
 }
 
-export function formatChartTick(timeSec, timeZone, isIntraday) {
-  const u = typeof timeSec === 'number'
-    ? timeSec
-    : (timeSec && typeof timeSec === 'object' && 'timestamp' in timeSec)
-      ? Number(timeSec.timestamp)
-      : NaN;
+function formatMsDate(ms, timeZone) {
+  if (!Number.isFinite(ms)) return '';
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: normalizeTimeZone(timeZone),
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+  }).format(new Date(ms));
+}
+
+function businessDayFromChartTime(value) {
+  if (typeof value === 'string') {
+    const m = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+    return { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]) };
+  }
+  if (value && typeof value === 'object' && 'year' in value && 'month' in value && 'day' in value) {
+    const year = Number(value.year);
+    const month = Number(value.month);
+    const day = Number(value.day);
+    if ([year, month, day].every((n) => Number.isFinite(n))) {
+      return { year, month, day };
+    }
+  }
+  return null;
+}
+
+function businessDayDate(day) {
+  return new Date(Date.UTC(day.year, day.month - 1, day.day));
+}
+
+function chartTimeSeconds(value) {
+  if (typeof value === 'number') return value;
+  if (value && typeof value === 'object' && 'timestamp' in value) return Number(value.timestamp);
+  if (typeof value === 'string' && value.trim()) {
+    const t = value.trim().replace(' ', 'T');
+    const ms = Date.parse(/[zZ]|[+-]\d{2}:?\d{2}$/.test(t) ? t : `${t}Z`);
+    return Number.isFinite(ms) ? Math.floor(ms / 1000) : NaN;
+  }
+  return NaN;
+}
+
+function isMidnightParts(parts) {
+  const hh = parts.hour || '';
+  const mm = parts.minute || '00';
+  if (mm !== '00') return false;
+  if (parts.dayPeriod) {
+    const h = Number(hh);
+    return (h === 0 || h === 12) && parts.dayPeriod.toLowerCase() === 'am';
+  }
+  return hh === '00' || hh === '24';
+}
+
+function formatTimeParts(parts) {
+  const mm = parts.minute || '00';
+  if (parts.dayPeriod) {
+    const h = Number(parts.hour);
+    const hh = Number.isFinite(h) ? String(h) : (parts.hour || '');
+    return `${hh}:${mm} ${parts.dayPeriod}`;
+  }
+  const hh = parts.hour === '24' ? '00' : (parts.hour || '');
+  return `${hh}:${mm}`;
+}
+
+export function formatChartTick(timeSec, timeZone, isIntraday, hourFormat = 'auto') {
+  const businessDay = businessDayFromChartTime(timeSec);
+  if (businessDay && !isIntraday) {
+    const p = partsFor(businessDayDate(businessDay), 'UTC', {
+      month: 'short',
+      day: '2-digit',
+    });
+    return `${p.day || ''} ${p.month || ''}`.trim();
+  }
+  const u = chartTimeSeconds(timeSec);
   if (!Number.isFinite(u)) return '';
   const p = partsFor(new Date(u * 1000), timeZone, {
     month: 'short',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false,
-    hourCycle: 'h23',
+    ...browserHourOptions(hourFormat),
   });
   const dayMonth = `${p.day || ''} ${p.month || ''}`.trim();
   if (!isIntraday) return dayMonth;
-  const hh = p.hour === '24' ? '00' : p.hour;
-  const mm = p.minute || '00';
-  if (hh === '00' && mm === '00') return dayMonth;
-  return `${hh}:${mm}`;
+  if (isMidnightParts(p)) return dayMonth;
+  return formatTimeParts(p);
+}
+
+export function formatChartCrosshairTime(time, timeZone, isIntraday, hourFormat = 'auto') {
+  const businessDay = businessDayFromChartTime(time);
+  if (businessDay && !isIntraday) {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: 'UTC',
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+    }).format(businessDayDate(businessDay));
+  }
+  const u = chartTimeSeconds(time);
+  if (!Number.isFinite(u)) return '';
+  return isIntraday ? formatMsDateTime(u * 1000, timeZone, hourFormat) : formatMsDate(u * 1000, timeZone);
 }
 
 export function supportedTimeZones() {

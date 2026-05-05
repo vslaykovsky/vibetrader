@@ -18,7 +18,7 @@ import {
   sanitizeDetailsOpenState,
   validateChartOrder,
 } from './lib/chartOrder.js';
-import { formatChartTick, normalizeTimeZone } from './lib/dateTime.js';
+import { formatChartCrosshairTime, formatChartTick, formatUnixDateTime, normalizeTimeZone } from './lib/dateTime.js';
 
 const SERIES_TYPE_MAP = {
   Candlestick: CandlestickSeries,
@@ -50,6 +50,8 @@ const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_COLUMN_NAMES = new Set([
   'time', 'date', 'datetime', 'timestamp',
   'entry_time', 'exit_time', 'open_time', 'close_time',
+  'created_at', 'updated_at', 'submitted_at', 'filled_at', 'cancelled_at',
+  'submitted_time', 'filled_time', 'order_time',
 ]);
 
 function detectTimeColumn(columns, rows) {
@@ -65,6 +67,23 @@ function detectTimeColumn(columns, rows) {
     if (allParseable) return col;
   }
   return null;
+}
+
+function detectDisplayTimeColumns(columns, rows) {
+  const out = new Set();
+  const sample = rows.slice(0, 3);
+  for (const col of columns) {
+    if (TIME_COLUMN_NAMES.has(col.toLowerCase())) {
+      out.add(col);
+      continue;
+    }
+    const allParseable = sample.length > 0 && sample.every((r) => {
+      const u = toUnixSeconds(r?.[col]);
+      return typeof u === 'number' && Number.isFinite(u) && u > 946684800;
+    });
+    if (allParseable) out.add(col);
+  }
+  return out;
 }
 
 const CHART_ORDER_LS_PREFIX = 'vibetrader:chartPanelOrder:';
@@ -507,7 +526,7 @@ function makeSection(container, titleText, openStore, panelKey, helpText, onRemo
   return { details, chartEl };
 }
 
-function renderLightweightChart(container, chartSpec, openStore, panelKey, helpText, timeZone, onCrosshairMove, onRemove, alignRightEdge) {
+function renderLightweightChart(container, chartSpec, openStore, panelKey, helpText, timeZone, hourFormat, onCrosshairMove, onRemove, alignRightEdge) {
   const { details, chartEl: el } = makeSection(
     container,
     chartSpec.title || '',
@@ -523,9 +542,13 @@ function renderLightweightChart(container, chartSpec, openStore, panelKey, helpT
     ...CHART_THEME,
     autoSize: true,
     height: 350,
+    localization: {
+      ...(CHART_THEME.localization || {}),
+      timeFormatter: (time) => formatChartCrosshairTime(time, timeZone, isIntraday, hourFormat),
+    },
     timeScale: {
       ...(CHART_THEME.timeScale || {}),
-      tickMarkFormatter: (timeSec) => formatChartTick(timeSec, timeZone, isIntraday),
+      tickMarkFormatter: (timeSec) => formatChartTick(timeSec, timeZone, isIntraday, hourFormat),
     },
   });
 
@@ -669,14 +692,16 @@ function escapeCsvField(value) {
   return s;
 }
 
-function tableRowsToCsv(columns, rows) {
+function tableRowsToCsv(columns, rows, formatCell = null) {
   const header = columns.map((c) => escapeCsvField(c)).join(',');
   const lines = [header];
   for (const row of rows) {
     const cells = columns.map((col) => {
       const v = row[col];
       let raw;
-      if (v === null || v === undefined) {
+      if (typeof formatCell === 'function') {
+        raw = formatCell(v, col);
+      } else if (v === null || v === undefined) {
         raw = '';
       } else if (typeof v === 'number' && Number.isFinite(v)) {
         raw = String(v);
@@ -705,13 +730,14 @@ function triggerCsvDownload(filename, csvText) {
   URL.revokeObjectURL(url);
 }
 
-function renderTablePanel(container, table, title, openStore, panelKey, helpText, onRowHover, onRowLeave) {
+function renderTablePanel(container, table, title, openStore, panelKey, helpText, timeZone, hourFormat, onRowHover, onRowLeave) {
   if (!Array.isArray(table) || table.length === 0) return null;
   const first = table[0];
   if (!first || typeof first !== 'object') return null;
   const columns = Object.keys(first);
   if (columns.length === 0) return null;
   const timeCol = detectTimeColumn(columns, table);
+  const displayTimeCols = detectDisplayTimeColumns(columns, table);
 
   const toComparable = (v) => {
     if (v === null || v === undefined) return { kind: 'empty', value: null };
@@ -821,8 +847,14 @@ function renderTablePanel(container, table, title, openStore, panelKey, helpText
 
   const tbody = document.createElement('tbody');
 
-  const fmtCell = (v) => {
+  const fmtCell = (v, col = '') => {
     if (v === null || v === undefined) return '';
+    if (displayTimeCols.has(col)) {
+      const u = toUnixSeconds(v);
+      if (typeof u === 'number' && Number.isFinite(u) && u > 0) {
+        return formatUnixDateTime(u, timeZone, hourFormat);
+      }
+    }
     if (typeof v === 'number' && Number.isFinite(v)) {
       return Number.isInteger(v) ? String(v) : v.toLocaleString('en-US', { maximumFractionDigits: 6 });
     }
@@ -874,7 +906,7 @@ function renderTablePanel(container, table, title, openStore, panelKey, helpText
       tr.style.cssText = 'border-bottom:1px solid #2a2e39;transition:background 0.1s;';
       for (const col of columns) {
         const td = document.createElement('td');
-        td.textContent = fmtCell(row?.[col]);
+        td.textContent = fmtCell(row?.[col], col);
         td.style.cssText = 'padding:8px 12px;';
         tr.appendChild(td);
       }
@@ -924,7 +956,7 @@ function renderTablePanel(container, table, title, openStore, panelKey, helpText
   tbl.appendChild(tbody);
 
   dlBtn.addEventListener('click', () => {
-    const csv = tableRowsToCsv(columns, currentRows);
+    const csv = tableRowsToCsv(columns, currentRows, fmtCell);
     triggerCsvDownload('strategy-table.csv', csv);
   });
 
@@ -1061,20 +1093,20 @@ function renderMetricsPanel(container, metrics, openStore) {
   container.appendChild(details);
 }
 
-function renderOneChartPanel(panelHost, spec, openStore, srcIdx, catalogMap, timeZone, onCrosshairMove, onRowHover, onRowLeave, onRemove, alignRightEdge) {
+function renderOneChartPanel(panelHost, spec, openStore, srcIdx, catalogMap, timeZone, hourFormat, onCrosshairMove, onRowHover, onRowLeave, onRemove, alignRightEdge) {
   const panelKey = `c${srcIdx}`;
   const chartDesc = typeof spec.description === 'string' ? spec.description.trim() : '';
   if (spec.type === 'lightweight-charts') {
     const catalogHelp = helpTextForLightweightChart(spec, catalogMap);
     const helpText = [chartDesc, catalogHelp].filter(Boolean).join('\n\n') || null;
-    return renderLightweightChart(panelHost, spec, openStore, panelKey, helpText, timeZone, onCrosshairMove, onRemove, alignRightEdge);
+    return renderLightweightChart(panelHost, spec, openStore, panelKey, helpText, timeZone, hourFormat, onCrosshairMove, onRemove, alignRightEdge);
   }
   if (spec.type === 'plotly') {
     renderPlotlyChart(panelHost, spec, openStore, panelKey, chartDesc || null, onRemove);
     return { chart: null, primarySeries: null };
   }
   if (spec.type === 'table') {
-    const tableSync = renderTablePanel(panelHost, spec.rows, spec.title, openStore, panelKey, chartDesc || null, onRowHover, onRowLeave);
+    const tableSync = renderTablePanel(panelHost, spec.rows, spec.title, openStore, panelKey, chartDesc || null, timeZone, hourFormat, onRowHover, onRowLeave);
     return { chart: null, primarySeries: null, scrollToTime: tableSync?.scrollToTime ?? null, clearHighlight: tableSync?.clearHighlight ?? null };
   }
   return { chart: null, primarySeries: null };
@@ -1092,6 +1124,7 @@ export function renderCharts(container, dataJson, options) {
   const charts = dataJson?.charts;
   const base = options?.chartOrderStorageBase;
   const timeZone = normalizeTimeZone(options?.timeZone);
+  const hourFormat = options?.hourFormat;
   const alignRightEdge = options?.alignRightEdge === true;
   const chartCount = Array.isArray(charts) ? charts.length : 0;
   const catalogMap = catalogMapFromDataJson(dataJson);
@@ -1180,7 +1213,7 @@ export function renderCharts(container, dataJson, options) {
         } else {
           const spec = charts[srcIdx];
           if (!spec) continue;
-          collectResult(renderOneChartPanel(inner, spec, openStore, srcIdx, catalogMap, timeZone, onCrosshairMove, onRowHover, onRowLeave, removePanel, alignRightEdge));
+          collectResult(renderOneChartPanel(inner, spec, openStore, srcIdx, catalogMap, timeZone, hourFormat, onCrosshairMove, onRowHover, onRowLeave, removePanel, alignRightEdge));
         }
         enableChartDndHeader(row);
       }
@@ -1192,7 +1225,7 @@ export function renderCharts(container, dataJson, options) {
         for (let srcIdx = 0; srcIdx < charts.length; srcIdx++) {
           if (hiddenPanelKeys.has(`c${srcIdx}`)) continue;
           const spec = charts[srcIdx];
-          collectResult(renderOneChartPanel(container, spec, openStore, srcIdx, catalogMap, timeZone, onCrosshairMove, onRowHover, onRowLeave, removePanel, alignRightEdge));
+          collectResult(renderOneChartPanel(container, spec, openStore, srcIdx, catalogMap, timeZone, hourFormat, onCrosshairMove, onRowHover, onRowLeave, removePanel, alignRightEdge));
         }
       }
     }

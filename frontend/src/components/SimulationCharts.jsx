@@ -9,7 +9,7 @@ import {
 import { CHART_THEME } from '../lib/chartTheme.js';
 import { coerceChartTimeSeconds, visibleTimeRangeToUnix } from '../lib/chartHistory.js';
 import { attachSyncedCrosshair, attachSyncedTimeScales } from '../lib/lwcSync.js';
-import { formatChartTick } from '../lib/dateTime.js';
+import { formatChartCrosshairTime, formatChartTick } from '../lib/dateTime.js';
 
 /** Empty fraction on the right when ``lockedVisibleRange`` is set (LWC cannot extend ``setVisibleRange`` past last bar). */
 const PREVIEW_RIGHT_EMPTY_FRACTION = 0.3;
@@ -54,6 +54,7 @@ export function SimulationCharts({
   viewportCapped = false,
   onVisibleTimeRangeChange = null,
   timeZone = 'UTC',
+  hourFormat = 'auto',
 }) {
   const priceHostRef = useRef(null);
   const equityHostRef = useRef(null);
@@ -103,11 +104,16 @@ export function SimulationCharts({
     // day-of-month label, which makes the chart look like it's missing bars).
     const tfKey = String(chartTf || '').trim().toLowerCase();
     const isIntraday = tfKey === '1m' || tfKey === '15m' || tfKey === '1h' || tfKey === '4h';
-    const tickMarkFormatter = (timeSec) => formatChartTick(timeSec, timeZone, isIntraday);
+    const tickMarkFormatter = (timeSec) => formatChartTick(timeSec, timeZone, isIntraday, hourFormat);
+    const timeFormatter = (time) => formatChartCrosshairTime(time, timeZone, isIntraday, hourFormat);
     const chartPrice = createChart(topEl, {
       ...CHART_THEME,
       width: topEl.clientWidth,
       height: hPrice,
+      localization: {
+        ...(CHART_THEME.localization || {}),
+        timeFormatter,
+      },
       timeScale: {
         ...(CHART_THEME.timeScale || {}),
         tickMarkFormatter,
@@ -117,6 +123,10 @@ export function SimulationCharts({
       ...CHART_THEME,
       width: botEl.clientWidth,
       height: hEq,
+      localization: {
+        ...(CHART_THEME.localization || {}),
+        timeFormatter,
+      },
       timeScale: {
         ...(CHART_THEME.timeScale || {}),
         tickMarkFormatter,
@@ -295,7 +305,7 @@ export function SimulationCharts({
       markersPluginRef.current = null;
       lineMarkersPluginRef.current = null;
     };
-  }, [chartTf, timeZone]);
+  }, [chartTf, hourFormat, timeZone]);
 
   useEffect(() => {
     const candleSeries = candleSeriesRef.current;

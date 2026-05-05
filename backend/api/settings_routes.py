@@ -44,14 +44,21 @@ def settings_trading_profile_put() -> tuple:
         return _bad("Trading settings are not configured on the server", 503)
     body = request.get_json(silent=True) or {}
     tz = body.get("timezone")
+    fmt = body.get("hour_format")
     user_timezone = None
+    hour_format = None
     if "timezone" in body:
         if not isinstance(tz, str):
             return _bad("timezone must be a string")
         user_timezone = tz
+    if "hour_format" in body:
+        if not isinstance(fmt, str):
+            return _bad("hour_format must be a string")
+        hour_format = fmt
     ok, err = upsert_profile_settings(
         str(g.user_id),
         user_timezone=user_timezone,
+        hour_format=hour_format,
     )
     if not ok:
         return _bad(err or "Save failed", 502)

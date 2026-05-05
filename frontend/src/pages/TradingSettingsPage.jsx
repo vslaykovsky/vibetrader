@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../AuthContext';
 import { useTheme } from '../ThemeContext';
 import { useTimeZone } from '../TimeZoneContext.jsx';
-import { browserTimeZone, supportedTimeZones } from '../lib/dateTime.js';
+import { browserTimeZone, normalizeHourFormat, supportedTimeZones } from '../lib/dateTime.js';
 import { ProfileMenu } from '../ProfileMenu';
 
 const API_BASE_URL =
@@ -13,7 +13,7 @@ const API_BASE_URL =
 export function TradingSettingsPage() {
   const { user, signOut, getAccessToken } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const { timeZone, setTimeZone, refreshTimeZone } = useTimeZone();
+  const { timeZone, hourFormat, setTimeZone, setHourFormat, refreshTimeZone } = useTimeZone();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -24,6 +24,7 @@ export function TradingSettingsPage() {
   const [newApiKey, setNewApiKey] = useState('');
   const [newSecretKey, setNewSecretKey] = useState('');
   const [timezoneInput, setTimezoneInput] = useState(timeZone || browserTimeZone());
+  const [hourFormatInput, setHourFormatInput] = useState(normalizeHourFormat(hourFormat, 'auto'));
   const timezoneOptions = supportedTimeZones();
   const credentialsReady = accounts.some((a) => a?.has_alpaca_api_key && a?.has_alpaca_secret_key);
 
@@ -58,15 +59,18 @@ export function TradingSettingsPage() {
       const p = payload.profile;
       setProfile(typeof p === 'object' && p !== null ? p : {});
       const nextTimezone = typeof p?.timezone === 'string' && p.timezone ? p.timezone : browserTimeZone();
+      const nextHourFormat = normalizeHourFormat(p?.hour_format, hourFormat);
       setTimezoneInput(nextTimezone);
+      setHourFormatInput(nextHourFormat);
       setTimeZone(nextTimezone);
+      setHourFormat(nextHourFormat);
       setAccounts(Array.isArray(payload.alpaca_accounts) ? payload.alpaca_accounts : []);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [authFetch, setTimeZone]);
+  }, [authFetch, hourFormat, setHourFormat, setTimeZone]);
 
   useEffect(() => {
     load();
@@ -77,7 +81,7 @@ export function TradingSettingsPage() {
     setError('');
     setOkMsg('');
     try {
-      const profileBody = { timezone: timezoneInput };
+      const profileBody = { timezone: timezoneInput, hour_format: hourFormatInput };
 
       const profileRes = await authFetch(`${API_BASE_URL}/settings/trading/profile`, {
         method: 'PUT',
@@ -87,6 +91,7 @@ export function TradingSettingsPage() {
       if (!profileRes.ok) throw new Error(profilePayload.error || `Save failed (${profileRes.status})`);
 
       setTimeZone(timezoneInput);
+      setHourFormat(hourFormatInput);
       setOkMsg('Saved settings.');
       await refreshTimeZone();
       await load();
@@ -255,6 +260,29 @@ export function TradingSettingsPage() {
                       placeholder="America/New_York"
                     />
                   )}
+                </div>
+              </div>
+
+              <div className="settings-editor-section">
+                <div className="settings-section-copy">
+                  <span className="home-ms settings-section-icon" aria-hidden>
+                    schedule
+                  </span>
+                  <div>
+                    <h3>Time format</h3>
+                    <p>Choose 12-hour or 24-hour labels. Auto follows your browser setting.</p>
+                  </div>
+                </div>
+                <div className="settings-form settings-form--inline">
+                  <select
+                    className="settings-input settings-input--wide"
+                    value={hourFormatInput}
+                    onChange={(e) => setHourFormatInput(normalizeHourFormat(e.target.value, 'auto'))}
+                  >
+                    <option value="auto">Auto (browser setting)</option>
+                    <option value="12h">12-hour</option>
+                    <option value="24h">24-hour</option>
+                  </select>
                 </div>
               </div>
 
