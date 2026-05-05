@@ -1676,6 +1676,7 @@ li {
   flex-direction: column;
   gap: 14px;
   overscroll-behavior: contain;
+  overflow-anchor: none;
 }
 
 .empty-state,

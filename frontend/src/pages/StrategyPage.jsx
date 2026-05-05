@@ -487,6 +487,15 @@ function canvasPayloadsEqual(a, b) {
   }
 }
 
+const CHAT_BOTTOM_STICKY_PX = 96;
+
+function isChatScrollNearBottom(scroller) {
+  if (!scroller) {
+    return true;
+  }
+  return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= CHAT_BOTTOM_STICKY_PX;
+}
+
 
 export function StrategyPage() {
   const { threadId } = useParams();
@@ -510,6 +519,7 @@ export function StrategyPage() {
   const [deletingThread, setDeletingThread] = useState(false);
   const [deleteThreadDialogOpen, setDeleteThreadDialogOpen] = useState(false);
   const chatEndRef = useRef(null);
+  const chatStreamRef = useRef(null);
   const chatFormRef = useRef(null);
   const chatPanelRef = useRef(null);
   const messageTextareaRef = useRef(null);
@@ -583,6 +593,15 @@ export function StrategyPage() {
   }, []);
 
   const skipNextCanvasTitleBlurCommitRef = useRef(false);
+  const layoutDualRef = useRef(null);
+  const composerExpandedTextareaRef = useRef(null);
+  const hashHydratedRef = useRef(false);
+  const appliedHashKeyRef = useRef('');
+  const hydratingForRef = useRef('');
+  const skipNextChatEndScrollRef = useRef(false);
+  const shouldStickToChatBottomRef = useRef(true);
+  const chatScrollFrameRef = useRef(0);
+  const pendingChatScrollBehaviorRef = useRef('auto');
 
   useLayoutEffect(() => {
     if (!editingCanvasTitle) {
@@ -619,6 +638,28 @@ export function StrategyPage() {
     setServerJob({ status: null, statusText: '' });
     setSubmitting(false);
     setStreamingAssistantRunId('');
+    shouldStickToChatBottomRef.current = true;
+  }, [threadId]);
+
+  useEffect(() => {
+    return () => {
+      if (chatScrollFrameRef.current && typeof window !== 'undefined') {
+        window.cancelAnimationFrame(chatScrollFrameRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const scroller = chatStreamRef.current;
+    if (!scroller) {
+      return undefined;
+    }
+    const updateStickiness = () => {
+      shouldStickToChatBottomRef.current = isChatScrollNearBottom(scroller);
+    };
+    updateStickiness();
+    scroller.addEventListener('scroll', updateStickiness, { passive: true });
+    return () => scroller.removeEventListener('scroll', updateStickiness);
   }, [threadId]);
 
   useEffect(() => {
@@ -632,12 +673,37 @@ export function StrategyPage() {
     }
   }, [threadId, canvasTab]);
 
-  const layoutDualRef = useRef(null);
-  const composerExpandedTextareaRef = useRef(null);
-  const hashHydratedRef = useRef(false);
-  const appliedHashKeyRef = useRef('');
-  const hydratingForRef = useRef('');
-  const skipNextChatEndScrollRef = useRef(false);
+  const scrollChatToBottom = useCallback((behavior = 'auto') => {
+    const scroller = chatStreamRef.current;
+    if (!scroller) {
+      chatEndRef.current?.scrollIntoView({ behavior });
+      return;
+    }
+    const top = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    if (typeof scroller.scrollTo === 'function') {
+      scroller.scrollTo({ top, behavior });
+    } else {
+      scroller.scrollTop = top;
+    }
+  }, []);
+
+  const scheduleChatScrollToBottom = useCallback(
+    (behavior = 'auto') => {
+      pendingChatScrollBehaviorRef.current = behavior;
+      if (typeof window === 'undefined') {
+        scrollChatToBottom(behavior);
+        return;
+      }
+      if (chatScrollFrameRef.current) {
+        return;
+      }
+      chatScrollFrameRef.current = window.requestAnimationFrame(() => {
+        chatScrollFrameRef.current = 0;
+        scrollChatToBottom(pendingChatScrollBehaviorRef.current);
+      });
+    },
+    [scrollChatToBottom],
+  );
 
   const authFetch = useCallback(async (url, options = {}) => {
     const token = await getAccessToken();
@@ -1496,14 +1562,24 @@ export function StrategyPage() {
     shouldApplyStreamEvent,
   ]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (skipNextChatEndScrollRef.current) {
       skipNextChatEndScrollRef.current = false;
       return undefined;
     }
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!shouldStickToChatBottomRef.current) {
+      return undefined;
+    }
+    const behavior = serverJob.status === 'running' || streamingAssistantRunId ? 'auto' : 'smooth';
+    scheduleChatScrollToBottom(behavior);
     return undefined;
-  }, [messages, submitting, serverJob.status]);
+  }, [
+    messages,
+    submitting,
+    serverJob.status,
+    streamingAssistantRunId,
+    scheduleChatScrollToBottom,
+  ]);
 
   const displayCanvas = viewingRunId ? historicalCanvas : canvas;
   const displayOutput = displayCanvas ? displayCanvas.output : undefined;
@@ -1589,6 +1665,7 @@ export function StrategyPage() {
     setViewingRunId(null);
     setHistoricalCanvas(null);
     setHistoricalStrategyPythonCode('');
+    shouldStickToChatBottomRef.current = true;
     navigate(
       { pathname: location.pathname, search: location.search, hash: '' },
       { replace: true },
@@ -1906,7 +1983,7 @@ export function StrategyPage() {
           </div>
         </header>
 
-        <div className="chat-stream">
+        <div className="chat-stream" ref={chatStreamRef}>
           {loading ? (
             <div className="chat-spinner-row" role="status" aria-live="polite" aria-label="Loading thread">
               <span className="chat-spinner" aria-hidden />
