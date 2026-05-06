@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import hljs from 'highlight.js/lib/core';
@@ -22,6 +22,8 @@ import {
 
 hljs.registerLanguage('python', python);
 
+const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
+
 function ChatProcessingSpinner({ label }) {
   const text =
     typeof label === 'string' && label.trim().length > 0 ? label.trim() : 'Working…';
@@ -42,6 +44,282 @@ function ChatProcessingSpinner({ label }) {
     </div>
   );
 }
+
+const ChatComposer = memo(function ChatComposer({
+  panelRef,
+  loading,
+  prompts,
+  showProcessing,
+  showSuggestedPrompts,
+  onSubmit,
+}) {
+  const [draft, setDraft] = useState('');
+  const [composerExpanded, setComposerExpanded] = useState(false);
+  const [localSubmitting, setLocalSubmitting] = useState(false);
+  const messageTextareaRef = useRef(null);
+  const composerExpandedTextareaRef = useRef(null);
+  const disabled = showProcessing || localSubmitting;
+
+  const fitMessageTextarea = useCallback(() => {
+    const ta = messageTextareaRef.current;
+    const panel = panelRef.current;
+    if (!ta || !panel) return;
+    const maxH = panel.clientHeight * 0.5;
+    if (!Number.isFinite(maxH) || maxH <= 0) return;
+    ta.style.maxHeight = `${maxH}px`;
+    ta.style.height = 'auto';
+    ta.style.height = `${Math.min(ta.scrollHeight, maxH)}px`;
+  }, [panelRef]);
+
+  useLayoutEffect(() => {
+    fitMessageTextarea();
+  }, [draft, loading, fitMessageTextarea]);
+
+  useLayoutEffect(() => {
+    if (typeof ResizeObserver === 'undefined') {
+      return undefined;
+    }
+    const panel = panelRef.current;
+    if (!panel) {
+      return undefined;
+    }
+    const ro = new ResizeObserver(() => {
+      fitMessageTextarea();
+    });
+    ro.observe(panel);
+    return () => ro.disconnect();
+  }, [fitMessageTextarea, panelRef]);
+
+  useEffect(() => {
+    if (!composerExpanded || typeof document === 'undefined') {
+      return undefined;
+    }
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [composerExpanded]);
+
+  useEffect(() => {
+    if (!composerExpanded) {
+      return undefined;
+    }
+    const onKey = (event) => {
+      if (event.key === 'Escape') {
+        setComposerExpanded(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [composerExpanded]);
+
+  useLayoutEffect(() => {
+    if (!composerExpanded) {
+      return;
+    }
+    composerExpandedTextareaRef.current?.focus();
+  }, [composerExpanded]);
+
+  const submitDraft = useCallback(
+    async (value) => {
+      const message = String(value ?? '').trim();
+      if (!message || disabled) {
+        return { accepted: false };
+      }
+      setLocalSubmitting(true);
+      setDraft('');
+      let result;
+      try {
+        result = await onSubmit(message);
+      } catch {
+        result = { accepted: true, ok: false };
+      }
+      if (!result?.accepted || result?.ok === false || result?.restoreDraft) {
+        setDraft((current) => (current.trim() ? current : message));
+      }
+      setLocalSubmitting(false);
+      return result;
+    },
+    [disabled, onSubmit],
+  );
+
+  const handleSubmit = useCallback(
+    (event) => {
+      event.preventDefault();
+      void submitDraft(draft);
+    },
+    [draft, submitDraft],
+  );
+
+  const handleComposerKeyDown = useCallback(
+    (event) => {
+      if (event.nativeEvent.isComposing) return;
+      if (event.key !== 'Enter' && event.key !== 'NumpadEnter') return;
+      if (!event.metaKey && !event.ctrlKey) return;
+      event.preventDefault();
+      void submitDraft(event.currentTarget.value);
+    },
+    [submitDraft],
+  );
+
+  return (
+    <>
+      <form className="chat-input" onSubmit={handleSubmit}>
+        {showSuggestedPrompts ? (
+          <section className="home-prompts chat-suggested-prompts" aria-label="Suggested prompts">
+            <ul className="home-prompt-list">
+              {prompts.map((p) => (
+                <li key={p} className="home-prompt-item">
+                  <button
+                    type="button"
+                    className="home-prompt"
+                    disabled={disabled}
+                    onClick={() => {
+                      void submitDraft(p);
+                    }}
+                  >
+                    {p}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+        <label htmlFor="message" className="sr-only">
+          Message
+        </label>
+        <div className="chat-compose">
+          <button
+            type="button"
+            className="chat-compose-expand"
+            onClick={() => setComposerExpanded(true)}
+            disabled={disabled}
+            aria-label="Expand message editor"
+            aria-expanded={composerExpanded}
+            title="Expand editor"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+            </svg>
+          </button>
+          <textarea
+            ref={messageTextareaRef}
+            id="message"
+            placeholder="Describe your strategy in your own words..."
+            title="Ctrl+Enter or ⌘+Enter to send"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={handleComposerKeyDown}
+            rows={4}
+          />
+          <button
+            type="submit"
+            className="chat-send-button"
+            disabled={disabled}
+            aria-label="Send message"
+            title="Send"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              style={{ transform: 'rotate(90deg)' }}
+              aria-hidden
+            >
+              <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
+            </svg>
+          </button>
+        </div>
+        <div className="chat-actions">
+          <span className="status chat-actions-status"></span>
+        </div>
+      </form>
+      {composerExpanded
+        ? createPortal(
+            <div
+              className="chat-compose-fullscreen"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Message editor"
+            >
+              <button
+                type="button"
+                className="chat-compose-fullscreen-scrim"
+                aria-label="Close expanded editor"
+                onClick={() => setComposerExpanded(false)}
+              />
+              <div className="chat-compose-fullscreen-panel">
+                <div className="chat-compose-fullscreen-toolbar">
+                  <button
+                    type="button"
+                    className="chat-compose-fullscreen-close"
+                    onClick={() => setComposerExpanded(false)}
+                    aria-label="Close"
+                  >
+                    ×
+                  </button>
+                </div>
+                <textarea
+                  ref={composerExpandedTextareaRef}
+                  className="chat-compose-fullscreen-textarea"
+                  placeholder="Describe your strategy in your own words..."
+                  title="Ctrl+Enter or ⌘+Enter to send"
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.nativeEvent.isComposing) return;
+                    if (event.key !== 'Enter' && event.key !== 'NumpadEnter') return;
+                    if (!event.metaKey && !event.ctrlKey) return;
+                    event.preventDefault();
+                    void submitDraft(event.currentTarget.value).then((result) => {
+                      if (result?.accepted) {
+                        setComposerExpanded(false);
+                      }
+                    });
+                  }}
+                />
+                <div className="chat-compose-fullscreen-footer">
+                  <button
+                    type="button"
+                    className="chat-compose-fullscreen-done"
+                    onClick={() => setComposerExpanded(false)}
+                  >
+                    Done
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-compose-fullscreen-send"
+                    disabled={disabled}
+                    onClick={() => {
+                      const value = composerExpandedTextareaRef.current?.value ?? draft;
+                      void submitDraft(value).then((result) => {
+                        if (result?.accepted) {
+                          setComposerExpanded(false);
+                        }
+                      });
+                    }}
+                  >
+                    Send
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+});
 
 function CanvasPanelCopyButton({ text, ariaLabel, disabled }) {
   const [copied, setCopied] = useState(false);
@@ -189,9 +467,9 @@ function formatReplyDurationMs(ms) {
   return `${m}m ${rs}s`;
 }
 
-function MessageBubble({
+const MessageBubble = memo(function MessageBubble({
   message,
-  activeRunId,
+  isActive,
   onViewRun,
   onRevertRun,
   revertDisabled,
@@ -201,7 +479,6 @@ function MessageBubble({
   const isAssistant = message.role === 'assistant';
   const hasRunId = isAssistant && message.run_id && !message.streaming;
   const answerDomId = hasRunId ? agentAnswerElementId(message.run_id) : undefined;
-  const isActive = hasRunId && message.run_id === activeRunId;
   const langsmithTrace =
     isAssistant && typeof message.langsmith_trace === 'string'
       ? message.langsmith_trace.trim()
@@ -304,7 +581,7 @@ function MessageBubble({
         ) : null}
       </div>
       <div className="message-markdown">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || ''}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={MARKDOWN_REMARK_PLUGINS}>{message.content || ''}</ReactMarkdown>
       </div>
       {showViewStrategy && hasRunId ? (
         <div className="message-view-strategy-row">
@@ -323,7 +600,7 @@ function MessageBubble({
       ) : null}
     </div>
   );
-}
+});
 
 function hasRenderableChartOutput(output) {
   if (!output || typeof output !== 'object') {
@@ -507,7 +784,6 @@ export function StrategyPage() {
   const signedInUserId = user?.id ?? null;
   const [messages, setMessages] = useState([]);
   const [canvas, setCanvas] = useState({});
-  const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [serverJob, setServerJob] = useState({ status: null, statusText: '' });
@@ -520,9 +796,7 @@ export function StrategyPage() {
   const [deleteThreadDialogOpen, setDeleteThreadDialogOpen] = useState(false);
   const chatEndRef = useRef(null);
   const chatStreamRef = useRef(null);
-  const chatFormRef = useRef(null);
   const chatPanelRef = useRef(null);
-  const messageTextareaRef = useRef(null);
   const homePromptAutoSubmitRef = useRef(false);
   const locationRef = useRef(location);
   locationRef.current = location;
@@ -535,6 +809,8 @@ export function StrategyPage() {
     [],
   );
   const optimisticUserContentRef = useRef(null);
+  const submittingRef = useRef(false);
+  const serverJobStatusRef = useRef(null);
   const viewingRunIdRef = useRef(null);
   const liveStrategyRunIdRef = useRef('');
   const lastStreamEventSeqByRunIdRef = useRef({});
@@ -554,7 +830,6 @@ export function StrategyPage() {
   const [isNarrow, setIsNarrow] = useState(false);
   const [mobileCanvasOpen, setMobileCanvasOpen] = useState(false);
   const [chatPanelWidthPx, setChatPanelWidthPx] = useState(null);
-  const [composerExpanded, setComposerExpanded] = useState(false);
   const [canvasTab, setCanvasTab] = useState('strategy');
   const [deployModalOpen, setDeployModalOpen] = useState(false);
   const [deployModalPhase, setDeployModalPhase] = useState('loading');
@@ -594,7 +869,6 @@ export function StrategyPage() {
 
   const skipNextCanvasTitleBlurCommitRef = useRef(false);
   const layoutDualRef = useRef(null);
-  const composerExpandedTextareaRef = useRef(null);
   const hashHydratedRef = useRef(false);
   const appliedHashKeyRef = useRef('');
   const hydratingForRef = useRef('');
@@ -602,6 +876,8 @@ export function StrategyPage() {
   const shouldStickToChatBottomRef = useRef(true);
   const chatScrollFrameRef = useRef(0);
   const pendingChatScrollBehaviorRef = useRef('auto');
+  submittingRef.current = submitting;
+  serverJobStatusRef.current = serverJob.status;
 
   useLayoutEffect(() => {
     if (!editingCanvasTitle) {
@@ -995,10 +1271,115 @@ export function StrategyPage() {
     });
   }, []);
 
-  async function handleViewStrategy(runId) {
+  const handleSubmit = useCallback(async (messageText) => {
+    const message = String(messageText ?? '').trim();
+    if (!message || submittingRef.current || serverJobStatusRef.current === 'running') {
+      return { accepted: false };
+    }
+
+    setSubmitting(true);
+    setStreamingAssistantRunId('');
+    setError('');
+    setViewingRunId(null);
+    setHistoricalCanvas(null);
+    setHistoricalStrategyPythonCode('');
+    shouldStickToChatBottomRef.current = true;
+    navigate(
+      { pathname: location.pathname, search: location.search, hash: '' },
+      { replace: true },
+    );
+    optimisticUserContentRef.current = message;
+    setMessages((prev) => [...prev, { role: 'user', content: message }]);
+
+    let payload = {};
+    try {
+      const response = await authFetch(`${API_BASE_URL}/strategy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ thread_id: threadId, message }),
+      });
+
+      payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (payload.messages) {
+          optimisticUserContentRef.current = null;
+          setMessagesFromStrategyPayload(payload);
+        } else {
+          const sent = optimisticUserContentRef.current;
+          optimisticUserContentRef.current = null;
+          if (sent) {
+            setMessages((prev) => {
+              const last = prev[prev.length - 1];
+              if (last?.role === 'user' && last?.content === sent) {
+                return prev.slice(0, -1);
+              }
+              return prev;
+            });
+          }
+        }
+        if (payload.canvas) {
+          setCanvasIfChanged(payload.canvas);
+        }
+        if (payload.status != null || payload.status_text != null) {
+          setServerJob({
+            status: payload.status ?? null,
+            statusText: payload.status_text || '',
+          });
+        }
+        setSubmitting(false);
+        throw new Error(payload.error || 'Failed to send message');
+      }
+
+      optimisticUserContentRef.current = null;
+      setMessagesFromStrategyPayload(payload);
+      setCanvasIfChanged(payload.canvas);
+      if (typeof payload.id === 'string') {
+        setLiveStrategyRunId(payload.id);
+      }
+      if (typeof payload.algorithm === 'string') {
+        setLiveStrategyAlgorithm(payload.algorithm);
+      }
+      setLiveStrategyPythonCode(typeof payload.python_code === 'string' ? payload.python_code : '');
+      setServerJob({
+        status: payload.status ?? null,
+        statusText: payload.status_text || '',
+      });
+      mergeStrategyNameFromPayload(payload);
+      if (payload.status !== 'running') {
+        setSubmitting(false);
+      }
+      return { accepted: true, ok: true };
+    } catch (submitError) {
+      setSubmitting(false);
+      const sent = optimisticUserContentRef.current;
+      if (sent) {
+        optimisticUserContentRef.current = null;
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.role === 'user' && last?.content === sent) {
+            return prev.slice(0, -1);
+          }
+          return prev;
+        });
+      }
+      setError(submitError instanceof Error ? submitError.message : String(submitError));
+      return { accepted: true, ok: false };
+    }
+  }, [
+    authFetch,
+    location.pathname,
+    location.search,
+    mergeStrategyNameFromPayload,
+    navigate,
+    setCanvasIfChanged,
+    setMessagesFromStrategyPayload,
+    threadId,
+  ]);
+
+  const handleViewStrategy = useCallback(async (runId) => {
     await handleViewRun(runId);
     setMobileCanvasOpen(true);
-  }
+  }, [handleViewRun]);
 
   useEffect(() => {
     setViewingRunId(null);
@@ -1261,9 +1642,8 @@ export function StrategyPage() {
         if (msgs.length === 0 && draftText && !homePromptAutoSubmitRef.current) {
           homePromptAutoSubmitRef.current = true;
           navigate('.', { replace: true, state: {} });
-          setDraft(draftText);
           setTimeout(() => {
-            void handleSubmit({ preventDefault() {} }, draftText);
+            void handleSubmit(draftText);
           }, 0);
         }
       } catch (loadError) {
@@ -1282,6 +1662,7 @@ export function StrategyPage() {
     threadId,
     signedInUserId,
     mergeStrategyNameFromPayload,
+    handleSubmit,
     setCanvasIfChanged,
     setMessagesFromStrategyPayload,
   ]);
@@ -1318,37 +1699,6 @@ export function StrategyPage() {
   }, [isNarrow]);
 
   useEffect(() => {
-    if (!composerExpanded || typeof document === 'undefined') {
-      return undefined;
-    }
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = prev;
-    };
-  }, [composerExpanded]);
-
-  useEffect(() => {
-    if (!composerExpanded) {
-      return undefined;
-    }
-    const onKey = (event) => {
-      if (event.key === 'Escape') {
-        setComposerExpanded(false);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [composerExpanded]);
-
-  useLayoutEffect(() => {
-    if (!composerExpanded) {
-      return;
-    }
-    composerExpandedTextareaRef.current?.focus();
-  }, [composerExpanded]);
-
-  useEffect(() => {
     if (isNarrow || chatPanelWidthPx == null || typeof ResizeObserver === 'undefined') {
       return undefined;
     }
@@ -1375,36 +1725,6 @@ export function StrategyPage() {
     ro.observe(dual);
     return () => ro.disconnect();
   }, [chatPanelWidthPx, isNarrow]);
-
-  const fitMessageTextarea = useCallback(() => {
-    const ta = messageTextareaRef.current;
-    const panel = chatPanelRef.current;
-    if (!ta || !panel) return;
-    const maxH = panel.clientHeight * 0.5;
-    if (!Number.isFinite(maxH) || maxH <= 0) return;
-    ta.style.maxHeight = `${maxH}px`;
-    ta.style.height = 'auto';
-    ta.style.height = `${Math.min(ta.scrollHeight, maxH)}px`;
-  }, []);
-
-  useLayoutEffect(() => {
-    fitMessageTextarea();
-  }, [draft, loading, fitMessageTextarea]);
-
-  useLayoutEffect(() => {
-    if (typeof ResizeObserver === 'undefined') {
-      return undefined;
-    }
-    const panel = chatPanelRef.current;
-    if (!panel) {
-      return undefined;
-    }
-    const ro = new ResizeObserver(() => {
-      fitMessageTextarea();
-    });
-    ro.observe(panel);
-    return () => ro.disconnect();
-  }, [fitMessageTextarea]);
 
   const handleLayoutSplitterPointerDown = useCallback(
     (e) => {
@@ -1644,112 +1964,6 @@ export function StrategyPage() {
     };
   }, [displayOutput, hourFormat, threadId, timeZone]);
 
-  async function handleSubmit(event, messageFromField) {
-    if (event && typeof event.preventDefault === 'function') {
-      event.preventDefault();
-    }
-    const raw =
-      messageFromField !== undefined && messageFromField !== null
-        ? String(messageFromField)
-        : messageTextareaRef.current?.value ??
-          composerExpandedTextareaRef.current?.value ??
-          draft;
-    const message = raw.trim();
-    if (!message || submitting || serverJob.status === 'running') {
-      return;
-    }
-
-    setSubmitting(true);
-    setStreamingAssistantRunId('');
-    setError('');
-    setViewingRunId(null);
-    setHistoricalCanvas(null);
-    setHistoricalStrategyPythonCode('');
-    shouldStickToChatBottomRef.current = true;
-    navigate(
-      { pathname: location.pathname, search: location.search, hash: '' },
-      { replace: true },
-    );
-    optimisticUserContentRef.current = message;
-    setMessages((prev) => [...prev, { role: 'user', content: message }]);
-    setDraft('');
-
-    let payload = {};
-    try {
-      const response = await authFetch(`${API_BASE_URL}/strategy`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ thread_id: threadId, message }),
-      });
-
-      payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        if (payload.messages) {
-          optimisticUserContentRef.current = null;
-          setMessagesFromStrategyPayload(payload);
-        } else {
-          const sent = optimisticUserContentRef.current;
-          optimisticUserContentRef.current = null;
-          if (sent) {
-            setMessages((prev) => {
-              const last = prev[prev.length - 1];
-              if (last?.role === 'user' && last?.content === sent) {
-                return prev.slice(0, -1);
-              }
-              return prev;
-            });
-            setDraft(sent);
-          }
-        }
-        if (payload.canvas) {
-          setCanvasIfChanged(payload.canvas);
-        }
-        if (payload.status != null || payload.status_text != null) {
-          setServerJob({
-            status: payload.status ?? null,
-            statusText: payload.status_text || '',
-          });
-        }
-        setSubmitting(false);
-        throw new Error(payload.error || 'Failed to send message');
-      }
-
-      optimisticUserContentRef.current = null;
-      setMessagesFromStrategyPayload(payload);
-      setCanvasIfChanged(payload.canvas);
-      if (typeof payload.id === 'string') {
-        setLiveStrategyRunId(payload.id);
-      }
-      if (typeof payload.algorithm === 'string') {
-        setLiveStrategyAlgorithm(payload.algorithm);
-      }
-      setLiveStrategyPythonCode(typeof payload.python_code === 'string' ? payload.python_code : '');
-      setServerJob({
-        status: payload.status ?? null,
-        statusText: payload.status_text || '',
-      });
-      mergeStrategyNameFromPayload(payload);
-      if (payload.status !== 'running') {
-        setSubmitting(false);
-      }
-    } catch (submitError) {
-      setSubmitting(false);
-      const sent = optimisticUserContentRef.current;
-      if (sent) {
-        optimisticUserContentRef.current = null;
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.role === 'user' && last?.content === sent) {
-            return prev.slice(0, -1);
-          }
-          return prev;
-        });
-        setDraft(sent);
-      }
-      setError(submitError.message);
-    }
-  }
-
   const showProcessing =
     (submitting || serverJob.status === 'running') &&
     (!streamingAssistantRunId || streamingAssistantRunId !== liveStrategyRunId);
@@ -1760,29 +1974,53 @@ export function StrategyPage() {
         ? 'Sending…'
         : 'Working…';
 
-  const sortedThreads = [...threads].sort((a, b) => {
-    const at = parseIsoTime(a?.latest_created_at) ?? -1;
-    const bt = parseIsoTime(b?.latest_created_at) ?? -1;
-    return bt - at;
-  });
+  const sortedThreads = useMemo(
+    () =>
+      [...threads].sort((a, b) => {
+        const at = parseIsoTime(a?.latest_created_at) ?? -1;
+        const bt = parseIsoTime(b?.latest_created_at) ?? -1;
+        return bt - at;
+      }),
+    [threads],
+  );
 
   const todayKey = isoDateTodayKey(timeZone);
-  const groupedThreads = sortedThreads.reduce((acc, t) => {
-    const key = dateKeyFromIso(t?.latest_created_at, timeZone) || 'Unknown date';
-    if (!acc[key]) {
-      acc[key] = [];
-    }
-    acc[key].push(t);
-    return acc;
-  }, {});
-  const groupKeys = Object.keys(groupedThreads).sort((a, b) => {
-    if (a === 'Unknown date') return 1;
-    if (b === 'Unknown date') return -1;
-    return b.localeCompare(a);
-  });
+  const groupedThreads = useMemo(
+    () =>
+      sortedThreads.reduce((acc, t) => {
+        const key = dateKeyFromIso(t?.latest_created_at, timeZone) || 'Unknown date';
+        if (!acc[key]) {
+          acc[key] = [];
+        }
+        acc[key].push(t);
+        return acc;
+      }, {}),
+    [sortedThreads, timeZone],
+  );
+  const groupKeys = useMemo(
+    () =>
+      Object.keys(groupedThreads).sort((a, b) => {
+        if (a === 'Unknown date') return 1;
+        if (b === 'Unknown date') return -1;
+        return b.localeCompare(a);
+      }),
+    [groupedThreads],
+  );
 
   const output = displayOutput;
-  const nameFromRunOutput = strategyNameFromOutput(output);
+  const outputDerived = useMemo(
+    () => ({
+      nameFromRunOutput: strategyNameFromOutput(output),
+      cliDescriptionText: strategyCliDescriptionFromOutput(output),
+      paramsJsonText: paramsJsonFromOutput(output),
+      paramsHyperoptJsonText: paramsHyperoptJsonFromOutput(output),
+      hasMetrics: metricsJsonFromOutput(output) != null,
+      hasRenderableCharts: hasRenderableChartOutput(output),
+      hasTrades: hasStrategyTrades(output),
+    }),
+    [output],
+  );
+  const { nameFromRunOutput } = outputDerived;
   const strategyName = useMemo(() => {
     const r = String(displayStrategyRunId || '').trim();
     if (!r) {
@@ -1849,21 +2087,21 @@ export function StrategyPage() {
     setEditingCanvasTitle(false);
   }
 
-  const cliDescriptionText = strategyCliDescriptionFromOutput(output);
+  const cliDescriptionText = outputDerived.cliDescriptionText;
   const showCliDescription = cliDescriptionText != null;
-  const paramsJsonText = paramsJsonFromOutput(output);
+  const paramsJsonText = outputDerived.paramsJsonText;
   const showParamsPanel = paramsJsonText != null;
-  const paramsHyperoptJsonText = paramsHyperoptJsonFromOutput(output);
+  const paramsHyperoptJsonText = outputDerived.paramsHyperoptJsonText;
   const showHyperoptParamsPanel = paramsHyperoptJsonText != null;
-  const showMetricsPanel = metricsJsonFromOutput(output) != null;
+  const showMetricsPanel = outputDerived.hasMetrics;
   const showPythonCodePanel = String(displayPythonCodeText || '').trim().length > 0;
   const hasAnyCanvasData =
     showCliDescription ||
     showParamsPanel ||
     showHyperoptParamsPanel ||
     showMetricsPanel ||
-    hasRenderableChartOutput(output);
-  const showSimulationTab = hasRenderableChartOutput(output);
+    outputDerived.hasRenderableCharts;
+  const showSimulationTab = outputDerived.hasRenderableCharts;
 
   useEffect(() => {
     if (!showSimulationTab && canvasTab === 'simulation') {
@@ -1879,7 +2117,7 @@ export function StrategyPage() {
     (!loading && Array.isArray(messages) && messages.length > 0) ||
     (Number.isFinite(Number(currentThreadMeta?.message_count)) &&
       Number(currentThreadMeta?.message_count) > 0);
-  const deployableStrategyHasTrades = hasStrategyTrades(output);
+  const deployableStrategyHasTrades = outputDerived.hasTrades;
   const deployDisabled =
     loading ||
     showProcessing ||
@@ -1895,6 +2133,10 @@ export function StrategyPage() {
         : !deployableStrategyHasTrades
           ? 'Live deployment requires a strategy run with at least one trade'
           : 'Deploy live';
+
+  const handleRequestRevertRun = useCallback((runId) => {
+    setRevertRunRequest(String(runId || '').trim());
+  }, []);
 
   const chatPanelStyle = isNarrow
     ? undefined
@@ -1994,10 +2236,15 @@ export function StrategyPage() {
             <MessageBubble
               key={`${message.role}-${index}`}
               message={message}
-              activeRunId={viewingRunId}
+              isActive={
+                message.role === 'assistant' &&
+                Boolean(message.run_id) &&
+                !message.streaming &&
+                message.run_id === viewingRunId
+              }
               onViewRun={handleViewRun}
               onViewStrategy={handleViewStrategy}
-              onRevertRun={(runId) => setRevertRunRequest(String(runId || '').trim())}
+              onRevertRun={handleRequestRevertRun}
               revertDisabled={reverting || showProcessing}
               showViewStrategy={isNarrow && !mobileCanvasOpen && hasAnyCanvasData}
             />
@@ -2006,92 +2253,14 @@ export function StrategyPage() {
           <div ref={chatEndRef} />
         </div>
 
-        <form ref={chatFormRef} className="chat-input" onSubmit={handleSubmit}>
-          {!loading && messages.length === 0 ? (
-            <section className="home-prompts chat-suggested-prompts" aria-label="Suggested prompts">
-              <ul className="home-prompt-list">
-                {emptyThreadPrompts.map((p) => (
-                  <li key={p} className="home-prompt-item">
-                    <button
-                      type="button"
-                      className="home-prompt"
-                      disabled={showProcessing}
-                      onClick={() => {
-                        setDraft(p);
-                        setTimeout(() => void handleSubmit({ preventDefault() {} }, p), 0);
-                      }}
-                    >
-                      {p}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
-          <label htmlFor="message" className="sr-only">
-            Message
-          </label>
-          <div className="chat-compose">
-            <button
-              type="button"
-              className="chat-compose-expand"
-              onClick={() => setComposerExpanded(true)}
-              disabled={showProcessing}
-              aria-label="Expand message editor"
-              aria-expanded={composerExpanded}
-              title="Expand editor"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
-              </svg>
-            </button>
-            <textarea
-              ref={messageTextareaRef}
-              id="message"
-              placeholder="Describe your strategy in your own words..."
-              title="Ctrl+Enter or ⌘+Enter to send"
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.nativeEvent.isComposing) return;
-                if (event.key !== 'Enter' && event.key !== 'NumpadEnter') return;
-                if (!event.metaKey && !event.ctrlKey) return;
-                event.preventDefault();
-                void handleSubmit(event, event.currentTarget.value);
-              }}
-              rows={4}
-            />
-            <button
-              type="submit"
-              className="chat-send-button"
-              disabled={showProcessing}
-              aria-label="Send message"
-              title="Send"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-                style={{ transform: 'rotate(90deg)' }}
-                aria-hidden
-              >
-                <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
-              </svg>
-            </button>
-          </div>
-          <div className="chat-actions">
-            <span className="status chat-actions-status"></span>
-          </div>
-        </form>
+        <ChatComposer
+          panelRef={chatPanelRef}
+          loading={loading}
+          prompts={emptyThreadPrompts}
+          showProcessing={showProcessing}
+          showSuggestedPrompts={!loading && messages.length === 0}
+          onSubmit={handleSubmit}
+        />
       </section>
 
       {!isNarrow ? (
@@ -2274,7 +2443,7 @@ export function StrategyPage() {
           </article>
         ) : null}
         {chartError ? <p className="canvas-chart-error">{chartError}</p> : null}
-        {!hasRenderableChartOutput(output) && !chartError ? (
+        {!outputDerived.hasRenderableCharts && !chartError ? (
           <p className="canvas-charts-placeholder muted">
             No charts yet. Send a message to refresh the strategy run.
           </p>
@@ -2329,7 +2498,7 @@ export function StrategyPage() {
               </div>
             ) : (
               <div className="canvas-algorithm-markdown message-markdown">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <ReactMarkdown remarkPlugins={MARKDOWN_REMARK_PLUGINS}>
                   {displayAlgorithmText?.trim() || ''}
                 </ReactMarkdown>
               </div>
@@ -2613,76 +2782,6 @@ export function StrategyPage() {
                   }}
                 >
                   Deploy
-                </button>
-              </div>
-            </div>
-          </div>,
-          document.body,
-        )
-      : null}
-    {composerExpanded
-      ? createPortal(
-          <div
-            className="chat-compose-fullscreen"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Message editor"
-          >
-            <button
-              type="button"
-              className="chat-compose-fullscreen-scrim"
-              aria-label="Close expanded editor"
-              onClick={() => setComposerExpanded(false)}
-            />
-            <div className="chat-compose-fullscreen-panel">
-              <div className="chat-compose-fullscreen-toolbar">
-                <button
-                  type="button"
-                  className="chat-compose-fullscreen-close"
-                  onClick={() => setComposerExpanded(false)}
-                  aria-label="Close"
-                >
-                  ×
-                </button>
-              </div>
-              <textarea
-                ref={composerExpandedTextareaRef}
-                className="chat-compose-fullscreen-textarea"
-                placeholder="Describe your strategy in your own words..."
-                title="Ctrl+Enter or ⌘+Enter to send"
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.nativeEvent.isComposing) return;
-                  if (event.key !== 'Enter' && event.key !== 'NumpadEnter') return;
-                  if (!event.metaKey && !event.ctrlKey) return;
-                  event.preventDefault();
-                  const v = event.currentTarget.value;
-                  if (!v.trim() || showProcessing) return;
-                  void handleSubmit(event, v);
-                  setComposerExpanded(false);
-                }}
-              />
-              <div className="chat-compose-fullscreen-footer">
-                <button
-                  type="button"
-                  className="chat-compose-fullscreen-done"
-                  onClick={() => setComposerExpanded(false)}
-                >
-                  Done
-                </button>
-                <button
-                  type="button"
-                  className="chat-compose-fullscreen-send"
-                  disabled={showProcessing}
-                  onClick={() => {
-                    const v = composerExpandedTextareaRef.current?.value ?? draft;
-                    if (!v.trim() || showProcessing) return;
-                    void handleSubmit({ preventDefault() {} }, v);
-                    setComposerExpanded(false);
-                  }}
-                >
-                  Send
                 </button>
               </div>
             </div>
