@@ -25,6 +25,7 @@ export function TradingSettingsPage() {
   const [newSecretKey, setNewSecretKey] = useState('');
   const [timezoneInput, setTimezoneInput] = useState(timeZone || browserTimeZone());
   const [hourFormatInput, setHourFormatInput] = useState(normalizeHourFormat(hourFormat, 'auto'));
+  const [adjustForDividendsInput, setAdjustForDividendsInput] = useState(false);
   const timezoneOptions = supportedTimeZones();
   const credentialsReady = accounts.some((a) => a?.has_alpaca_api_key && a?.has_alpaca_secret_key);
 
@@ -60,8 +61,10 @@ export function TradingSettingsPage() {
       setProfile(typeof p === 'object' && p !== null ? p : {});
       const nextTimezone = typeof p?.timezone === 'string' && p.timezone ? p.timezone : browserTimeZone();
       const nextHourFormat = normalizeHourFormat(p?.hour_format, hourFormat);
+      const nextAdjustForDividends = p?.adjust_for_dividends === true;
       setTimezoneInput(nextTimezone);
       setHourFormatInput(nextHourFormat);
+      setAdjustForDividendsInput(nextAdjustForDividends);
       setTimeZone(nextTimezone);
       setHourFormat(nextHourFormat);
       setAccounts(Array.isArray(payload.alpaca_accounts) ? payload.alpaca_accounts : []);
@@ -81,7 +84,11 @@ export function TradingSettingsPage() {
     setError('');
     setOkMsg('');
     try {
-      const profileBody = { timezone: timezoneInput, hour_format: hourFormatInput };
+      const profileBody = {
+        timezone: timezoneInput,
+        hour_format: hourFormatInput,
+        adjust_for_dividends: adjustForDividendsInput,
+      };
 
       const profileRes = await authFetch(`${API_BASE_URL}/settings/trading/profile`, {
         method: 'PUT',
@@ -283,6 +290,28 @@ export function TradingSettingsPage() {
                     <option value="12h">12-hour</option>
                     <option value="24h">24-hour</option>
                   </select>
+                </div>
+              </div>
+
+              <div className="settings-editor-section">
+                <div className="settings-section-copy">
+                  <span className="home-ms settings-section-icon" aria-hidden>
+                    monitoring
+                  </span>
+                  <div>
+                    <h3>Dividend adjustment</h3>
+                    <p>Optionally adjust historical Alpaca stock candles for dividends. Split adjustment stays on.</p>
+                  </div>
+                </div>
+                <div className="settings-form settings-form--inline">
+                  <label className="settings-check-label">
+                    <input
+                      type="checkbox"
+                      checked={adjustForDividendsInput}
+                      onChange={(e) => setAdjustForDividendsInput(e.target.checked)}
+                    />
+                    Adjust for dividends
+                  </label>
                 </div>
               </div>
 

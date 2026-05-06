@@ -4366,6 +4366,21 @@ html[data-theme='dark'] .dashboard-banner-ok {
   flex: 1 1 260px;
 }
 
+.settings-check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.settings-check-label input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
 .settings-account-area {
   min-width: 0;
 }

@@ -57,6 +57,10 @@ def normalize_hour_format(value: str | None) -> str:
     return ""
 
 
+def normalize_adjust_for_dividends(value: Any) -> bool:
+    return bool(value) if isinstance(value, bool) else False
+
+
 def _headers() -> dict[str, str]:
     key = _service_role_key()
     return {
@@ -197,7 +201,10 @@ def fetch_trading_settings_payload(user_id: str) -> dict[str, Any] | None:
     uid = (user_id or "").strip()
     if not uid or not service_role_configured():
         return None
-    pr = _get("profiles", {"id": f"eq.{uid}", "select": "timezone,hour_format,updated_at"})
+    pr = _get(
+        "profiles",
+        {"id": f"eq.{uid}", "select": "timezone,hour_format,adjust_for_dividends,updated_at"},
+    )
     if pr.status_code != 200:
         logger.warning("supabase profiles read status=%s", pr.status_code)
         return None
@@ -208,6 +215,7 @@ def fetch_trading_settings_payload(user_id: str) -> dict[str, Any] | None:
         prof = {
             "timezone": normalize_timezone(str(p0.get("timezone") or "")),
             "hour_format": normalize_hour_format(str(p0.get("hour_format") or "")) or "auto",
+            "adjust_for_dividends": normalize_adjust_for_dividends(p0.get("adjust_for_dividends")),
             "updated_at": p0.get("updated_at"),
         }
     ar = _get(
@@ -241,16 +249,36 @@ def fetch_trading_settings_payload(user_id: str) -> dict[str, Any] | None:
     return {"profile": prof, "alpaca_accounts": accounts}
 
 
+def fetch_adjust_for_dividends(user_id: str) -> bool:
+    uid = (user_id or "").strip()
+    if not uid or not service_role_configured():
+        return False
+    r = _get(
+        "profiles",
+        {
+            "id": f"eq.{urllib.parse.quote(uid, safe='')}",
+            "select": "adjust_for_dividends",
+        },
+    )
+    if r.status_code != 200:
+        return False
+    rows = r.json()
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+        return False
+    return normalize_adjust_for_dividends(rows[0].get("adjust_for_dividends"))
+
+
 def upsert_profile_settings(
     user_id: str,
     *,
     user_timezone: str | None = None,
     hour_format: str | None = None,
+    adjust_for_dividends: bool | None = None,
 ) -> tuple[bool, str]:
     uid = (user_id or "").strip()
     if not uid or not service_role_configured():
         return False, "Trading settings are not configured on the server"
-    if user_timezone is None and hour_format is None:
+    if user_timezone is None and hour_format is None and adjust_for_dividends is None:
         return False, "No fields to update"
     body: dict[str, Any] = {}
     if user_timezone is not None:
@@ -263,11 +291,13 @@ def upsert_profile_settings(
         if not fmt:
             return False, "Invalid hour format"
         body["hour_format"] = fmt
+    if adjust_for_dividends is not None:
+        body["adjust_for_dividends"] = bool(adjust_for_dividends)
     rget = _get(
         "profiles",
         {
             "id": f"eq.{urllib.parse.quote(uid, safe='')}",
-            "select": "timezone,hour_format",
+            "select": "timezone,hour_format,adjust_for_dividends",
         },
     )
     has_row = False

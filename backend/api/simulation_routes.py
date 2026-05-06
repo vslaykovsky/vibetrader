@@ -20,6 +20,7 @@ from application.services.simulation_registry import SimulationRegistry
 from application.use_cases.strategy_simulate import StrategySimulateCommandHandler
 from auth import require_auth
 from services.agent import thread_id_allowed
+from services.supabase_trading_settings import fetch_adjust_for_dividends
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,14 @@ def _parse_bps(raw: object) -> float:
     return max(0.1, min(bps, 1e6))
 
 
+def _adjust_for_dividends_for_request(user_id: str, thread_id: str) -> bool:
+    sess = _registry.get(user_id, thread_id)
+    pending = getattr(sess, "pending_cmd", None) if sess is not None else None
+    if pending is not None:
+        return bool(getattr(pending, "adjust_for_dividends", False))
+    return fetch_adjust_for_dividends(user_id)
+
+
 @simulation_blueprint.post("/simulation/init")
 @require_auth
 def simulation_init() -> tuple:
@@ -131,6 +140,7 @@ def simulation_init() -> tuple:
         initial_speed_bps=bps,
         initial_deposit=initial_deposit,
         initial_scale=initial_scale,
+        adjust_for_dividends=fetch_adjust_for_dividends(uid),
     )
     try:
         strategy_scale = _handler.init(cmd)
@@ -219,9 +229,16 @@ def simulation_display_bars() -> tuple:
     if span_err:
         return _bad(span_err)
     ticker = _read_strategy_ticker()
+    adjust_for_dividends = _adjust_for_dividends_for_request(uid, thread_id)
     try:
         merged, chunks_n = _bars_query.fetch_chunked_merge(
-            ticker, scale, start_d, end_d, padding_days=0, provider=None
+            ticker,
+            scale,
+            start_d,
+            end_d,
+            padding_days=0,
+            provider=None,
+            dividend_adjusted=adjust_for_dividends,
         )
     except Exception as exc:
         logger.exception("display_bars fetch failed", extra={"ticker": ticker, "scale": scale})

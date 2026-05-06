@@ -29,16 +29,18 @@ TIMEFRAMES = ("D1", "W1")
 FAILED_INDEX_NAMES = (
     "ix_candles_d1_ticker_utc_date_tmp",
     "ix_candles_w1_ticker_utc_week_tmp",
+    "ix_candles_d1_ticker_dividend_utc_date_tmp",
+    "ix_candles_w1_ticker_dividend_utc_week_tmp",
 )
 INDEX_DDL = (
     """
-    CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_candles_d1_ticker_utc_date
-    ON candles (ticker, ((timestamp AT TIME ZONE 'UTC')::date))
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_candles_d1_ticker_dividend_utc_date
+    ON candles (ticker, dividend_adjusted, ((timestamp AT TIME ZONE 'UTC')::date))
     WHERE timeframe = 'D1'::candle_timeframe
     """,
     """
-    CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_candles_w1_ticker_utc_week
-    ON candles (ticker, (date_trunc('week', timestamp AT TIME ZONE 'UTC')::date))
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_candles_w1_ticker_dividend_utc_week
+    ON candles (ticker, dividend_adjusted, (date_trunc('week', timestamp AT TIME ZONE 'UTC')::date))
     WHERE timeframe = 'W1'::candle_timeframe
     """,
 )
@@ -66,13 +68,14 @@ def print_timestamp_profile() -> None:
         """
         SELECT
             timeframe::text AS timeframe,
+            dividend_adjusted,
             EXTRACT(hour FROM timestamp AT TIME ZONE 'UTC')::int AS utc_hour,
             COUNT(*) AS rows,
             MIN(timestamp) AS first_timestamp,
             MAX(timestamp) AS last_timestamp
         FROM candles
-        GROUP BY timeframe, utc_hour
-        ORDER BY timeframe, rows DESC
+        GROUP BY timeframe, dividend_adjusted, utc_hour
+        ORDER BY timeframe, dividend_adjusted, rows DESC
         """
     )
     with engine.connect() as conn:
@@ -80,7 +83,7 @@ def print_timestamp_profile() -> None:
     print("timestamp profile (stored as timestamptz, displayed here in UTC):")
     for row in rows:
         print(
-            f"  {row['timeframe']:>3} hour={row['utc_hour']:02d} "
+            f"  {row['timeframe']:>3} dividend_adjusted={row['dividend_adjusted']} hour={row['utc_hour']:02d} "
             f"rows={row['rows']} first={row['first_timestamp']} last={row['last_timestamp']}"
         )
 
@@ -101,14 +104,15 @@ def duplicate_buckets(timeframe: str, ticker: str) -> list[dict]:
         SELECT
             ticker,
             timeframe::text AS timeframe,
+            dividend_adjusted,
             {bucket} AS bucket_start,
             COUNT(*) AS bucket_rows
         FROM candles
         WHERE timeframe = CAST(:timeframe AS candle_timeframe)
         {where_ticker}
-        GROUP BY ticker, timeframe, {bucket}
+        GROUP BY ticker, timeframe, dividend_adjusted, {bucket}
         HAVING COUNT(*) > 1
-        ORDER BY ticker, bucket_start
+        ORDER BY ticker, dividend_adjusted, bucket_start
         """
     )
     params = {"timeframe": timeframe, "ticker": ticker}
@@ -116,13 +120,16 @@ def duplicate_buckets(timeframe: str, ticker: str) -> list[dict]:
         return [dict(row) for row in conn.execute(sql, params).mappings().all()]
 
 
-def rows_for_bucket(timeframe: str, ticker: str, bucket_start: object) -> list[dict]:
+def rows_for_bucket(
+    timeframe: str, ticker: str, bucket_start: object, dividend_adjusted: bool
+) -> list[dict]:
     bucket = _bucket_expr(timeframe)
     sql = text(
         f"""
         SELECT
             ticker,
             timeframe::text AS timeframe,
+            dividend_adjusted,
             timestamp,
             {bucket} AS bucket_start,
             open,
@@ -133,6 +140,7 @@ def rows_for_bucket(timeframe: str, ticker: str, bucket_start: object) -> list[d
         FROM candles
         WHERE ticker = :ticker
             AND timeframe = CAST(:timeframe AS candle_timeframe)
+            AND dividend_adjusted = :dividend_adjusted
             AND {bucket} = :bucket_start
         ORDER BY
             CASE
@@ -149,7 +157,12 @@ def rows_for_bucket(timeframe: str, ticker: str, bucket_start: object) -> list[d
             timestamp DESC
         """
     )
-    params = {"timeframe": timeframe, "ticker": ticker, "bucket_start": bucket_start}
+    params = {
+        "timeframe": timeframe,
+        "ticker": ticker,
+        "bucket_start": bucket_start,
+        "dividend_adjusted": bool(dividend_adjusted),
+    }
     with engine.connect() as conn:
         return [dict(row) for row in conn.execute(sql, params).mappings().all()]
 
@@ -165,7 +178,12 @@ def invalid_rows_for_buckets(timeframe: str, buckets: list[dict], *, progress: b
     rows: list[dict] = []
     for ticker in iterator:
         for bucket in buckets_by_ticker[ticker]:
-            bucket_rows = rows_for_bucket(timeframe, ticker, bucket["bucket_start"])
+            bucket_rows = rows_for_bucket(
+                timeframe,
+                ticker,
+                bucket["bucket_start"],
+                bool(bucket["dividend_adjusted"]),
+            )
             rows.extend(bucket_rows[1:])
     return rows
 
@@ -179,6 +197,7 @@ def delete_rows(rows: list[dict]) -> int:
         WHERE ticker = :ticker
             AND timeframe = CAST(:timeframe AS candle_timeframe)
             AND timestamp = :timestamp
+            AND dividend_adjusted = :dividend_adjusted
         """
     )
     deleted = 0
@@ -190,6 +209,7 @@ def delete_rows(rows: list[dict]) -> int:
                     "ticker": row["ticker"],
                     "timeframe": row["timeframe"],
                     "timestamp": row["timestamp"],
+                    "dividend_adjusted": bool(row["dividend_adjusted"]),
                 },
             )
             deleted += int(result.rowcount or 0)
@@ -232,7 +252,8 @@ def main(argv: list[str]) -> int:
         total_invalid += len(rows)
         for row in rows[: max(0, int(args.limit))]:
             print(
-                f"  remove ticker={row['ticker']} bucket={row['bucket_start']} "
+                f"  remove ticker={row['ticker']} dividend_adjusted={row['dividend_adjusted']} "
+                f"bucket={row['bucket_start']} "
                 f"timestamp={row['timestamp']} o={row['open']} h={row['high']} "
                 f"l={row['low']} c={row['close']} v={row['volume']}"
             )

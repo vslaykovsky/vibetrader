@@ -32,7 +32,6 @@ PARAMS_HYPEROPT_PATH = WORKSPACE_DIR / "params-hyperopt.json"
 AVAILABLE_PROVIDERS = {"auto", "alpaca", "moex"}
 
 _ALPACA_CRYPTO_BAR_CHUNK_BUDGET = 100_000
-ALPACA_STOCK_ADJUSTMENT = Adjustment.ALL
 StockSession = Literal["regular", "extended", "all"]
 _US_EASTERN_TZ = ZoneInfo("America/New_York")
 _REGULAR_OPEN_MINUTE = 9 * 60 + 30
@@ -295,6 +294,10 @@ def normalize_stock_session(session: str | None, timeframe: TimeFrame | None = N
     return value
 
 
+def alpaca_stock_adjustment(dividend_adjusted: bool) -> Adjustment:
+    return Adjustment.ALL if bool(dividend_adjusted) else Adjustment.SPLIT
+
+
 def _regular_session_mask(index: pd.DatetimeIndex) -> Any:
     idx = pd.DatetimeIndex(index)
     if getattr(idx, "tz", None) is None:
@@ -455,6 +458,7 @@ def _fetch_moex_bars(
     *,
     drop_wide_spread_bars: bool = True,
     session: str = "all",
+    dividend_adjusted: bool = False,
 ) -> pd.DataFrame:
     normalize_stock_session(session, timeframe)
     moex_session.TOKEN = _moex_keys()
@@ -497,6 +501,7 @@ def _fetch_alpaca_bars(
     *,
     drop_wide_spread_bars: bool = True,
     session: str = "all",
+    dividend_adjusted: bool = False,
 ) -> pd.DataFrame:
     stock_session = normalize_stock_session(session, timeframe)
     api_key, secret_key = _alpaca_keys()
@@ -513,7 +518,7 @@ def _fetch_alpaca_bars(
         start=start,
         end=end,
         timeframe=request_timeframe,
-        adjustment=ALPACA_STOCK_ADJUSTMENT,
+        adjustment=alpaca_stock_adjustment(dividend_adjusted),
     )
     bars = client.get_stock_bars(request)
     df = bars.df if hasattr(bars, "df") else pd.DataFrame(bars)
@@ -703,6 +708,7 @@ def _fetch_alpaca_bars_with_429_backoff(
     *,
     drop_wide_spread_bars: bool = True,
     session: str = "all",
+    dividend_adjusted: bool = False,
 ) -> pd.DataFrame:
     return _fetch_alpaca_bars(
         ticker=ticker,
@@ -712,6 +718,7 @@ def _fetch_alpaca_bars_with_429_backoff(
         timeframe=timeframe,
         drop_wide_spread_bars=drop_wide_spread_bars,
         session=session,
+        dividend_adjusted=dividend_adjusted,
     )
 
 
@@ -781,6 +788,7 @@ def _fetch_with_shrink_retry(
     timeframe: TimeFrame,
     drop_wide_spread_bars: bool = True,
     session: str = "all",
+    dividend_adjusted: bool = False,
 ) -> pd.DataFrame:
     """Call ``fetcher``; on failure, halve the request window from the *left* (move
     ``start`` toward ``end``) and retry until the window collapses. Returns an empty
@@ -803,6 +811,7 @@ def _fetch_with_shrink_retry(
                 timeframe=timeframe,
                 drop_wide_spread_bars=drop_wide_spread_bars,
                 session=session,
+                dividend_adjusted=dividend_adjusted,
             )
         except Exception as exc:
             last_exc = exc
@@ -831,6 +840,7 @@ def _fetch_alpaca_with_retry(
     *,
     drop_wide_spread_bars: bool = True,
     session: str = "all",
+    dividend_adjusted: bool = False,
 ) -> pd.DataFrame:
     return _fetch_with_shrink_retry(
         _fetch_alpaca_bars_with_429_backoff,
@@ -841,6 +851,7 @@ def _fetch_alpaca_with_retry(
         timeframe=timeframe,
         drop_wide_spread_bars=drop_wide_spread_bars,
         session=session,
+        dividend_adjusted=dividend_adjusted,
     )
 
 
@@ -853,6 +864,7 @@ def _fetch_moex_with_retry(
     *,
     drop_wide_spread_bars: bool = True,
     session: str = "all",
+    dividend_adjusted: bool = False,
 ) -> pd.DataFrame:
     return _fetch_with_shrink_retry(
         _fetch_moex_bars,
@@ -876,6 +888,7 @@ def fetch_stock_bars(
     *,
     drop_wide_spread_bars: bool = True,
     session: str = "all",
+    dividend_adjusted: bool = False,
 ) -> pd.DataFrame:
     provider = _market_data_provider_name(provider=provider)
     stock_session = normalize_stock_session(session, timeframe)
@@ -888,6 +901,7 @@ def fetch_stock_bars(
             timeframe=timeframe,
             drop_wide_spread_bars=drop_wide_spread_bars,
             session=stock_session,
+            dividend_adjusted=dividend_adjusted,
         )
     if provider == "moex":
         return _fetch_moex_with_retry(
@@ -898,6 +912,7 @@ def fetch_stock_bars(
             timeframe=timeframe,
             drop_wide_spread_bars=drop_wide_spread_bars,
             session=stock_session,
+            dividend_adjusted=dividend_adjusted,
         )
 
     # auto mode: try Alpaca first for global symbols; fallback to MOEX.
@@ -918,6 +933,7 @@ def fetch_stock_bars(
             timeframe=timeframe,
             drop_wide_spread_bars=drop_wide_spread_bars,
             session=stock_session,
+            dividend_adjusted=dividend_adjusted,
         )
         if not df.empty:
             return df

@@ -311,6 +311,84 @@ def ensure_candles_session_column(eng: Engine) -> None:
         conn.execute(text("ALTER TABLE candles VALIDATE CONSTRAINT ck_candles_session"))
 
 
+def ensure_candles_dividend_adjusted_column(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    insp = inspect(eng)
+    if not insp.has_table("candles"):
+        return
+    cols = {c["name"] for c in insp.get_columns("candles")}
+    with eng.begin() as conn:
+        if "dividend_adjusted" not in cols:
+            default = "TRUE" if eng.dialect.name == "postgresql" else "1"
+            conn.execute(
+                text(
+                    "ALTER TABLE candles ADD COLUMN dividend_adjusted BOOLEAN NOT NULL "
+                    f"DEFAULT {default}"
+                )
+            )
+            if eng.dialect.name == "postgresql":
+                conn.execute(text("ALTER TABLE candles ALTER COLUMN dividend_adjusted SET DEFAULT FALSE"))
+        elif eng.dialect.name == "postgresql":
+            conn.execute(text("ALTER TABLE candles ALTER COLUMN dividend_adjusted SET DEFAULT FALSE"))
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_candles_ticker_timeframe_dividend_session_timestamp "
+                "ON candles (ticker, timeframe, dividend_adjusted, session, timestamp)"
+            )
+        )
+        if eng.dialect.name == "postgresql":
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_candles_d1_ticker_dividend_utc_date "
+                    "ON candles (ticker, dividend_adjusted, ((timestamp AT TIME ZONE 'UTC')::date)) "
+                    "WHERE timeframe = 'D1'::candle_timeframe"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_candles_w1_ticker_dividend_utc_week "
+                    "ON candles (ticker, dividend_adjusted, (date_trunc('week', timestamp AT TIME ZONE 'UTC')::date)) "
+                    "WHERE timeframe = 'W1'::candle_timeframe"
+                )
+            )
+    if eng.dialect.name != "postgresql":
+        return
+
+    insp = inspect(eng)
+    redundant_unique_names = []
+    desired_columns = ["timestamp", "ticker", "timeframe", "dividend_adjusted"]
+    desired_columns_set = set(desired_columns)
+    for constraint in insp.get_unique_constraints("candles"):
+        name = str(constraint.get("name") or "")
+        columns = list(constraint.get("column_names") or [])
+        if not name:
+            continue
+        if name == "uq_candles_ticker_tf_ts" or columns == ["ticker", "timeframe", "timestamp"]:
+            redundant_unique_names.append(name)
+        elif set(columns) == desired_columns_set:
+            redundant_unique_names.append(name)
+    pk = insp.get_pk_constraint("candles") or {}
+    pk_name = str(pk.get("name") or "")
+    pk_columns = list(pk.get("constrained_columns") or [])
+    with eng.begin() as conn:
+        if "dividend_adjusted" in cols and pk_columns != desired_columns:
+            conn.execute(text("UPDATE candles SET dividend_adjusted = TRUE"))
+        for name in redundant_unique_names:
+            safe = name.replace('"', '""')
+            conn.execute(text(f'ALTER TABLE candles DROP CONSTRAINT IF EXISTS "{safe}"'))
+        if pk_columns != desired_columns:
+            if pk_name:
+                safe = pk_name.replace('"', '""')
+                conn.execute(text(f'ALTER TABLE candles DROP CONSTRAINT IF EXISTS "{safe}"'))
+            conn.execute(
+                text(
+                    "ALTER TABLE candles ADD CONSTRAINT candles_pkey "
+                    "PRIMARY KEY (timestamp, ticker, timeframe, dividend_adjusted)"
+                )
+            )
+
+
 def ensure_live_runs_deployed_from_run_id_column(eng: Engine) -> None:
     from sqlalchemy import inspect
 
@@ -502,6 +580,7 @@ def init_database(eng: Engine) -> None:
     ensure_strategy_messages_count_column(eng)
     ensure_tickers_last_day_volume_usd_column(eng)
     ensure_candles_session_column(eng)
+    ensure_candles_dividend_adjusted_column(eng)
     ensure_live_runs_deployed_from_run_id_column(eng)
     ensure_live_runs_runner_backend_column(eng)
     ensure_live_runs_alpaca_account_id_column(eng)

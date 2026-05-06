@@ -45,8 +45,10 @@ def settings_trading_profile_put() -> tuple:
     body = request.get_json(silent=True) or {}
     tz = body.get("timezone")
     fmt = body.get("hour_format")
+    adjust = body.get("adjust_for_dividends")
     user_timezone = None
     hour_format = None
+    adjust_for_dividends = None
     if "timezone" in body:
         if not isinstance(tz, str):
             return _bad("timezone must be a string")
@@ -55,10 +57,15 @@ def settings_trading_profile_put() -> tuple:
         if not isinstance(fmt, str):
             return _bad("hour_format must be a string")
         hour_format = fmt
+    if "adjust_for_dividends" in body:
+        if not isinstance(adjust, bool):
+            return _bad("adjust_for_dividends must be a boolean")
+        adjust_for_dividends = bool(adjust)
     ok, err = upsert_profile_settings(
         str(g.user_id),
         user_timezone=user_timezone,
         hour_format=hour_format,
+        adjust_for_dividends=adjust_for_dividends,
     )
     if not ok:
         return _bad(err or "Save failed", 502)

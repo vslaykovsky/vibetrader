@@ -101,6 +101,7 @@ class Candle(Base):
         primary_key=True,
         nullable=False,
     )
+    dividend_adjusted: Mapped[bool] = mapped_column(Boolean, primary_key=True, nullable=False, default=False)
     open: Mapped[float] = mapped_column(Float, nullable=False)
     high: Mapped[float] = mapped_column(Float, nullable=False)
     low: Mapped[float] = mapped_column(Float, nullable=False)
@@ -110,9 +111,16 @@ class Candle(Base):
 
     __table_args__ = (
         CheckConstraint("session IN ('regular', 'extended')", name="ck_candles_session"),
-        UniqueConstraint("ticker", "timeframe", "timestamp", name="uq_candles_ticker_tf_ts"),
         Index("ix_candles_ticker_timeframe_timestamp", "ticker", "timeframe", "timestamp"),
         Index("ix_candles_ticker_timeframe_session_timestamp", "ticker", "timeframe", "session", "timestamp"),
+        Index(
+            "ix_candles_ticker_timeframe_dividend_session_timestamp",
+            "ticker",
+            "timeframe",
+            "dividend_adjusted",
+            "session",
+            "timestamp",
+        ),
     )
 
 

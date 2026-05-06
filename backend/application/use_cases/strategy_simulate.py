@@ -260,6 +260,7 @@ def _ensure_loaded_through_abs_base_row(
     engine: IndicatorEngine,
     ticker: str,
     session: str,
+    dividend_adjusted: bool,
     sim_scale: str,
     base_scale: str,
     scale_for_fetch: str,
@@ -295,6 +296,7 @@ def _ensure_loaded_through_abs_base_row(
             padding_days=0,
             provider=None,
             session=session,
+            dividend_adjusted=dividend_adjusted,
         )
         if part.empty:
             return
@@ -510,6 +512,7 @@ class StrategySimulateCommandHandler:
                 padding_days=padding,
                 provider=None,
                 session=ticker_sessions.get(t, "all"),
+                dividend_adjusted=cmd.adjust_for_dividends,
             )
             if driver_df_t.empty:
                 logger.warning("simulation got empty OHLC for ticker=%s", t)
@@ -798,6 +801,7 @@ class StrategySimulateCommandHandler:
                 padding_days=padding,
                 provider=None,
                 session=ticker_session,
+                dividend_adjusted=cmd.adjust_for_dividends,
             )
             if driver_df.empty:
                 logger.info(
@@ -879,6 +883,7 @@ class StrategySimulateCommandHandler:
                 engine=engine,
                 ticker=ticker,
                 session=ticker_session,
+                dividend_adjusted=cmd.adjust_for_dividends,
                 sim_scale=sim_scale,
                 base_scale=base_scale,
                 scale_for_fetch=scale_for_fetch,
@@ -993,6 +998,7 @@ class StrategySimulateCommandHandler:
                         engine=engine,
                         ticker=ticker,
                         session=ticker_session,
+                        dividend_adjusted=cmd.adjust_for_dividends,
                         sim_scale=sim_scale,
                         base_scale=base_scale,
                         scale_for_fetch=scale_for_fetch,

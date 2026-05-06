@@ -138,7 +138,9 @@ def _write_symbols_file(path: str | Path, symbols: list[str]) -> None:
     p.write_text("".join(f"{s}\n" for s in symbols), encoding="utf-8")
 
 
-def _precache_one(job: _Job, *, provider: str, sleep_seconds: float) -> tuple[str, int]:
+def _precache_one(
+    job: _Job, *, provider: str, sleep_seconds: float, dividend_adjusted: bool
+) -> tuple[str, int]:
     if sleep_seconds > 0:
         time.sleep(float(sleep_seconds))
 
@@ -153,6 +155,7 @@ def _precache_one(job: _Job, *, provider: str, sleep_seconds: float) -> tuple[st
         asset_class=job.asset_class,
         drop_wide_spread_bars=False,
         force_refresh=True,
+        dividend_adjusted=dividend_adjusted,
     )
     n = 0 if df is None else int(getattr(df, "shape", [0])[0] or 0)
     return job.symbol, n
@@ -205,6 +208,7 @@ def main(argv: list[str]) -> int:
         help="MOEX market alias to download; repeatable. Defaults to shares.",
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--adjust-dividends", action="store_true")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -221,6 +225,10 @@ def main(argv: list[str]) -> int:
     provider = str(args.provider).strip().lower()
     if provider == "moex" and asset_class != "us_equity":
         parser.error("--provider moex requires --asset-class us_equity")
+    if bool(args.adjust_dividends) and provider == "moex":
+        parser.error("--adjust-dividends is only supported for Alpaca stock bars")
+    if bool(args.adjust_dividends) and asset_class != "us_equity":
+        parser.error("--adjust-dividends requires --asset-class us_equity")
     requested_symbols = _normalize_symbols(args.symbols)
     if str(args.symbols_file).strip() or requested_symbols:
         symbols = requested_symbols
@@ -242,7 +250,7 @@ def main(argv: list[str]) -> int:
 
     logger.info(
         "precache plan symbols=%s scale=%s window=%s..%s workers=%s provider=%s "
-        "asset_class=%s stock_adjustment=%s force_refresh=%s dry_run=%s",
+        "asset_class=%s dividend_adjusted=%s stock_adjustment=%s force_refresh=%s dry_run=%s",
         len(symbols),
         scale,
         start_d.isoformat(),
@@ -250,7 +258,8 @@ def main(argv: list[str]) -> int:
         int(args.workers),
         provider,
         asset_class,
-        utils.ALPACA_STOCK_ADJUSTMENT.value,
+        bool(args.adjust_dividends),
+        utils.alpaca_stock_adjustment(bool(args.adjust_dividends)).value,
         True,
         bool(args.dry_run),
     )
@@ -283,6 +292,7 @@ def main(argv: list[str]) -> int:
                 j,
                 provider=provider,
                 sleep_seconds=float(args.sleep_seconds),
+                dividend_adjusted=bool(args.adjust_dividends),
             )
             for j in jobs
         ]

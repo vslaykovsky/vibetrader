@@ -17,6 +17,7 @@ class InitSimulationCommand:
     initial_speed_bps: float
     initial_deposit: float
     initial_scale: str | None
+    adjust_for_dividends: bool
 
     def __init__(
         self,
@@ -27,6 +28,7 @@ class InitSimulationCommand:
         initial_speed_bps: float = 1.0,
         initial_deposit: float = 10_000.0,
         initial_scale: str | None = None,
+        adjust_for_dividends: bool = False,
     ) -> None:
         self.user_id = user_id
         self.thread_id = thread_id
@@ -34,6 +36,7 @@ class InitSimulationCommand:
         self.initial_speed_bps = initial_speed_bps
         self.initial_deposit = initial_deposit
         self.initial_scale = initial_scale
+        self.adjust_for_dividends = bool(adjust_for_dividends)
 
 
 def simulation_event(kind: str, **fields: Any) -> dict[str, Any]:

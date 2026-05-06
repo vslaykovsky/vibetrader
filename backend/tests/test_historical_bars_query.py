@@ -92,6 +92,7 @@ def test_historical_bars_query_fetch_delegates(monkeypatch):
     assert c0["history_padding_days"] == 5
     assert c0["provider"] == "alpaca"
     assert c0["session"] == "regular"
+    assert c0["dividend_adjusted"] is False
     assert _tf_key(c0["timeframe"]) == _tf_key(TimeFrame.Day)
 
 

@@ -142,6 +142,7 @@ def _records_from_df(
     *,
     session: str,
     asset_class: str,
+    dividend_adjusted: bool,
 ) -> list[dict]:
     if df is None or df.empty:
         return []
@@ -181,6 +182,7 @@ def _records_from_df(
                 "close": c,
                 "volume": v,
                 "session": record_session,
+                "dividend_adjusted": bool(dividend_adjusted),
             }
         )
     return out
@@ -196,6 +198,7 @@ class _CacheKey:
     provider: str
     asset_class: str
     session: str
+    dividend_adjusted: bool
 
 
 @dataclass
@@ -233,6 +236,7 @@ class HistoricalBarsQuery:
         drop_wide_spread_bars: bool = True,
         force_refresh: bool = False,
         session: str = "all",
+        dividend_adjusted: bool = False,
     ) -> pd.DataFrame:
         timeframe = scale_to_timeframe(scale)
         start_s = start.isoformat()
@@ -244,8 +248,9 @@ class HistoricalBarsQuery:
         asset = asset or infer_asset_class(ticker, provider=prov) or "us_equity"
         norm_ticker = utils.normalize_crypto_symbol(ticker) if asset == "crypto" else ticker
         candle_session = normalize_candle_session(session, scale, asset)
+        candle_dividend_adjusted = bool(dividend_adjusted) if asset == "us_equity" and prov != "moex" else False
         logger.info(
-            "fetch begin ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s session=%s",
+            "fetch begin ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s session=%s dividend_adjusted=%s",
             norm_ticker.strip(),
             (scale or "").strip().lower(),
             start,
@@ -253,6 +258,7 @@ class HistoricalBarsQuery:
             padding_days,
             provider if isinstance(provider, str) and provider.strip() else provider,
             candle_session,
+            candle_dividend_adjusted,
         )
         key = _CacheKey(
             ticker=norm_ticker.strip(),
@@ -263,6 +269,7 @@ class HistoricalBarsQuery:
             provider=prov,
             asset_class=asset,
             session=candle_session,
+            dividend_adjusted=candle_dividend_adjusted,
         )
         now = time.monotonic()
         if not force_refresh:
@@ -300,6 +307,7 @@ class HistoricalBarsQuery:
                     query = (
                         session.query(Candle)
                         .filter(Candle.ticker == key.ticker, Candle.timeframe == tf)
+                        .filter(Candle.dividend_adjusted == key.dividend_adjusted)
                         .filter(Candle.timestamp >= s_naive, Candle.timestamp <= e_naive)
                     )
                     if key.session == "all":
@@ -367,6 +375,7 @@ class HistoricalBarsQuery:
                 provider=provider if prov else None,
                 drop_wide_spread_bars=drop_wide_spread_bars,
                 session=key.session,
+                dividend_adjusted=key.dividend_adjusted,
             )
 
         # Best-effort write-through to Postgres candles cache.
@@ -378,6 +387,7 @@ class HistoricalBarsQuery:
                 df,
                 session=key.session,
                 asset_class=key.asset_class,
+                dividend_adjusted=key.dividend_adjusted,
             )
             if records:
                 session = SessionLocal()
@@ -392,7 +402,12 @@ class HistoricalBarsQuery:
                             batch = records[i : i + batch_size]
                             stmt = pg_insert(Candle).values(batch)
                             stmt = stmt.on_conflict_do_update(
-                                index_elements=["ticker", "timeframe", "timestamp"],
+                                index_elements=[
+                                    "timestamp",
+                                    "ticker",
+                                    "timeframe",
+                                    "dividend_adjusted",
+                                ],
                                 set_={
                                     "open": stmt.excluded.open,
                                     "high": stmt.excluded.high,
@@ -428,6 +443,7 @@ class HistoricalBarsQuery:
         asset_class: Optional[str] = None,
         force_refresh: bool = False,
         session: str = "all",
+        dividend_adjusted: bool = False,
     ) -> tuple[pd.DataFrame, int]:
         chunks = plan_display_bars_fetch_chunks(
             start, end, scale, max_bars_per_chunk=max_bars_per_chunk
@@ -457,6 +473,7 @@ class HistoricalBarsQuery:
                 asset_class=asset_class,
                 force_refresh=force_refresh,
                 session=session,
+                dividend_adjusted=dividend_adjusted,
             )
             if part is not None and not part.empty:
                 frames.append(part)
