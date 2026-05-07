@@ -1917,6 +1917,19 @@ def _tool_call_parts(tc: Any) -> tuple[str, dict[str, Any], str]:
     return name, args, tid
 
 
+def _strip_reasoning_details(msg: AIMessage) -> AIMessage:
+    if not msg.additional_kwargs.get("reasoning_details"):
+        return msg
+    new_kwargs = {k: v for k, v in msg.additional_kwargs.items() if k != "reasoning_details"}
+    return AIMessage(
+        content=msg.content,
+        tool_calls=msg.tool_calls,
+        additional_kwargs=new_kwargs,
+        response_metadata=msg.response_metadata,
+        id=msg.id,
+    )
+
+
 def _invoke_agent_model(llm_tools: Any, chat_messages: list[BaseMessage], on_token: TokenCallback) -> AIMessage:
     if on_token is None:
         return llm_tools.invoke(chat_messages)
@@ -2000,7 +2013,7 @@ def build_agent_reply(
         if on_progress:
             on_progress("Thinking…")
         assistant_msg = _invoke_agent_model(llm_tools, chat_messages, on_token)
-        chat_messages.append(assistant_msg)
+        chat_messages.append(_strip_reasoning_details(assistant_msg))
         tool_calls = assistant_msg.tool_calls or []
         if not tool_calls:
             content = _aimessage_plain_text(assistant_msg).strip()
