@@ -2,6 +2,7 @@ from services.agent import (
     CODEX_MODEL,
     CODEX_REASONING_EFFORT,
     _codex_exec_command,
+    _codex_resume_rollout_missing_error,
     _codex_thread_id_from_stdout,
 )
 
@@ -48,4 +49,9 @@ def test_codex_exec_command_places_exec_options_before_resume():
         "019decc1-9ab1-7a42-9022-2e2db09212f8",
         "change the strategy",
     ]
+
+
+def test_codex_resume_rollout_missing_error():
+    stderr = "Error: thread/resume: thread/resume failed: no rollout found for thread id 019df987-06a1-7883-9b6c-2f13aebea96a\n"
+    assert _codex_resume_rollout_missing_error("", stderr)
 

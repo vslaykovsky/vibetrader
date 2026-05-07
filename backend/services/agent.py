@@ -71,6 +71,10 @@ def _codex_thread_id_from_stdout(stdout: str) -> str:
     return ""
 
 
+def _codex_resume_rollout_missing_error(stdout: str | None, stderr: str | None) -> bool:
+    return "no rollout found for thread id" in f"{stdout or ''}\n{stderr or ''}".lower()
+
+
 def _codex_exec_command(
     task: str,
     root: str,
@@ -1098,7 +1102,19 @@ def _run_codex_exec(
         else "--full-auto"
     )
     cmd = _codex_exec_command(task, root, resume_thread_id, sandbox_flag)
-    return _run_logged_subprocess("codex exec", cmd, root, timeout=600)
+    proc = _run_logged_subprocess("codex exec", cmd, root, timeout=600)
+    if (
+        resume_thread_id
+        and proc.returncode != 0
+        and _codex_resume_rollout_missing_error(proc.stdout, proc.stderr)
+    ):
+        logger.warning(
+            "codex resume rollout missing; retrying without resume",
+            extra={"codex_thread_id": resume_thread_id},
+        )
+        retry_cmd = _codex_exec_command(task, root, "", sandbox_flag)
+        return _run_logged_subprocess("codex exec retry without resume", retry_cmd, root, timeout=600)
+    return proc
 
 
 @traceable(name="run_claude_exec")

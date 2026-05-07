@@ -25,6 +25,13 @@ function threadTitle(t) {
   return 'Untitled strategy';
 }
 
+function threadOwnerLabel(t) {
+  const email = typeof t?.created_by_email === 'string' ? t.created_by_email.trim() : '';
+  if (email) return email;
+  const owner = typeof t?.created_by === 'string' ? t.created_by.trim() : '';
+  return owner || 'Unknown user';
+}
+
 function liveStrategyTitle(r, threadsByThreadId) {
   const n = typeof r?.strategy_name === 'string' ? r.strategy_name.trim() : '';
   if (n && n !== 'unknown strategy') return n;
@@ -107,6 +114,8 @@ export function DashboardPage() {
   const { theme, toggleTheme } = useTheme();
   const { timeZone, hourFormat } = useTimeZone();
   const [threads, setThreads] = useState([]);
+  const [otherRecentThreads, setOtherRecentThreads] = useState([]);
+  const [canViewOtherRecentThreads, setCanViewOtherRecentThreads] = useState(false);
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -128,14 +137,26 @@ export function DashboardPage() {
     setLoading(true);
     setError('');
     try {
-      const [tRes, rRes] = await Promise.all([
+      const [tRes, rRes, allThreadsRes] = await Promise.all([
         authFetch(`${API_BASE_URL}/threads`),
         authFetch(`${API_BASE_URL}/live/runs?limit=100`),
+        authFetch(`${API_BASE_URL}/threads/recent`),
       ]);
       const tPayload = await tRes.json().catch(() => ({}));
       const rPayload = await rRes.json().catch(() => ({}));
+      const allThreadsPayload = await allThreadsRes.json().catch(() => ({}));
       if (!tRes.ok) throw new Error(tPayload.error || `Threads failed (${tRes.status})`);
       if (!rRes.ok) throw new Error(rPayload.error || `Live runs failed (${rRes.status})`);
+      if (allThreadsRes.status === 403) {
+        setOtherRecentThreads([]);
+        setCanViewOtherRecentThreads(false);
+      } else {
+        if (!allThreadsRes.ok) {
+          throw new Error(allThreadsPayload.error || `Recent threads failed (${allThreadsRes.status})`);
+        }
+        setOtherRecentThreads(Array.isArray(allThreadsPayload.threads) ? allThreadsPayload.threads : []);
+        setCanViewOtherRecentThreads(true);
+      }
       setThreads(Array.isArray(tPayload.threads) ? tPayload.threads : []);
       setRuns(Array.isArray(rPayload.runs) ? rPayload.runs : []);
       setThreadsExpanded(false);
@@ -157,7 +178,7 @@ export function DashboardPage() {
       document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 100);
     return () => window.clearTimeout(t);
-  }, [location.hash, loading, threads.length, runs.length]);
+  }, [location.hash, loading, threads.length, runs.length, otherRecentThreads.length, canViewOtherRecentThreads]);
 
   const startNewThread = useMemo(
     () => () => navigate(`/strategy/${randomUUID()}`, { state: {} }),
@@ -399,6 +420,51 @@ export function DashboardPage() {
               </ul>
             ) : null}
           </section>
+
+          {canViewOtherRecentThreads ? (
+            <section className="dashboard-panel" id="all-recent-threads" aria-labelledby="dash-all-threads-heading">
+              <div className="dashboard-panel-head">
+                <h2 id="dash-all-threads-heading" className="dashboard-panel-title">
+                  Recent threads by other users
+                </h2>
+                <span className="dashboard-panel-count">{otherRecentThreads.length}</span>
+              </div>
+              {!loading && otherRecentThreads.length === 0 ? (
+                <div className="dashboard-empty">
+                  <span className="home-ms dashboard-empty-icon" aria-hidden>
+                    groups
+                  </span>
+                  <p className="dashboard-empty-title">No recent threads</p>
+                  <p className="dashboard-empty-text muted">Threads from other users will appear here.</p>
+                </div>
+              ) : null}
+              {!loading && otherRecentThreads.length > 0 ? (
+                <ul className="dashboard-thread-list">
+                  {otherRecentThreads.map((t) => {
+                    const tid = String(t.thread_id || '').trim();
+                    if (!tid) return null;
+                    return (
+                      <li key={tid}>
+                        <Link className="dashboard-thread-row" to={`/strategy/${tid}`}>
+                          <div className="dashboard-card-main">
+                            <h3 className="dashboard-card-title">{threadTitle(t)}</h3>
+                            <p className="dashboard-card-meta muted">
+                              Updated {fmtTime(t.latest_created_at, timeZone, hourFormat)}
+                              {` · ${threadOwnerLabel(t)}`}
+                              {Number.isFinite(Number(t.message_count)) ? ` · ${t.message_count} messages` : ''}
+                            </p>
+                          </div>
+                          <span className="dashboard-card-chevron" aria-hidden>
+                            →
+                          </span>
+                        </Link>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : null}
+            </section>
+          ) : null}
         </div>
       </div>
       <ConfirmDialog

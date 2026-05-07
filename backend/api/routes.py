@@ -66,21 +66,45 @@ def _stream_event_payload(event: dict) -> dict:
     return payload
 
 
-def _messages_with_admin_extras(messages: list, strategy: Strategy) -> list:
+def _messages_with_admin_extras(
+    messages: list,
+    strategy: Strategy,
+    langsmith_traces: dict[str, str] | None = None,
+) -> list:
+    traces = dict(langsmith_traces or {})
     trace = str(strategy.langsmith_trace or "").strip()
     run_id = str(strategy.id or "").strip()
-    if not trace or not run_id:
-        return messages
+    if trace and run_id:
+        traces.setdefault(run_id, trace)
     out: list = []
     for message in messages:
         if not isinstance(message, dict):
             out.append(message)
             continue
         item = dict(message)
-        if str(item.get("run_id") or "").strip() == run_id:
-            item["langsmith_trace"] = trace
+        item.pop("langsmith_trace", None)
+        message_run_id = str(item.get("run_id") or "").strip()
+        if item.get("role") == "assistant" and message_run_id:
+            message_trace = str(traces.get(message_run_id) or "").strip()
+            if message_trace:
+                item["langsmith_trace"] = message_trace
         out.append(item)
     return out
+
+
+def _thread_langsmith_traces(session, thread_id: str) -> dict[str, str]:
+    rows = (
+        session.query(Strategy.id, Strategy.langsmith_trace)
+        .filter(Strategy.thread_id == thread_id)
+        .all()
+    )
+    traces: dict[str, str] = {}
+    for run_id, trace in rows:
+        rid = str(run_id or "").strip()
+        url = str(trace or "").strip()
+        if rid and url:
+            traces[rid] = url
+    return traces
 
 
 def _messages_without_admin_extras(messages: list) -> list:
@@ -113,14 +137,65 @@ def _strategy_name_from_canvas(canvas: dict | None) -> str:
     return name.strip() if isinstance(name, str) else ""
 
 
+def _thread_row_created_at(value) -> str | None:
+    if not value:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    text_value = str(value).strip()
+    if " " in text_value and "T" not in text_value:
+        text_value = text_value.replace(" ", "T", 1)
+    if text_value.endswith(".000000"):
+        text_value = text_value[:-7]
+    return text_value or None
+
+
+def _serialize_thread_rows(rows, *, include_owner: bool = False) -> list[dict]:
+    out: list[dict] = []
+    for row in rows:
+        item = {
+            "thread_id": row["thread_id"],
+            "latest_run_id": row["id"],
+            "latest_created_at": _thread_row_created_at(row["created_at"]),
+            "message_count": int(row["messages_count"] or 0),
+            "strategy_name": (row["strategy_name"] or "").strip()
+            or "unknown strategy",
+            "status": row["status"],
+            "status_text": row["status_text"] or "",
+        }
+        if include_owner:
+            item["created_by"] = (row["created_by"] or "").strip()
+            item["created_by_email"] = (row["created_by_email"] or "").strip()
+        out.append(item)
+    return out
+
+
+def _latest_threads_sql(where_clause: str = "", limit_clause: str = "") -> str:
+    where = f"\n    {where_clause}" if where_clause else ""
+    limit = f"\n{limit_clause}" if limit_clause else ""
+    return f"""
+SELECT id, thread_id, created_at, messages_count, status, status_text, strategy_name, created_by, created_by_email
+FROM (
+    SELECT
+        id, thread_id, created_at, messages_count, status, status_text, strategy_name, created_by, created_by_email,
+        ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY created_at DESC, id DESC) AS rn
+    FROM strategy{where}
+) latest
+WHERE rn = 1
+ORDER BY created_at DESC, id DESC{limit}
+"""
+
+
 def serialize_strategy(
     strategy: Strategy,
+    *,
+    langsmith_traces: dict[str, str] | None = None,
 ) -> dict:
     is_admin = bool(g.is_admin)
     canvas = redact_secret_json_values_for_user(dict(strategy.canvas or {}))
     messages = redact_secret_json_values_for_user(list(strategy.messages or []))
     if is_admin:
-        messages = _messages_with_admin_extras(messages, strategy)
+        messages = _messages_with_admin_extras(messages, strategy, langsmith_traces)
     else:
         messages = _messages_without_admin_extras(messages)
     payload = {
@@ -145,43 +220,42 @@ def serialize_strategy(
 @strategy_blueprint.get("/threads")
 @require_auth
 def list_threads() -> tuple:
+    uid = str(g.user_id or "").strip()
     session = SessionLocal()
     try:
-        sql = """
-SELECT id, thread_id, created_at, messages_count, status, status_text, strategy_name
-FROM (
-    SELECT DISTINCT ON (thread_id)
-        id, thread_id, created_at, messages_count, status, status_text, strategy_name
-    FROM strategy
-    ORDER BY thread_id, created_at DESC, id DESC
-) latest
-ORDER BY created_at DESC, id DESC
-"""
+        sql = _latest_threads_sql("WHERE created_by = :uid")
         stmt = text(sql)
         logger.info("list_threads SQL: %s", sql.strip())
-        rows = session.execute(stmt).mappings().all()
+        rows = session.execute(stmt, {"uid": uid}).mappings().all()
         return (
             jsonify(
                 {
-                    "threads": [
-                        {
-                            "thread_id": row["thread_id"],
-                            "latest_run_id": row["id"],
-                            "latest_created_at": row["created_at"].isoformat()
-                            if row["created_at"]
-                            else None,
-                            "message_count": int(row["messages_count"] or 0),
-                            "strategy_name": (row["strategy_name"] or "").strip()
-                            or "unknown strategy",
-                            "status": row["status"],
-                            "status_text": row["status_text"] or "",
-                        }
-                        for row in rows
-                    ]
+                    "threads": _serialize_thread_rows(rows)
                 }
             ),
             200,
         )
+    finally:
+        session.close()
+
+
+@strategy_blueprint.get("/threads/recent")
+@require_auth
+def list_recent_threads() -> tuple:
+    if not bool(g.is_admin):
+        return jsonify({"error": "forbidden"}), 403
+
+    uid = str(g.user_id or "").strip()
+    session = SessionLocal()
+    try:
+        sql = _latest_threads_sql(
+            "WHERE created_by IS NULL OR created_by <> :uid",
+            "LIMIT :limit",
+        )
+        stmt = text(sql)
+        logger.info("list_recent_threads SQL: %s", sql.strip())
+        rows = session.execute(stmt, {"uid": uid, "limit": 10}).mappings().all()
+        return jsonify({"threads": _serialize_thread_rows(rows, include_owner=True)}), 200
     finally:
         session.close()
 
@@ -418,7 +492,12 @@ def get_strategy() -> tuple:
             if strategy is None:
                 return _validation_error("strategy not found")
             _stamp_langsmith_thread_metadata(strategy.thread_id)
-            return jsonify(serialize_strategy(strategy)), 200
+            traces = (
+                _thread_langsmith_traces(session, strategy.thread_id)
+                if bool(g.is_admin)
+                else None
+            )
+            return jsonify(serialize_strategy(strategy, langsmith_traces=traces)), 200
         finally:
             session.close()
 
@@ -446,7 +525,8 @@ def get_strategy() -> tuple:
                 code=getattr(strategy, "code", "") or "",
                 canvas=dict(getattr(strategy, "canvas", {}) or {}),
             )
-        return jsonify(serialize_strategy(strategy)), 200
+        traces = _thread_langsmith_traces(session, thread_id) if bool(g.is_admin) else None
+        return jsonify(serialize_strategy(strategy, langsmith_traces=traces)), 200
     finally:
         session.close()
 
@@ -581,12 +661,20 @@ def strategy_stream():
                     if strategy is None:
                         break
                     run_id = str(strategy.id or "")
+                    traces = (
+                        _thread_langsmith_traces(session, thread_id)
+                        if bool(g.is_admin)
+                        else None
+                    )
                     if run_id and run_id != subscribed_run_id:
                         if subscriber is not None:
                             subscriber.close()
                         subscriber = StrategyStreamSubscriber(run_id, after_seq if not subscribed_run_id else 0)
                         subscribed_run_id = run_id
-                    snapshot = json.dumps(serialize_strategy(strategy), sort_keys=True)
+                    snapshot = json.dumps(
+                        serialize_strategy(strategy, langsmith_traces=traces),
+                        sort_keys=True,
+                    )
                     if snapshot != last_snapshot:
                         last_snapshot = snapshot
                         yield f"data: {snapshot}\n\n"
