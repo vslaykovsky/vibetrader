@@ -228,7 +228,7 @@ def test_strategy_lightweight_response_splits_canvas_payload_for_admin():
 
         cached_canvas_res = client.get(
             f"/strategy/canvas?thread_id={thread_id}",
-            headers={**headers, "If-None-Match": f'"{run_id}"'},
+            headers={**headers, "If-None-Match": f'W/"{run_id}"'},
         )
         assert cached_canvas_res.status_code == 304
         assert cached_canvas_res.headers.get("ETag") == f'"{run_id}"'

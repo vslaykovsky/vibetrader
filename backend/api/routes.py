@@ -247,7 +247,7 @@ def _strategy_canvas_etag(strategy: Strategy) -> str:
 
 def _strategy_canvas_not_modified(strategy: Strategy) -> bool:
     etag = _strategy_canvas_etag(strategy)
-    return bool(etag and request.if_none_match.contains(etag))
+    return bool(etag and request.if_none_match.contains_weak(etag))
 
 
 def _apply_strategy_canvas_cache_headers(
@@ -258,7 +258,7 @@ def _apply_strategy_canvas_cache_headers(
 ) -> Response:
     etag = _strategy_canvas_etag(strategy)
     if etag:
-        response.set_etag(etag)
+        response.set_etag(etag, weak=False)
     response.headers["Vary"] = "Authorization"
     response.headers["Cache-Control"] = (
         "private, max-age=31536000, immutable"
@@ -718,9 +718,9 @@ def get_strategy_canvas() -> tuple:
             )
             if cached_strategy is None:
                 return _validation_error("strategy not found")
-            _stamp_langsmith_thread_metadata(cached_strategy.thread_id)
             if _strategy_canvas_not_modified(cached_strategy):
                 return _strategy_canvas_not_modified_response(cached_strategy, immutable=True)
+            _stamp_langsmith_thread_metadata(cached_strategy.thread_id)
             strategy = get_strategy_by_id(session, run_id)
             return _strategy_canvas_response(strategy, immutable=True), 200
         finally:
@@ -731,13 +731,13 @@ def get_strategy_canvas() -> tuple:
         return _validation_error("thread_id or id query parameter is required")
     if not thread_id_allowed(thread_id):
         return _validation_error("invalid thread_id")
-    _stamp_langsmith_thread_metadata(thread_id)
 
     session = SessionLocal()
     try:
         cached_strategy = _latest_thread_strategy_lightweight(session, thread_id)
         if cached_strategy is not None and _strategy_canvas_not_modified(cached_strategy):
             return _strategy_canvas_not_modified_response(cached_strategy, immutable=False)
+        _stamp_langsmith_thread_metadata(thread_id)
         workspace = Path(STRATEGIES_DIR) / thread_id
         needs_restore = not workspace.is_dir()
         strategy = ensure_latest_thread_strategy(
