@@ -14,8 +14,11 @@ import { CHART_THEME } from './lib/chartTheme.js';
 import {
   chartDetailsSignature,
   chartsOrderSignature,
+  moveTableTimeColumnFirst,
   reorderChartPanels,
+  reorderTableColumns,
   sanitizeDetailsOpenState,
+  validateTableColumnOrder,
   validateChartOrder,
 } from './lib/chartOrder.js';
 import { formatChartCrosshairTime, formatChartTick, formatUnixDateTime, normalizeTimeZone } from './lib/dateTime.js';
@@ -91,6 +94,7 @@ function detectDisplayTimeColumns(columns, rows) {
 const CHART_ORDER_LS_PREFIX = 'vibetrader:chartPanelOrder:';
 const DETAILS_OPEN_LS_PREFIX = 'vibetrader:chartDetailsOpen:';
 const HIDDEN_PANELS_LS_PREFIX = 'vibetrader:hiddenChartPanels:';
+const TABLE_COLUMN_ORDER_LS_PREFIX = 'vibetrader:tableColumnOrder:';
 const MAX_SPARSE_LWC_BAR_SPACING = 28;
 const MIN_SPARSE_LWC_VISIBLE_SPAN = 12;
 
@@ -145,6 +149,36 @@ function saveChartOrder(storageKey, order) {
   if (typeof localStorage === 'undefined') return;
   try {
     localStorage.setItem(storageKey, JSON.stringify(order));
+  } catch {
+    /* ignore */
+  }
+}
+
+function tableColumnOrderSignature(columns) {
+  const s = JSON.stringify(columns);
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = (h * 33) ^ s.charCodeAt(i);
+  }
+  return `${(h >>> 0).toString(36)}_${columns.length}`;
+}
+
+function loadTableColumnOrder(storageKey, columns) {
+  if (typeof localStorage === 'undefined' || !storageKey) return null;
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return null;
+    const arr = JSON.parse(raw);
+    return validateTableColumnOrder(arr, columns) ? arr : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveTableColumnOrder(storageKey, columns) {
+  if (typeof localStorage === 'undefined' || !storageKey) return;
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(columns));
   } catch {
     /* ignore */
   }
@@ -775,12 +809,19 @@ function triggerCsvDownload(filename, csvText) {
   URL.revokeObjectURL(url);
 }
 
-function renderTablePanel(container, table, title, openStore, panelKey, helpText, timeZone, hourFormat, onRowHover, onRowLeave) {
+function renderTablePanel(container, table, title, openStore, panelKey, helpText, timeZone, hourFormat, onRowHover, onRowLeave, columnOrderStorageBase) {
   if (!Array.isArray(table) || table.length === 0) return null;
   const first = table[0];
   if (!first || typeof first !== 'object') return null;
-  const columns = Object.keys(first);
+  let columns = Object.keys(first);
   if (columns.length === 0) return null;
+  const sourceColumns = columns;
+  const defaultColumns = moveTableTimeColumnFirst(sourceColumns);
+  const columnOrderStorageKey =
+    typeof columnOrderStorageBase === 'string' && columnOrderStorageBase !== '' && typeof panelKey === 'string' && panelKey !== ''
+      ? `${TABLE_COLUMN_ORDER_LS_PREFIX}${columnOrderStorageBase}:${panelKey}:${tableColumnOrderSignature(sourceColumns)}`
+      : '';
+  columns = loadTableColumnOrder(columnOrderStorageKey, sourceColumns) ?? defaultColumns;
   const timeCol = detectTimeColumn(columns, table);
   const displayTimeCols = detectDisplayTimeColumns(columns, table);
 
@@ -889,6 +930,8 @@ function renderTablePanel(container, table, title, openStore, panelKey, helpText
   let sortCol = null;
   let sortDir = null;
   let currentRows = [...table];
+  let draggedCol = null;
+  let suppressHeaderClick = false;
 
   const tbody = document.createElement('tbody');
 
@@ -960,6 +1003,23 @@ function renderTablePanel(container, table, title, openStore, panelKey, helpText
     buildRowTimeData();
   };
 
+  const clearHeaderDropStyles = () => {
+    for (const th of hr.children) {
+      th.style.boxShadow = '';
+      th.style.opacity = '';
+    }
+  };
+
+  const getHeaderDropTarget = (e) => {
+    const th = e.target?.closest?.('th[data-col]');
+    return th && hr.contains(th) ? th : null;
+  };
+
+  const getHeaderDropPlacement = (e, th) => {
+    const rect = th.getBoundingClientRect();
+    return e.clientX > rect.left + rect.width / 2 ? 'after' : 'before';
+  };
+
   const updateHeaders = () => {
     for (const th of hr.children) {
       const col = th?.dataset?.col;
@@ -972,30 +1032,83 @@ function renderTablePanel(container, table, title, openStore, panelKey, helpText
     }
   };
 
-  for (const col of columns) {
-    const th = document.createElement('th');
-    th.dataset.col = col;
-    th.textContent = col.replace(/_/g, ' ');
-    th.style.cssText =
-      'position:sticky;top:0;z-index:1;text-align:left;padding:10px 12px;border-bottom:1px solid #363a45;color:#888;font-weight:600;text-transform:capitalize;cursor:pointer;user-select:none;background:#1e2130;';
-    th.addEventListener('click', () => {
-      if (sortCol !== col) {
-        sortCol = col;
-        sortDir = 'asc';
-      } else if (sortDir === 'asc') {
-        sortDir = 'desc';
-      } else if (sortDir === 'desc') {
-        sortCol = null;
-        sortDir = null;
-      } else {
-        sortDir = 'asc';
-      }
-      currentRows = makeSortedRows([...table], sortCol, sortDir);
-      updateHeaders();
-      renderBody();
-    });
-    hr.appendChild(th);
-  }
+  const renderHeaders = () => {
+    hr.innerHTML = '';
+    for (const col of columns) {
+      const th = document.createElement('th');
+      th.dataset.col = col;
+      th.draggable = true;
+      th.title = 'Click to sort. Drag to reorder columns';
+      th.textContent = col.replace(/_/g, ' ');
+      th.style.cssText =
+        'position:sticky;top:0;z-index:1;text-align:left;padding:10px 12px;border-bottom:1px solid #363a45;color:#888;font-weight:600;text-transform:capitalize;cursor:grab;user-select:none;background:#1e2130;';
+      th.addEventListener('click', () => {
+        if (suppressHeaderClick) return;
+        if (sortCol !== col) {
+          sortCol = col;
+          sortDir = 'asc';
+        } else if (sortDir === 'asc') {
+          sortDir = 'desc';
+        } else if (sortDir === 'desc') {
+          sortCol = null;
+          sortDir = null;
+        } else {
+          sortDir = 'asc';
+        }
+        currentRows = makeSortedRows([...table], sortCol, sortDir);
+        updateHeaders();
+        renderBody();
+      });
+      th.addEventListener('dragstart', (e) => {
+        draggedCol = col;
+        suppressHeaderClick = true;
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', col);
+        th.style.opacity = '0.55';
+      });
+      th.addEventListener('dragend', () => {
+        draggedCol = null;
+        clearHeaderDropStyles();
+        setTimeout(() => {
+          suppressHeaderClick = false;
+        }, 0);
+      });
+      hr.appendChild(th);
+    }
+    updateHeaders();
+  };
+
+  hr.addEventListener('dragover', (e) => {
+    const th = getHeaderDropTarget(e);
+    if (!th || !draggedCol || draggedCol === th.dataset.col) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    clearHeaderDropStyles();
+    const placement = getHeaderDropPlacement(e, th);
+    th.style.boxShadow = placement === 'after' ? 'inset -3px 0 0 #9aa0a6' : 'inset 3px 0 0 #9aa0a6';
+  });
+
+  hr.addEventListener('dragleave', (e) => {
+    if (!hr.contains(e.relatedTarget)) clearHeaderDropStyles();
+  });
+
+  hr.addEventListener('drop', (e) => {
+    const th = getHeaderDropTarget(e);
+    if (!th) return;
+    e.preventDefault();
+    const dragCol = draggedCol || e.dataTransfer.getData('text/plain');
+    const dropCol = th.dataset.col;
+    const placement = getHeaderDropPlacement(e, th);
+    const nextColumns = reorderTableColumns(columns, dragCol, dropCol, placement);
+    clearHeaderDropStyles();
+    if (nextColumns === columns) return;
+    columns = nextColumns;
+    saveTableColumnOrder(columnOrderStorageKey, columns);
+    renderHeaders();
+    renderBody();
+  });
+
+  renderHeaders();
   thead.appendChild(hr);
   tbl.appendChild(thead);
   tbl.appendChild(tbody);
@@ -1138,7 +1251,7 @@ function renderMetricsPanel(container, metrics, openStore) {
   container.appendChild(details);
 }
 
-function renderOneChartPanel(panelHost, spec, openStore, srcIdx, catalogMap, timeZone, hourFormat, onCrosshairMove, onRowHover, onRowLeave, onRemove, alignRightEdge) {
+function renderOneChartPanel(panelHost, spec, openStore, srcIdx, catalogMap, timeZone, hourFormat, onCrosshairMove, onRowHover, onRowLeave, onRemove, alignRightEdge, columnOrderStorageBase) {
   const panelKey = `c${srcIdx}`;
   const chartDesc = typeof spec.description === 'string' ? spec.description.trim() : '';
   if (spec.type === 'lightweight-charts') {
@@ -1150,7 +1263,7 @@ function renderOneChartPanel(panelHost, spec, openStore, srcIdx, catalogMap, tim
     return { chart: null, primarySeries: null, ...renderPlotlyChart(panelHost, spec, openStore, panelKey, chartDesc || null, onRemove) };
   }
   if (spec.type === 'table') {
-    const tableSync = renderTablePanel(panelHost, spec.rows, spec.title, openStore, panelKey, chartDesc || null, timeZone, hourFormat, onRowHover, onRowLeave);
+    const tableSync = renderTablePanel(panelHost, spec.rows, spec.title, openStore, panelKey, chartDesc || null, timeZone, hourFormat, onRowHover, onRowLeave, columnOrderStorageBase);
     return { chart: null, primarySeries: null, scrollToTime: tableSync?.scrollToTime ?? null, clearHighlight: tableSync?.clearHighlight ?? null };
   }
   return { chart: null, primarySeries: null };
@@ -1178,6 +1291,7 @@ export function renderCharts(container, dataJson, options) {
   const panelCount = chartCount + (includeMetrics ? 1 : 0);
   const openBase = typeof base === 'string' && base.trim() !== '';
   const detailsSig = chartDetailsSignature(charts || [], dataJson?.metrics);
+  const chartUiStorageBase = openBase ? `${base}:${detailsSig}` : '';
   const hiddenStorageKey = openBase ? `${HIDDEN_PANELS_LS_PREFIX}${base}:${detailsSig}` : '';
   const hiddenPanelKeys = loadHiddenPanelKeys(hiddenStorageKey, chartCount);
   const openStore =
@@ -1261,7 +1375,7 @@ export function renderCharts(container, dataJson, options) {
         } else {
           const spec = charts[srcIdx];
           if (!spec) continue;
-          collectResult(renderOneChartPanel(inner, spec, openStore, srcIdx, catalogMap, timeZone, hourFormat, onCrosshairMove, onRowHover, onRowLeave, removePanel, alignRightEdge));
+          collectResult(renderOneChartPanel(inner, spec, openStore, srcIdx, catalogMap, timeZone, hourFormat, onCrosshairMove, onRowHover, onRowLeave, removePanel, alignRightEdge, chartUiStorageBase));
         }
         enableChartDndHeader(row);
       }
@@ -1273,7 +1387,7 @@ export function renderCharts(container, dataJson, options) {
         for (let srcIdx = 0; srcIdx < charts.length; srcIdx++) {
           if (hiddenPanelKeys.has(`c${srcIdx}`)) continue;
           const spec = charts[srcIdx];
-          collectResult(renderOneChartPanel(container, spec, openStore, srcIdx, catalogMap, timeZone, hourFormat, onCrosshairMove, onRowHover, onRowLeave, removePanel, alignRightEdge));
+          collectResult(renderOneChartPanel(container, spec, openStore, srcIdx, catalogMap, timeZone, hourFormat, onCrosshairMove, onRowHover, onRowLeave, removePanel, alignRightEdge, chartUiStorageBase));
         }
       }
     }

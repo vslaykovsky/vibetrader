@@ -17,6 +17,34 @@ export function reorderChartPanels(order, dragSrc, dropBeforeSrc) {
   return next;
 }
 
+export function reorderTableColumns(columns, dragCol, dropCol, placement = 'before') {
+  if (!Array.isArray(columns) || dragCol === dropCol) return columns;
+  if (!columns.includes(dragCol) || !columns.includes(dropCol)) return columns;
+  const next = columns.filter((col) => col !== dragCol);
+  const j = next.indexOf(dropCol);
+  if (j === -1) return columns;
+  next.splice(placement === 'after' ? j + 1 : j, 0, dragCol);
+  return next;
+}
+
+export function validateTableColumnOrder(order, columns) {
+  if (!Array.isArray(order) || !Array.isArray(columns) || order.length !== columns.length) return false;
+  const valid = new Set(columns);
+  const seen = new Set();
+  for (const col of order) {
+    if (typeof col !== 'string' || !valid.has(col) || seen.has(col)) return false;
+    seen.add(col);
+  }
+  return true;
+}
+
+export function moveTableTimeColumnFirst(columns) {
+  if (!Array.isArray(columns)) return columns;
+  const idx = columns.findIndex((col) => typeof col === 'string' && col.toLowerCase() === 'time');
+  if (idx <= 0) return columns;
+  return [columns[idx], ...columns.slice(0, idx), ...columns.slice(idx + 1)];
+}
+
 export function chartsOrderSignature(charts) {
   const parts = charts.map((c) => [c.type, c.title ?? '']);
   const s = JSON.stringify(parts);
