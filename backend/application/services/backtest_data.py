@@ -281,10 +281,6 @@ def _is_daily_or_larger_timeframe(tf: TimeFrame) -> bool:
     return tf.unit in {TimeFrameUnit.Day, TimeFrameUnit.Week, TimeFrameUnit.Month}
 
 
-def _is_one_hour_timeframe(tf: TimeFrame) -> bool:
-    return tf.unit == TimeFrameUnit.Hour and int(tf.amount) == 1
-
-
 def normalize_stock_session(session: str | None, timeframe: TimeFrame | None = None) -> StockSession:
     value = (session or "all").strip().lower()
     if value not in {"regular", "extended", "all"}:
@@ -292,6 +288,14 @@ def normalize_stock_session(session: str | None, timeframe: TimeFrame | None = N
     if timeframe is not None and _is_daily_or_larger_timeframe(timeframe):
         return "regular"
     return value
+
+
+def _regular_aligned_request_timeframe(timeframe: TimeFrame) -> TimeFrame | None:
+    if timeframe.unit != TimeFrameUnit.Hour:
+        return None
+    if int(timeframe.amount) in {1, 4}:
+        return TimeFrame(30, TimeFrameUnit.Minute)
+    return None
 
 
 def alpaca_stock_adjustment(dividend_adjusted: bool) -> Adjustment:
@@ -323,7 +327,7 @@ def _filter_stock_session_utc_df(df: pd.DataFrame, session: StockSession) -> pd.
     return df.loc[~mask]
 
 
-def _regular_hourly_bars_from_intraday(df: pd.DataFrame) -> pd.DataFrame:
+def _regular_session_hour_bars_from_intraday(df: pd.DataFrame, hours: int) -> pd.DataFrame:
     regular = _filter_stock_session_utc_df(df, "regular")
     if regular.empty:
         return regular
@@ -334,8 +338,8 @@ def _regular_hourly_bars_from_intraday(df: pd.DataFrame) -> pd.DataFrame:
     for session_date, part in regular.groupby(session_dates):
         part_local_index = pd.DatetimeIndex(part.index).tz_convert(_US_EASTERN_TZ)
         session_open = pd.Timestamp(datetime.combine(session_date, time(9, 30), tzinfo=_US_EASTERN_TZ))
-        bucket_num = ((part_local_index - session_open) // pd.Timedelta(hours=1)).astype("int64")
-        bucket_local = session_open + pd.to_timedelta(bucket_num, unit="h")
+        bucket_num = ((part_local_index - session_open) // pd.Timedelta(hours=int(hours))).astype("int64")
+        bucket_local = session_open + pd.to_timedelta(bucket_num * int(hours), unit="h")
         bucket_utc = pd.DatetimeIndex(bucket_local).tz_convert("UTC")
         frames.append(part.groupby(bucket_utc).agg(agg_map))
     out = pd.concat(frames).sort_index()
@@ -508,11 +512,9 @@ def _fetch_alpaca_bars(
     client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
     start = datetime.fromisoformat(start_test_date) - timedelta(days=int(history_padding_days))
     end = _end_datetime_inclusive_eod(end_test_date)
-    request_timeframe = (
-        TimeFrame(15, TimeFrameUnit.Minute)
-        if stock_session == "regular" and _is_one_hour_timeframe(timeframe)
-        else timeframe
-    )
+    aligned_request_timeframe = _regular_aligned_request_timeframe(timeframe)
+    regular_aligned_hours = int(timeframe.amount) if stock_session == "regular" and aligned_request_timeframe else 0
+    request_timeframe = aligned_request_timeframe if regular_aligned_hours else timeframe
     request = StockBarsRequest(
         symbol_or_symbols=ticker,
         start=start,
@@ -530,8 +532,8 @@ def _fetch_alpaca_bars(
         df = df.copy()
     out_utc = _as_ohlcv_dataframe_utc(df)
     if not _is_daily_or_larger_timeframe(timeframe):
-        if stock_session == "regular" and _is_one_hour_timeframe(timeframe):
-            out_utc = _regular_hourly_bars_from_intraday(out_utc)
+        if regular_aligned_hours:
+            out_utc = _regular_session_hour_bars_from_intraday(out_utc, regular_aligned_hours)
         else:
             out_utc = _filter_stock_session_utc_df(out_utc, stock_session)
     out = _as_ohlcv_dataframe(out_utc)

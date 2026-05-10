@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -99,6 +100,91 @@ def test_list_threads_returns_only_authenticated_user_threads():
             ]
         }
     finally:
+        if prev is not None:
+            os.environ["SUPABASE_JWT_SECRET"] = prev
+        else:
+            os.environ.pop("SUPABASE_JWT_SECRET", None)
+
+
+def test_revert_thread_deletes_later_running_run():
+    prev = os.environ.get("SUPABASE_JWT_SECRET")
+    os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
+    owner = f"revert-owner-{uuid.uuid4()}"
+    thread_id = str(uuid.uuid4())
+    created_at = datetime(2097, 1, 1, 12, 0, 0)
+    first_code = "def run_strategy():\n    return {'first': True}\n"
+    workspace = _ROOT / "strategies_v2" / thread_id
+    session = SessionLocal()
+    try:
+        first = Strategy(
+            thread_id=thread_id,
+            created_by=owner,
+            created_by_email="owner@example.com",
+            messages=[
+                {"role": "user", "content": "first prompt"},
+            ],
+            canvas={},
+            code=first_code,
+            status="success",
+            status_text="",
+            created_at=created_at,
+        )
+        session.add(first)
+        session.flush()
+        running = Strategy(
+            thread_id=thread_id,
+            created_by=owner,
+            created_by_email="owner@example.com",
+            messages=[
+                {"role": "user", "content": "first prompt"},
+                {"role": "assistant", "content": "first reply", "run_id": first.id},
+                {"role": "user", "content": "running prompt"},
+            ],
+            canvas={},
+            code="def run_strategy():\n    return {'running': True}\n",
+            status="running",
+            status_text="Working...",
+            created_at=created_at + timedelta(minutes=1),
+        )
+        session.add(running)
+        session.commit()
+        first_id = first.id
+        running_id = running.id
+    finally:
+        session.close()
+
+    app = create_app()
+    try:
+        response = app.test_client().post(
+            f"/threads/{thread_id}/revert",
+            headers=_auth_headers("owner@example.com", owner),
+            json={"run_id": first_id},
+        )
+        assert response.status_code == 200
+        assert response.get_json() == {
+            "ok": True,
+            "thread_id": thread_id,
+            "reverted_to_run_id": first_id,
+            "deleted_runs": 1,
+        }
+
+        session = SessionLocal()
+        try:
+            assert session.get(Strategy, first_id) is not None
+            assert session.get(Strategy, running_id) is None
+        finally:
+            session.close()
+        assert (workspace / "strategy.py").read_text(encoding="utf-8") == first_code
+    finally:
+        session = SessionLocal()
+        try:
+            session.query(Strategy).filter_by(thread_id=thread_id).delete(
+                synchronize_session=False
+            )
+            session.commit()
+        finally:
+            session.close()
+        shutil.rmtree(workspace, ignore_errors=True)
         if prev is not None:
             os.environ["SUPABASE_JWT_SECRET"] = prev
         else:

@@ -9,6 +9,7 @@ from datetime import date
 from datetime import datetime, timezone
 from datetime import timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -21,6 +22,7 @@ from application.services import backtest_data as utils
 
 logger = logging.getLogger(__name__)
 _CANDLE_SESSIONS = ("regular", "extended")
+_US_EASTERN_TZ = ZoneInfo("America/New_York")
 
 
 def scale_to_timeframe(scale: str) -> TimeFrame:
@@ -188,6 +190,19 @@ def _records_from_df(
     return out
 
 
+def _regular_h4_rows_market_open_aligned(rows: list[Candle]) -> bool:
+    for row in rows:
+        ts = pd.Timestamp(row.timestamp)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        else:
+            ts = ts.tz_convert("UTC")
+        local = ts.tz_convert(_US_EASTERN_TZ)
+        if local.dayofweek >= 5 or local.minute != 30 or local.hour not in {9, 13}:
+            return False
+    return True
+
+
 @dataclass(frozen=True)
 class _CacheKey:
     ticker: str
@@ -318,6 +333,21 @@ class HistoricalBarsQuery:
                 finally:
                     session.close()
 
+                if (
+                    cached_rows
+                    and key.scale == "4h"
+                    and key.session == "regular"
+                    and not _regular_h4_rows_market_open_aligned(cached_rows)
+                ):
+                    logger.info(
+                        "fetch cache stale regular_h4 ticker=%s start=%s end=%s rows=%s",
+                        key.ticker,
+                        padded_start,
+                        key.end,
+                        len(cached_rows),
+                    )
+                    cached_rows = []
+
                 if cached_rows:
                     min_ts = pd.Timestamp(cached_rows[0].timestamp).tz_convert("UTC")
                     max_ts = pd.Timestamp(cached_rows[-1].timestamp).tz_convert("UTC")
@@ -392,6 +422,19 @@ class HistoricalBarsQuery:
             if records:
                 session = SessionLocal()
                 try:
+                    if key.scale == "4h" and key.session == "regular":
+                        padded_start = (
+                            pd.Timestamp(key.start.isoformat()) - pd.Timedelta(days=int(key.padding_days))
+                        ).date()
+                        s_utc, e_utc = _date_bounds_utc(padded_start, key.end)
+                        session.query(Candle).filter(
+                            Candle.ticker == key.ticker,
+                            Candle.timeframe == tf,
+                            Candle.dividend_adjusted == key.dividend_adjusted,
+                            Candle.session == "regular",
+                            Candle.timestamp >= s_utc.tz_convert(None).to_pydatetime(),
+                            Candle.timestamp <= e_utc.tz_convert(None).to_pydatetime(),
+                        ).delete(synchronize_session=False)
                     if engine.dialect.name == "postgresql":
                         from sqlalchemy.dialects.postgresql import insert as pg_insert
 

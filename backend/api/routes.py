@@ -364,6 +364,37 @@ def _stamp_langsmith_thread_metadata(thread_id: str) -> None:
         rt.metadata["thread_id"] = tid
 
 
+def _strategy_run_exists(run_id: str) -> bool:
+    session = SessionLocal()
+    try:
+        return session.get(Strategy, run_id) is not None
+    finally:
+        session.close()
+
+
+def _restore_thread_workspace_if_no_newer_run(
+    thread_id: str,
+    run_created_at,
+) -> None:
+    session = SessionLocal()
+    try:
+        latest = latest_thread_strategy(session, thread_id)
+        if latest is None:
+            return
+        latest_created_at = getattr(latest, "created_at", None)
+        if (
+            run_created_at is not None
+            and latest_created_at is not None
+            and latest_created_at > run_created_at
+        ):
+            return
+        code = getattr(latest, "code", "") or ""
+        canvas = dict(getattr(latest, "canvas", {}) or {})
+    finally:
+        session.close()
+    restore_strategy_workspace_from_snapshot(thread_id, code=code, canvas=canvas)
+
+
 @traceable(name="post_strategy")
 def _execute_strategy_agent_job(run_id: str, thread_id: str) -> None:
     stream = StrategyStreamPublisher(run_id)
@@ -389,6 +420,7 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str) -> None:
             return
         messages = list(strategy.messages or [])
         canvas = dict(strategy.canvas or {})
+        run_created_at = getattr(strategy, "created_at", None)
         try:
             logger.info(
                 "agent job started",
@@ -402,6 +434,10 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str) -> None:
                 on_token=stream.assistant_delta if stream.enabled else None,
                 codex_thread_id=str(strategy.codex_thread_id or ""),
             )
+            if not _strategy_run_exists(run_id):
+                _restore_thread_workspace_if_no_newer_run(thread_id, run_created_at)
+                stream.close()
+                return
             stream.assistant_done()
             assistant_entry: dict = {
                 "role": "assistant",
@@ -427,6 +463,10 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str) -> None:
             strategy.status = "success"
             strategy.status_text = ""
         except Exception as exc:
+            if not _strategy_run_exists(run_id):
+                _restore_thread_workspace_if_no_newer_run(thread_id, run_created_at)
+                stream.close()
+                return
             logger.exception(
                 "agent job failed",
                 extra={"thread_id": thread_id, "run_id": run_id, "model": CHAT_MODEL},
@@ -437,7 +477,15 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str) -> None:
             stream.error(str(exc))
         _apply_langsmith_trace(strategy)
         session.add(strategy)
-        session.commit()
+        try:
+            session.commit()
+        except Exception:
+            session.rollback()
+            if not _strategy_run_exists(run_id):
+                _restore_thread_workspace_if_no_newer_run(thread_id, run_created_at)
+                stream.close()
+                return
+            raise
     finally:
         session.close()
 

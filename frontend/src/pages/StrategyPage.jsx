@@ -814,6 +814,7 @@ export function StrategyPage() {
   const viewingRunIdRef = useRef(null);
   const liveStrategyRunIdRef = useRef('');
   const lastStreamEventSeqByRunIdRef = useRef({});
+  const ignoredStreamRunIdsRef = useRef(new Set());
   const algorithmFetchAbortRef = useRef(null);
   const chartsMountRef = useRef(null);
   const [chartError, setChartError] = useState('');
@@ -914,6 +915,7 @@ export function StrategyPage() {
     setServerJob({ status: null, statusText: '' });
     setSubmitting(false);
     setStreamingAssistantRunId('');
+    ignoredStreamRunIdsRef.current = new Set();
     shouldStickToChatBottomRef.current = true;
   }, [threadId]);
 
@@ -1012,6 +1014,9 @@ export function StrategyPage() {
     const rid = typeof payload?.run_id === 'string' ? payload.run_id.trim() : '';
     const seq = Number(payload?.seq);
     if (!rid || !Number.isFinite(seq) || seq <= 0) {
+      return false;
+    }
+    if (ignoredStreamRunIdsRef.current.has(rid)) {
       return false;
     }
     const prev = Number(lastStreamEventSeqByRunIdRef.current[rid] || 0);
@@ -1504,6 +1509,13 @@ export function StrategyPage() {
     setViewingRunId(null);
     setHistoricalCanvas(null);
     setHistoricalStrategyPythonCode('');
+    const ignoredRunId =
+      serverJobStatusRef.current === 'running'
+        ? String(liveStrategyRunIdRef.current || '').trim()
+        : '';
+    if (ignoredRunId) {
+      ignoredStreamRunIdsRef.current.add(ignoredRunId);
+    }
     setReverting(true);
     setError('');
     try {
@@ -1536,9 +1548,14 @@ export function StrategyPage() {
         status: next.status ?? null,
         statusText: next.status_text || '',
       });
+      setSubmitting(false);
+      setStreamingAssistantRunId('');
       mergeStrategyNameFromPayload(next);
       setRevertRunRequest('');
     } catch (err) {
+      if (ignoredRunId) {
+        ignoredStreamRunIdsRef.current.delete(ignoredRunId);
+      }
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setReverting(false);
@@ -2245,7 +2262,7 @@ export function StrategyPage() {
               onViewRun={handleViewRun}
               onViewStrategy={handleViewStrategy}
               onRevertRun={handleRequestRevertRun}
-              revertDisabled={reverting || showProcessing}
+              revertDisabled={reverting}
               showViewStrategy={isNarrow && !mobileCanvasOpen && hasAnyCanvasData}
             />
           ))}

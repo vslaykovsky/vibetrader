@@ -1,5 +1,5 @@
 import pandas as pd
-from alpaca.data.timeframe import TimeFrame
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 from application.services import backtest_data as utils
 
@@ -101,7 +101,7 @@ def test_fetch_stock_bars_auto_fallback_to_moex(monkeypatch):
     assert out.equals(expected)
 
 
-def test_regular_hourly_bars_align_to_session_open():
+def test_regular_session_hour_bars_align_to_session_open():
     idx = pd.date_range("2024-01-02 14:30", periods=26, freq="15min", tz="UTC")
     df = pd.DataFrame(
         {
@@ -114,9 +114,10 @@ def test_regular_hourly_bars_align_to_session_open():
         index=idx,
     )
 
-    out = utils._regular_hourly_bars_from_intraday(df)
+    hourly = utils._regular_session_hour_bars_from_intraday(df, 1)
+    four_hour = utils._regular_session_hour_bars_from_intraday(df, 4)
 
-    assert [ts.strftime("%H:%M") for ts in out.index] == [
+    assert [ts.strftime("%H:%M") for ts in hourly.index] == [
         "14:30",
         "15:30",
         "16:30",
@@ -125,6 +126,18 @@ def test_regular_hourly_bars_align_to_session_open():
         "19:30",
         "20:30",
     ]
-    assert list(out["volume"]) == [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 2.0]
-    assert out.iloc[-1]["close"] == 25.25
+    assert list(hourly["volume"]) == [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 2.0]
+    assert hourly.iloc[-1]["close"] == 25.25
+    assert [ts.strftime("%H:%M") for ts in four_hour.index] == ["14:30", "18:30"]
+    assert list(four_hour["volume"]) == [16.0, 10.0]
+    assert four_hour.iloc[-1]["open"] == 16.0
+    assert four_hour.iloc[-1]["close"] == 25.25
+
+
+def test_regular_aligned_request_timeframe_uses_minimal_intraday_source():
+    one_hour = utils._regular_aligned_request_timeframe(TimeFrame.Hour)
+    four_hour = utils._regular_aligned_request_timeframe(TimeFrame(4, TimeFrameUnit.Hour))
+
+    assert (one_hour.amount, one_hour.unit) == (30, TimeFrameUnit.Minute)
+    assert (four_hour.amount, four_hour.unit) == (30, TimeFrameUnit.Minute)
 

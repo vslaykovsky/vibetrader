@@ -118,13 +118,13 @@ Strategy workflow
 * First update_strategy task: write English instructions with the full user spec because the coding agent may have no prior context. Resumed Codex thread: send a concise delta plus every new or changed requirement; omitted new details are lost.
 * For update_strategy tasks, ask for direct implementation of the requested behavior. Do not ask the coding agent to add alternatives, fallback behavior, broad catch-and-continue handlers, fabricated data, mocked results, or hidden invariant recovery; 
 * For trainable update_strategy tasks, ask update_strategy to implement support for both exclusive params.json run_mode values, selected at process start: train or test. Do not ask the coding agent to create two active training/testing segments inside one strategy run. Train mode fits and emits trained_model_params, and must not trade. Test mode loads trained_model_params, trades or infers only after loading them, and must not train.
-* After successful update_strategy, refresh outputs. For ordinary strategies, call run_backtest or run_hyperopt. For trainable strategies, run train and test as separate run_backtest calls: first with run_mode="train" and the training date segment, then with run_mode="test" and the test date segment.
+* After successful update_strategy, refresh outputs. For ordinary strategies, call run_backtest. Only call run_hyperopt if the user's current request explicitly asks to optimize, tune, search, or find best strategy parameters. For trainable strategies, run train and test as separate run_backtest calls: first with run_mode="train" and the training date segment, then with run_mode="test" and the test date segment.
 * If the user only changes parameters (ticker, dates, thresholds, deposit, etc.), call run_backtest with parameters_json merged into params.json. Do not edit code, add a --params flag, or make strategy.py parse CLI params.
 * If a backtest has num_trades=0, say no trades were executed. Do not loosen signals unless code contradicts the user's rules or the user asks.
 
 Analysis and optimization
 * For EDA, market research, or charts without a tradable strategy, use update_strategy then run_backtest.
-* For parameter optimization, use run_hyperopt. Use parameters_hyperopt_json for study-only overrides and parameters_json for base simulation inputs.
+* For explicit parameter optimization requests, use run_hyperopt. Use parameters_hyperopt_json for study-only overrides and parameters_json for base simulation inputs. Do not run hyperopt for ordinary strategy creation, strategy edits, parameter changes, EDA, or backtest refreshes.
 * If params.json contains run_mode, treat the strategy as trainable and run separate train and out-of-sample test backtests with run_mode/date overrides rather than one combined run.
 
 Canvas and data
@@ -585,7 +585,8 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             "name": UPDATE_STRATEGY_TOOL_NAME,
             "description": (
                 "Edit this thread's strategy workspace with the coding agent. "
-                "After success, call run_backtest or run_hyperopt to refresh outputs."
+                "After success, call run_backtest to refresh outputs unless the current user request explicitly asks "
+                "to optimize parameters."
             ),
             "parameters": {
                 "type": "object",
@@ -638,8 +639,9 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": RUN_HYPEROPT_TOOL_NAME,
             "description": (
-                "Run hyperparameter optimization with no code edits. Requires params-hyperopt.json, runs simulator trials, "
-                "writes best params to params.json, then performs a final run. parameters_json changes base inputs; "
+                "Run hyperparameter optimization with no code edits only when the current user request explicitly asks "
+                "to optimize, tune, search, or find best strategy parameters. Requires params-hyperopt.json, runs simulator "
+                "trials, writes best params to params.json, then performs a final run. parameters_json changes base inputs; "
                 "parameters_hyperopt_json changes the study definition."
             ),
             "parameters": {
@@ -1863,14 +1865,14 @@ def _strategy_help_for_workspace(workspace: Path) -> str:
         else ""
     )
     if params_path.is_file():
-        return f"""Strategy inputs are read from params.json (overrides: pass parameters_json on run_backtest or run_hyperopt to merge into this file). On run_hyperopt, optional parameters_hyperopt_json merges into params-hyperopt.json (which params are optimised, ranges, regimes, study budget—not ticker/dates from params.json).
+        return f"""Strategy inputs are read from params.json (overrides: pass parameters_json on run_backtest, or on run_hyperopt only when the current user explicitly asks to optimize parameters). On run_hyperopt, optional parameters_hyperopt_json merges into params-hyperopt.json (which params are optimised, ranges, regimes, study budget—not ticker/dates from params.json).
 {strategy_parameters}
 {hyperopt_section}{trained_section}{metrics_section}"""
     return f"""Note: params.json hasn't been created yet. Need to run update_strategy first.
 
 Current params.json (may be empty or missing):
 {strategy_parameters}
-On run_hyperopt, optional parameters_hyperopt_json merges into params-hyperopt.json (study definition: optimised params, ranges, regimes—not params.json backtest inputs).
+On run_hyperopt, only when the current user explicitly asks to optimize parameters, optional parameters_hyperopt_json merges into params-hyperopt.json (study definition: optimised params, ranges, regimes—not params.json backtest inputs).
 {hyperopt_section}{trained_section}{metrics_section}"""
 
 

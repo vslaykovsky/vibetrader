@@ -21,12 +21,15 @@ def test_precache_accepts_moex_provider_with_symbols_inputs(tmp_path, caplog):
             "--symbols",
             "lkoh",
             "gazp",
+            "--session",
+            "extended",
             "--dry-run",
         ]
     )
 
     assert out == 0
     assert "provider=moex" in caplog.text
+    assert "session=extended" in caplog.text
     assert "window=2026-02-28..2026-03-31" in caplog.text
     assert "dry-run symbol=GAZP" in caplog.text
     assert "dry-run symbol=LKOH" in caplog.text

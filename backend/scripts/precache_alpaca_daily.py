@@ -38,6 +38,7 @@ class _Job:
     start: date
     end: date
     asset_class: str
+    session: str
 
 
 def _require_env(name: str) -> str:
@@ -155,6 +156,7 @@ def _precache_one(
         asset_class=job.asset_class,
         drop_wide_spread_bars=False,
         force_refresh=True,
+        session=job.session,
         dividend_adjusted=dividend_adjusted,
     )
     n = 0 if df is None else int(getattr(df, "shape", [0])[0] or 0)
@@ -179,6 +181,12 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--sleep-seconds", type=float, default=0.0, help="Optional per-ticker delay")
     parser.add_argument("--include-otc", action="store_true")
     parser.add_argument("--provider", default="alpaca", choices=["alpaca", "auto", "moex"])
+    parser.add_argument(
+        "--session",
+        default="all",
+        choices=["regular", "extended", "all"],
+        help="Stock session to precache for intraday bars.",
+    )
     parser.add_argument(
         "--asset-class",
         default="us_equity",
@@ -223,6 +231,7 @@ def main(argv: list[str]) -> int:
     scale = str(args.timeframe).strip().lower()
     asset_class = str(args.asset_class).strip().lower() or "us_equity"
     provider = str(args.provider).strip().lower()
+    session = str(args.session).strip().lower()
     if provider == "moex" and asset_class != "us_equity":
         parser.error("--provider moex requires --asset-class us_equity")
     if bool(args.adjust_dividends) and provider == "moex":
@@ -250,7 +259,7 @@ def main(argv: list[str]) -> int:
 
     logger.info(
         "precache plan symbols=%s scale=%s window=%s..%s workers=%s provider=%s "
-        "asset_class=%s dividend_adjusted=%s stock_adjustment=%s force_refresh=%s dry_run=%s",
+        "asset_class=%s session=%s dividend_adjusted=%s stock_adjustment=%s force_refresh=%s dry_run=%s",
         len(symbols),
         scale,
         start_d.isoformat(),
@@ -258,6 +267,7 @@ def main(argv: list[str]) -> int:
         int(args.workers),
         provider,
         asset_class,
+        session,
         bool(args.adjust_dividends),
         utils.alpaca_stock_adjustment(bool(args.adjust_dividends)).value,
         True,
@@ -278,7 +288,8 @@ def main(argv: list[str]) -> int:
         _require_env("MOEX_API_KEY")
 
     jobs = [
-        _Job(symbol=s, scale=scale, start=start_d, end=end_d, asset_class=asset_class) for s in symbols
+        _Job(symbol=s, scale=scale, start=start_d, end=end_d, asset_class=asset_class, session=session)
+        for s in symbols
     ]
     ok = 0
     failed = 0
