@@ -785,6 +785,7 @@ export function StrategyPage() {
   const [messages, setMessages] = useState([]);
   const [canvas, setCanvas] = useState({});
   const [loading, setLoading] = useState(true);
+  const [canvasLoading, setCanvasLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [serverJob, setServerJob] = useState({ status: null, statusText: '' });
   const [streamingAssistantRunId, setStreamingAssistantRunId] = useState('');
@@ -816,6 +817,7 @@ export function StrategyPage() {
   const lastStreamEventSeqByRunIdRef = useRef({});
   const ignoredStreamRunIdsRef = useRef(new Set());
   const algorithmFetchAbortRef = useRef(null);
+  const canvasLoadSeqRef = useRef(0);
   const chartsMountRef = useRef(null);
   const [chartError, setChartError] = useState('');
   const [viewingRunId, setViewingRunId] = useState(null);
@@ -995,6 +997,27 @@ export function StrategyPage() {
     setCanvas((prev) => (canvasPayloadsEqual(prev, normalized) ? prev : normalized));
   }, []);
 
+  const applyLiveCanvasPayload = useCallback(
+    (payload) => {
+      setCanvasIfChanged(payload?.canvas);
+      if (typeof payload?.id === 'string') {
+        setLiveStrategyRunId(payload.id);
+      }
+      if (typeof payload?.algorithm === 'string') {
+        setLiveStrategyAlgorithm(payload.algorithm);
+      }
+      setLiveStrategyPythonCode(typeof payload?.python_code === 'string' ? payload.python_code : '');
+      if (payload?.status != null || payload?.status_text != null) {
+        setServerJob({
+          status: payload.status ?? null,
+          statusText: payload.status_text || '',
+        });
+      }
+      mergeStrategyNameFromPayload(payload);
+    },
+    [mergeStrategyNameFromPayload, setCanvasIfChanged],
+  );
+
   const setMessagesFromStrategyPayload = useCallback((payload) => {
     const rid = typeof payload?.id === 'string' ? payload.id.trim() : '';
     if (rid && payload?.status !== 'running') {
@@ -1009,6 +1032,38 @@ export function StrategyPage() {
       ),
     );
   }, []);
+
+  const fetchLiveCanvas = useCallback(
+    async (signal) => {
+      const tid = String(threadId || '').trim();
+      if (!tid || !signedInUserId) {
+        setCanvasLoading(false);
+        return;
+      }
+      const seq = canvasLoadSeqRef.current + 1;
+      canvasLoadSeqRef.current = seq;
+      setCanvasLoading(true);
+      try {
+        const response = await authFetch(
+          `${API_BASE_URL}/strategy/canvas?thread_id=${encodeURIComponent(tid)}`,
+          signal ? { signal } : undefined,
+        );
+        if (!response.ok) {
+          return;
+        }
+        const payload = await response.json().catch(() => ({}));
+        if (signal?.aborted || viewingRunIdRef.current) {
+          return;
+        }
+        applyLiveCanvasPayload(payload);
+      } finally {
+        if (!signal?.aborted && canvasLoadSeqRef.current === seq) {
+          setCanvasLoading(false);
+        }
+      }
+    },
+    [applyLiveCanvasPayload, authFetch, signedInUserId, threadId],
+  );
 
   const shouldApplyStreamEvent = useCallback((payload) => {
     const rid = typeof payload?.run_id === 'string' ? payload.run_id.trim() : '';
@@ -1108,7 +1163,7 @@ export function StrategyPage() {
     }
     try {
       const response = await authFetch(
-        `${API_BASE_URL}/strategy?thread_id=${encodeURIComponent(tid)}`,
+        `${API_BASE_URL}/strategy?thread_id=${encodeURIComponent(tid)}&include_canvas=0`,
       );
       if (!response.ok) {
         return;
@@ -1118,7 +1173,6 @@ export function StrategyPage() {
         return;
       }
       setMessagesFromStrategyPayload(payload);
-      setCanvasIfChanged(payload.canvas);
       if (typeof payload.id === 'string') {
         setLiveStrategyRunId(payload.id);
       }
@@ -1131,14 +1185,15 @@ export function StrategyPage() {
         statusText: payload.status_text || '',
       });
       mergeStrategyNameFromPayload(payload);
+      void fetchLiveCanvas();
     } catch {
     }
   }, [
     threadId,
     signedInUserId,
     authFetch,
+    fetchLiveCanvas,
     mergeStrategyNameFromPayload,
-    setCanvasIfChanged,
     setMessagesFromStrategyPayload,
   ]);
 
@@ -1194,6 +1249,7 @@ export function StrategyPage() {
         setHistoricalCanvas(null);
         setHistoricalStrategyAlgorithm('');
         setHistoricalStrategyPythonCode('');
+        setCanvasLoading(false);
         appliedHashKeyRef.current = '';
         navigate(
           { pathname: location.pathname, search: location.search, hash: '' },
@@ -1201,9 +1257,16 @@ export function StrategyPage() {
         );
         return;
       }
+      setViewingRunId(runId);
+      setHistoricalCanvas(null);
+      setHistoricalStrategyAlgorithm('');
+      setHistoricalStrategyPythonCode('');
+      const seq = canvasLoadSeqRef.current + 1;
+      canvasLoadSeqRef.current = seq;
+      setCanvasLoading(true);
       try {
         const response = await authFetch(
-          `${API_BASE_URL}/strategy?id=${encodeURIComponent(runId)}`,
+          `${API_BASE_URL}/strategy/canvas?id=${encodeURIComponent(runId)}`,
         );
         if (!response.ok) throw new Error('Failed to load strategy run');
         const payload = await response.json();
@@ -1215,9 +1278,20 @@ export function StrategyPage() {
           typeof payload.python_code === 'string' ? payload.python_code : '',
         );
         mergeStrategyNameFromPayload(payload);
-        setViewingRunId(runId);
       } catch (err) {
+        setViewingRunId(null);
+        setHistoricalCanvas(null);
+        setHistoricalStrategyAlgorithm('');
+        setHistoricalStrategyPythonCode('');
+        navigate(
+          { pathname: location.pathname, search: location.search, hash: '' },
+          { replace: true },
+        );
         setError(err.message);
+      } finally {
+        if (canvasLoadSeqRef.current === seq) {
+          setCanvasLoading(false);
+        }
       }
     },
     [authFetch, navigate, location.pathname, location.search, mergeStrategyNameFromPayload],
@@ -1390,6 +1464,7 @@ export function StrategyPage() {
     setViewingRunId(null);
     setHistoricalCanvas(null);
     setCanvas({});
+    setCanvasLoading(false);
     setChartError('');
     setLiveStrategyRunId('');
     setLiveStrategyAlgorithm('');
@@ -1533,14 +1608,13 @@ export function StrategyPage() {
       }
 
       const refreshed = await authFetch(
-        `${API_BASE_URL}/strategy?thread_id=${encodeURIComponent(threadId)}`,
+        `${API_BASE_URL}/strategy?thread_id=${encodeURIComponent(threadId)}&include_canvas=0`,
       );
       if (!refreshed.ok) {
         throw new Error('Reverted, but failed to reload thread');
       }
       const next = await refreshed.json();
       setMessagesFromStrategyPayload(next);
-      setCanvasIfChanged(next.canvas);
       setLiveStrategyRunId(typeof next.id === 'string' ? next.id : '');
       setLiveStrategyAlgorithm(typeof next.algorithm === 'string' ? next.algorithm : '');
       setLiveStrategyPythonCode(typeof next.python_code === 'string' ? next.python_code : '');
@@ -1551,6 +1625,7 @@ export function StrategyPage() {
       setSubmitting(false);
       setStreamingAssistantRunId('');
       mergeStrategyNameFromPayload(next);
+      void fetchLiveCanvas();
       setRevertRunRequest('');
     } catch (err) {
       if (ignoredRunId) {
@@ -1630,9 +1705,10 @@ export function StrategyPage() {
     async function loadThread() {
       try {
         setLoading(true);
+        setCanvasLoading(false);
         setError('');
         const response = await authFetch(
-          `${API_BASE_URL}/strategy?thread_id=${encodeURIComponent(threadId)}`,
+          `${API_BASE_URL}/strategy?thread_id=${encodeURIComponent(threadId)}&include_canvas=0`,
           { signal: controller.signal },
         );
         if (!response.ok) {
@@ -1644,7 +1720,6 @@ export function StrategyPage() {
         }
         const msgs = payload.messages || [];
         setMessagesFromStrategyPayload(payload);
-        setCanvasIfChanged(payload.canvas);
         setLiveStrategyRunId(typeof payload.id === 'string' ? payload.id : '');
         setLiveStrategyAlgorithm(typeof payload.algorithm === 'string' ? payload.algorithm : '');
         setLiveStrategyPythonCode(typeof payload.python_code === 'string' ? payload.python_code : '');
@@ -1662,6 +1737,8 @@ export function StrategyPage() {
           setTimeout(() => {
             void handleSubmit(draftText);
           }, 0);
+        } else if (msgs.length > 0) {
+          void fetchLiveCanvas(controller.signal);
         }
       } catch (loadError) {
         if (loadError.name !== 'AbortError') {
@@ -1680,7 +1757,7 @@ export function StrategyPage() {
     signedInUserId,
     mergeStrategyNameFromPayload,
     handleSubmit,
-    setCanvasIfChanged,
+    fetchLiveCanvas,
     setMessagesFromStrategyPayload,
   ]);
 
@@ -2119,6 +2196,7 @@ export function StrategyPage() {
     showMetricsPanel ||
     outputDerived.hasRenderableCharts;
   const showSimulationTab = outputDerived.hasRenderableCharts;
+  const showCanvasLoading = canvasLoading;
 
   useEffect(() => {
     if (!showSimulationTab && canvasTab === 'simulation') {
@@ -2137,12 +2215,15 @@ export function StrategyPage() {
   const deployableStrategyHasTrades = outputDerived.hasTrades;
   const deployDisabled =
     loading ||
+    showCanvasLoading ||
     showProcessing ||
     !strategyAvailable ||
     !displayStrategyRunId ||
     !deployableStrategyHasTrades;
   const deployTitle = loading
     ? 'Strategy is loading'
+    : showCanvasLoading
+      ? 'Strategy canvas is loading'
     : showProcessing
       ? 'Wait for the strategy run to finish'
       : !strategyAvailable
@@ -2453,6 +2534,17 @@ export function StrategyPage() {
         ) : null}
         {canvasTab === 'strategy' || !showSimulationTab ? (
         <>
+        {showCanvasLoading ? (
+          <div
+            className="chat-spinner-row canvas-loading-row"
+            role="status"
+            aria-live="polite"
+            aria-label="Loading strategy canvas"
+          >
+            <span className="chat-spinner" aria-hidden />
+            <span className="chat-processing-label">Loading strategy canvas…</span>
+          </div>
+        ) : null}
         {showCliDescription ? (
           <article className="canvas-text-block" aria-label="Strategy description">
             <h3 className="canvas-text-block-title">Description</h3>
@@ -2460,7 +2552,7 @@ export function StrategyPage() {
           </article>
         ) : null}
         {chartError ? <p className="canvas-chart-error">{chartError}</p> : null}
-        {!outputDerived.hasRenderableCharts && !chartError ? (
+        {!showCanvasLoading && !outputDerived.hasRenderableCharts && !chartError ? (
           <p className="canvas-charts-placeholder muted">
             No charts yet. Send a message to refresh the strategy run.
           </p>

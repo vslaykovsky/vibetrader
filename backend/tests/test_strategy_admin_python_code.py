@@ -156,3 +156,74 @@ def test_strategy_thread_response_enriches_all_agent_messages_for_admin():
             os.environ["SUPABASE_JWT_SECRET"] = prev
         else:
             os.environ.pop("SUPABASE_JWT_SECRET", None)
+
+
+def test_strategy_lightweight_response_splits_canvas_payload_for_admin():
+    prev = os.environ.get("SUPABASE_JWT_SECRET")
+    os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
+    thread_id = str(uuid.uuid4())
+    code = "def run_strategy():\n    return {'ok': True}\n"
+    canvas = {"output": {"backtest.json": {"strategy_name": "Split Load"}}}
+    session = SessionLocal()
+    try:
+        strategy = Strategy(
+            thread_id=thread_id,
+            messages=[{"role": "user", "content": "hello"}],
+            canvas=canvas,
+            code=code,
+            status="success",
+            status_text="",
+            strategy_name="Split Load",
+        )
+        session.add(strategy)
+        session.commit()
+        run_id = strategy.id
+    finally:
+        session.close()
+
+    app = create_app()
+    try:
+        client = app.test_client()
+        headers = _auth_headers("vslaykovsky@gmail.com")
+
+        lightweight_res = client.get(
+            f"/strategy?thread_id={thread_id}&include_canvas=0",
+            headers=headers,
+        )
+        assert lightweight_res.status_code == 200
+        lightweight_body = lightweight_res.get_json()
+        assert lightweight_body == {
+            "id": run_id,
+            "thread_id": thread_id,
+            "messages": [{"role": "user", "content": "hello"}],
+            "status": "success",
+            "status_text": "",
+            "langsmith_trace": "",
+            "strategy_name": "Split Load",
+            "language": "",
+            "created_at": lightweight_body["created_at"],
+        }
+
+        canvas_res = client.get(
+            f"/strategy/canvas?thread_id={thread_id}",
+            headers=headers,
+        )
+        assert canvas_res.status_code == 200
+        canvas_body = canvas_res.get_json()
+        assert canvas_body == {
+            "id": run_id,
+            "thread_id": thread_id,
+            "canvas": canvas,
+            "status": "success",
+            "status_text": "",
+            "strategy_name": "Split Load",
+            "algorithm": "",
+            "created_at": canvas_body["created_at"],
+            "python_code": code,
+            "codex_thread_id": "",
+        }
+    finally:
+        if prev is not None:
+            os.environ["SUPABASE_JWT_SECRET"] = prev
+        else:
+            os.environ.pop("SUPABASE_JWT_SECRET", None)

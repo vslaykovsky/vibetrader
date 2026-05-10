@@ -8,6 +8,7 @@ from flask import Blueprint, Response, current_app, g, jsonify, request, stream_
 import logging
 from pathlib import Path
 from sqlalchemy import desc, text
+from sqlalchemy.orm import defer
 from auth import require_auth
 from db.models import Strategy
 from db.session import SessionLocal
@@ -176,12 +177,11 @@ def _latest_threads_sql(where_clause: str = "", limit_clause: str = "") -> str:
     return f"""
 SELECT id, thread_id, created_at, messages_count, status, status_text, strategy_name, created_by, created_by_email
 FROM (
-    SELECT
-        id, thread_id, created_at, messages_count, status, status_text, strategy_name, created_by, created_by_email,
-        ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY created_at DESC, id DESC) AS rn
+    SELECT DISTINCT ON (thread_id)
+        id, thread_id, created_at, messages_count, status, status_text, strategy_name, created_by, created_by_email
     FROM strategy{where}
+    ORDER BY thread_id, created_at DESC, id DESC
 ) latest
-WHERE rn = 1
 ORDER BY created_at DESC, id DESC{limit}
 """
 
@@ -190,9 +190,11 @@ def serialize_strategy(
     strategy: Strategy,
     *,
     langsmith_traces: dict[str, str] | None = None,
+    include_canvas: bool = True,
+    include_algorithm: bool = True,
+    include_python_code: bool = True,
 ) -> dict:
     is_admin = bool(g.is_admin)
-    canvas = redact_secret_json_values_for_user(dict(strategy.canvas or {}))
     messages = redact_secret_json_values_for_user(list(strategy.messages or []))
     if is_admin:
         messages = _messages_with_admin_extras(messages, strategy, langsmith_traces)
@@ -202,19 +204,54 @@ def serialize_strategy(
         "id": strategy.id,
         "thread_id": strategy.thread_id,
         "messages": messages,
-        "canvas": canvas,
         "status": strategy.status,
         "status_text": strategy.status_text or "",
         "langsmith_trace": (strategy.langsmith_trace or "") if is_admin else "",
         "strategy_name": strategy.strategy_name or "",
-        "algorithm": strategy.algorithm or "",
         "language": strategy.language or "",
+        "created_at": strategy.created_at.isoformat() if strategy.created_at else None,
+    }
+    if include_canvas:
+        payload["canvas"] = redact_secret_json_values_for_user(dict(strategy.canvas or {}))
+    if include_algorithm:
+        payload["algorithm"] = strategy.algorithm or ""
+    if is_admin and include_python_code:
+        payload["python_code"] = strategy.code or ""
+        payload["codex_thread_id"] = strategy.codex_thread_id or ""
+    return payload
+
+
+def serialize_strategy_canvas(strategy: Strategy) -> dict:
+    is_admin = bool(g.is_admin)
+    payload = {
+        "id": strategy.id,
+        "thread_id": strategy.thread_id,
+        "canvas": redact_secret_json_values_for_user(dict(strategy.canvas or {})),
+        "status": strategy.status,
+        "status_text": strategy.status_text or "",
+        "strategy_name": strategy.strategy_name or "",
+        "algorithm": strategy.algorithm or "",
         "created_at": strategy.created_at.isoformat() if strategy.created_at else None,
     }
     if is_admin:
         payload["python_code"] = strategy.code or ""
         payload["codex_thread_id"] = strategy.codex_thread_id or ""
     return payload
+
+
+def _include_strategy_heavy_fields() -> bool:
+    raw = request.args.get("include_canvas", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _latest_thread_strategy_lightweight(session, thread_id: str) -> Strategy | None:
+    return (
+        session.query(Strategy)
+        .options(defer(Strategy.canvas), defer(Strategy.code), defer(Strategy.algorithm))
+        .filter_by(thread_id=thread_id)
+        .order_by(desc(Strategy.created_at))
+        .first()
+    )
 
 
 @strategy_blueprint.get("/threads")
@@ -532,11 +569,20 @@ def patch_strategy() -> tuple:
 @require_auth
 def get_strategy() -> tuple:
     uid = g.user_id
+    include_heavy_fields = _include_strategy_heavy_fields()
     run_id = request.args.get("id", "").strip()
     if run_id:
         session = SessionLocal()
         try:
-            strategy = get_strategy_by_id(session, run_id)
+            if include_heavy_fields:
+                strategy = get_strategy_by_id(session, run_id)
+            else:
+                strategy = (
+                    session.query(Strategy)
+                    .options(defer(Strategy.canvas), defer(Strategy.code), defer(Strategy.algorithm))
+                    .filter(Strategy.id == run_id)
+                    .first()
+                )
             if strategy is None:
                 return _validation_error("strategy not found")
             _stamp_langsmith_thread_metadata(strategy.thread_id)
@@ -545,7 +591,91 @@ def get_strategy() -> tuple:
                 if bool(g.is_admin)
                 else None
             )
-            return jsonify(serialize_strategy(strategy, langsmith_traces=traces)), 200
+            return (
+                jsonify(
+                    serialize_strategy(
+                        strategy,
+                        langsmith_traces=traces,
+                        include_canvas=include_heavy_fields,
+                        include_algorithm=include_heavy_fields,
+                        include_python_code=include_heavy_fields,
+                    )
+                ),
+                200,
+            )
+        finally:
+            session.close()
+
+    thread_id = request.args.get("thread_id", "").strip()
+    if not thread_id:
+        return _validation_error("thread_id or id query parameter is required")
+    if not thread_id_allowed(thread_id):
+        return _validation_error("invalid thread_id")
+    _stamp_langsmith_thread_metadata(thread_id)
+
+    session = SessionLocal()
+    try:
+        workspace = Path(STRATEGIES_DIR) / thread_id
+        needs_restore = not workspace.is_dir()
+        created_strategy = False
+        if include_heavy_fields:
+            strategy = ensure_latest_thread_strategy(
+                session,
+                thread_id,
+                uid,
+                getattr(g, "user_email", None),
+            )
+        else:
+            strategy = _latest_thread_strategy_lightweight(session, thread_id)
+            if strategy is None:
+                created_strategy = True
+                strategy = Strategy(
+                    thread_id=thread_id,
+                    created_by=uid,
+                    created_by_email=getattr(g, "user_email", None),
+                    messages=[],
+                    canvas={},
+                )
+                session.add(strategy)
+                session.flush()
+        if include_heavy_fields or created_strategy:
+            session.commit()
+        if include_heavy_fields and needs_restore:
+            restore_strategy_workspace_from_snapshot(
+                thread_id,
+                code=getattr(strategy, "code", "") or "",
+                canvas=dict(getattr(strategy, "canvas", {}) or {}),
+            )
+        traces = _thread_langsmith_traces(session, thread_id) if bool(g.is_admin) else None
+        return (
+            jsonify(
+                serialize_strategy(
+                    strategy,
+                    langsmith_traces=traces,
+                    include_canvas=include_heavy_fields,
+                    include_algorithm=include_heavy_fields,
+                    include_python_code=include_heavy_fields,
+                )
+            ),
+            200,
+        )
+    finally:
+        session.close()
+
+
+@strategy_blueprint.get("/strategy/canvas")
+@require_auth
+def get_strategy_canvas() -> tuple:
+    uid = g.user_id
+    run_id = request.args.get("id", "").strip()
+    if run_id:
+        session = SessionLocal()
+        try:
+            strategy = get_strategy_by_id(session, run_id)
+            if strategy is None:
+                return _validation_error("strategy not found")
+            _stamp_langsmith_thread_metadata(strategy.thread_id)
+            return jsonify(serialize_strategy_canvas(strategy)), 200
         finally:
             session.close()
 
@@ -573,8 +703,7 @@ def get_strategy() -> tuple:
                 code=getattr(strategy, "code", "") or "",
                 canvas=dict(getattr(strategy, "canvas", {}) or {}),
             )
-        traces = _thread_langsmith_traces(session, thread_id) if bool(g.is_admin) else None
-        return jsonify(serialize_strategy(strategy, langsmith_traces=traces)), 200
+        return jsonify(serialize_strategy_canvas(strategy)), 200
     finally:
         session.close()
 

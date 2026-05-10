@@ -19,6 +19,7 @@ from db.strategy_queries import resolve_strategy_row_for_live
 from services.agent import thread_id_allowed
 from services.supabase_trading_settings import (
     fetch_alpaca_account_for_user,
+    fetch_alpaca_accounts_for_user,
     service_role_configured,
 )
 
@@ -405,28 +406,31 @@ def live_runs() -> tuple:
             for x in (str(getattr(row, "deployed_from_run_id", "") or "").strip() for row in rows)
             if x
         ]
-        strat_by_id: dict[str, Strategy] = {}
+        strat_by_id: dict[str, tuple[str, datetime | None]] = {}
         if strat_ids:
-            for s in session.query(Strategy).filter(Strategy.id.in_(strat_ids)).all():
-                strat_by_id[s.id] = s
+            for row in (
+                session.query(Strategy.id, Strategy.strategy_name, Strategy.created_at)
+                .filter(Strategy.id.in_(strat_ids))
+                .all()
+            ):
+                strat_by_id[row.id] = (row.strategy_name, row.created_at)
 
-        aid_seen: set[str] = set()
-        label_by_aid: dict[str, str] = {}
-        for row in rows:
-            aid = str(getattr(row, "alpaca_account_id", "") or "").strip()
-            if not aid or aid in aid_seen:
-                continue
-            aid_seen.add(aid)
-            acc_row = fetch_alpaca_account_for_user(uid, aid)
-            if acc_row:
-                lab = str(acc_row.get("label") or "").strip()
-                label_by_aid[aid] = lab
+        unique_aids = list({
+            str(getattr(row, "alpaca_account_id", "") or "").strip()
+            for row in rows
+            if str(getattr(row, "alpaca_account_id", "") or "").strip()
+        })
+        accounts_by_id = fetch_alpaca_accounts_for_user(uid, unique_aids)
+        label_by_aid: dict[str, str] = {
+            aid: str(acc.get("label") or "").strip()
+            for aid, acc in accounts_by_id.items()
+        }
 
         def _serialize_live_run(r: LiveRun) -> dict[str, Any]:
             sid = str(getattr(r, "deployed_from_run_id", "") or "").strip()
             strat = strat_by_id.get(sid) if sid else None
-            name = (strat.strategy_name or "").strip() if strat else ""
-            bt_at = _utc_isoformat(strat.created_at) if strat else None
+            name = (strat[0] or "").strip() if strat else ""
+            bt_at = _utc_isoformat(strat[1]) if strat else None
             aid = str(getattr(r, "alpaca_account_id", "") or "").strip()
             acct_label = label_by_aid.get(aid, "") if aid else ""
             return {

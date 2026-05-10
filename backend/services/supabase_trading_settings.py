@@ -197,6 +197,32 @@ def fetch_alpaca_account_for_user(
     return row if isinstance(row, dict) else None
 
 
+def fetch_alpaca_accounts_for_user(
+    user_id: str,
+    account_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    uid = (user_id or "").strip()
+    aids = [a.strip() for a in account_ids if (a or "").strip()]
+    if not uid or not aids or not service_role_configured():
+        return {}
+    ids_csv = ",".join(urllib.parse.quote(a, safe="") for a in aids)
+    r = _get(
+        "alpaca_accounts",
+        {
+            "id": f"in.({ids_csv})",
+            "user_id": f"eq.{urllib.parse.quote(uid, safe='')}",
+            "select": _account_select(include_credentials=False),
+        },
+    )
+    if r.status_code != 200:
+        logger.warning("supabase alpaca_accounts bulk fetch status=%s", r.status_code)
+        return {}
+    rows = r.json()
+    if not isinstance(rows, list):
+        return {}
+    return {row["id"]: row for row in rows if isinstance(row, dict) and "id" in row}
+
+
 def fetch_trading_settings_payload(user_id: str) -> dict[str, Any] | None:
     uid = (user_id or "").strip()
     if not uid or not service_role_configured():

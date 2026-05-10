@@ -2758,6 +2758,11 @@ html[data-theme='dark'] .canvas-header-action.is-active {
   margin: 0 0 16px;
 }
 
+.canvas-loading-row {
+  margin: 0 0 16px;
+  padding: 12px 0;
+}
+
 .canvas-chart-error {
   margin: 0 0 12px;
   color: #be123c;
