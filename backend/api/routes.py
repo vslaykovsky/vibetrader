@@ -32,6 +32,7 @@ from services.agent import (
 )
 from services.strategy_stream_events import StrategyStreamPublisher, StrategyStreamSubscriber
 from services.conversation_language import detect_conversation_language_iso
+from services.supabase_trading_settings import fetch_user_timezone
 from langsmith import traceable
 from langsmith.run_helpers import get_current_run_tree
 
@@ -472,7 +473,7 @@ def _restore_thread_workspace_if_no_newer_run(
 
 
 @traceable(name="post_strategy", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
-def _execute_strategy_agent_job(run_id: str, thread_id: str) -> None:
+def _execute_strategy_agent_job(run_id: str, thread_id: str, user_timezone: str = "") -> None:
     stream = StrategyStreamPublisher(run_id)
     stream.status("Starting…")
 
@@ -509,6 +510,7 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str) -> None:
                 on_progress=persist_status_text,
                 on_token=stream.assistant_delta if stream.enabled else None,
                 codex_thread_id=str(strategy.codex_thread_id or ""),
+                user_timezone=user_timezone,
             )
             if not _strategy_run_exists(run_id):
                 _restore_thread_workspace_if_no_newer_run(thread_id, run_created_at)
@@ -566,12 +568,13 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str) -> None:
         session.close()
 
 
-def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str) -> None:
+def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str, user_timezone: str = "") -> None:
     with app_obj.app_context():
         _execute_strategy_agent_job(
             run_id,
             thread_id,
             langsmith_extra={"metadata": {"thread_id": thread_id}},
+            user_timezone=user_timezone,
         )
 
 
@@ -813,9 +816,10 @@ def post_strategy() -> tuple:
 
         run_id = new_strategy.id
         app_obj = current_app._get_current_object()
+        user_tz = fetch_user_timezone(str(uid or ""))
         threading.Thread(
             target=_run_strategy_agent_job,
-            args=(app_obj, run_id, thread_id),
+            args=(app_obj, run_id, thread_id, user_tz),
             daemon=True,
         ).start()
 

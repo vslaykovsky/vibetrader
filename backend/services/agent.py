@@ -2050,6 +2050,7 @@ def build_agent_reply(
     on_progress: ProgressCallback = None,
     on_token: TokenCallback = None,
     codex_thread_id: str | None = None,
+    user_timezone: str = "",
 ) -> dict[str, Any]:
     t0 = time.perf_counter()
 
@@ -2070,8 +2071,13 @@ def build_agent_reply(
 
     workspace = strategy_root_for_thread(thread_id)
     strategy_help = _strategy_help_for_workspace(workspace)
+    tz_hint = (
+        f"\n* The user's local timezone is {user_timezone}. When the user mentions a clock time (e.g. '9:30am'), interpret it in this timezone and convert to UTC for strategy code unless the user explicitly specifies a different timezone. Strategy unixtime values are UTC-based POSIX seconds."
+        if user_timezone
+        else ""
+    )
     chat_messages: list[BaseMessage] = [
-        SystemMessage(content=SYSTEM_PROMPT.format(strategy_help=strategy_help)),
+        SystemMessage(content=SYSTEM_PROMPT.format(strategy_help=strategy_help) + tz_hint),
         *_stored_messages_to_lc(messages),
     ]
 
@@ -2093,7 +2099,7 @@ def build_agent_reply(
 
     for _ in range(max_iterations):
         chat_messages[0] = SystemMessage(
-            content=SYSTEM_PROMPT.format(strategy_help=_strategy_help_for_workspace(workspace))
+            content=SYSTEM_PROMPT.format(strategy_help=_strategy_help_for_workspace(workspace)) + tz_hint
         )
         if on_progress:
             on_progress("Thinking…")

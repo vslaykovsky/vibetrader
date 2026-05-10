@@ -277,6 +277,25 @@ def fetch_trading_settings_payload(user_id: str) -> dict[str, Any] | None:
     return {"profile": prof, "alpaca_accounts": accounts}
 
 
+def fetch_user_timezone(user_id: str) -> str:
+    uid = (user_id or "").strip()
+    if not uid or not service_role_configured():
+        return ""
+    r = _get(
+        "profiles",
+        {
+            "id": f"eq.{urllib.parse.quote(uid, safe='')}",
+            "select": "timezone",
+        },
+    )
+    if r.status_code != 200:
+        return ""
+    rows = r.json()
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+        return ""
+    return normalize_timezone(str(rows[0].get("timezone") or ""))
+
+
 def fetch_adjust_for_dividends(user_id: str) -> bool:
     uid = (user_id or "").strip()
     if not uid or not service_role_configured():
