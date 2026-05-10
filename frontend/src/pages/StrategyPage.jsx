@@ -11,6 +11,7 @@ import { renderCharts } from '../strategyChartRenderer.js';
 import { useAuth } from '../AuthContext';
 import { useTheme } from '../ThemeContext';
 import { useTimeZone } from '../TimeZoneContext.jsx';
+import { t, currentLang } from '../lib/i18n.js';
 import { dateKeyFromIso as zonedDateKeyFromIso, parseIsoInstant, todayDateKey } from '../lib/dateTime.js';
 import { ProfileMenu } from '../ProfileMenu';
 import { ConfirmDialog } from '../components/ConfirmDialog.jsx';
@@ -344,7 +345,7 @@ function CanvasPanelCopyButton({ text, ariaLabel, disabled }) {
       type="button"
       className={`canvas-panel-copy-btn${copied ? ' is-copied' : ''}`}
       aria-label={ariaLabel}
-      title={copied ? 'Copied' : 'Copy to clipboard'}
+      title={copied ? t('page.copied') : t('page.copy_to_clipboard')}
       disabled={isDisabled}
       onClick={handleCopy}
     >
@@ -989,6 +990,7 @@ export function StrategyPage() {
     const token = await getAccessToken();
     const headers = { ...options.headers };
     if (token) headers['Authorization'] = `Bearer ${token}`;
+    headers['Accept-Language'] = currentLang;
     return fetch(url, { ...options, headers });
   }, [getAccessToken]);
 
@@ -1126,7 +1128,7 @@ export function StrategyPage() {
           setDeployTradingConfigured(false);
           setDeployAccounts([]);
           setDeploySelectedAccountId('');
-          setDeployModalError(payload.error || `Could not load accounts (${res.status})`);
+          setDeployModalError(payload.error || `${t('page.could_not_load_accounts')} (${res.status})`);
           setDeployModalPhase('ready');
           return;
         }
@@ -2155,7 +2157,7 @@ export function StrategyPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(typeof data.error === 'string' ? data.error : 'Failed to save name');
+        setError(typeof data.error === 'string' ? data.error : t('page.failed_to_save_name'));
         return;
       }
       mergeStrategyNameFromPayload(data);
@@ -2221,16 +2223,16 @@ export function StrategyPage() {
     !displayStrategyRunId ||
     !deployableStrategyHasTrades;
   const deployTitle = loading
-    ? 'Strategy is loading'
+    ? t('page.strategy_loading')
     : showCanvasLoading
-      ? 'Strategy canvas is loading'
+      ? t('page.strategy_canvas_loading')
     : showProcessing
-      ? 'Wait for the strategy run to finish'
+      ? t('page.wait_for_run')
       : !strategyAvailable
-        ? 'Strategy not available yet'
+        ? t('page.strategy_not_available')
         : !deployableStrategyHasTrades
-          ? 'Live deployment requires a strategy run with at least one trade'
-          : 'Deploy live';
+          ? t('page.live_deployment_requires_trade')
+          : t('page.deploy_live');
 
   const handleRequestRevertRun = useCallback((runId) => {
     setRevertRunRequest(String(runId || '').trim());
@@ -2386,7 +2388,7 @@ export function StrategyPage() {
                 );
               }}
             >
-              Back to current
+              {t('page.back_to_current')}
             </button>
           ) : null}
           <div className="canvas-hero-main">
@@ -2411,7 +2413,7 @@ export function StrategyPage() {
                 }}
                 disabled={savingCanvasTitle}
                 maxLength={512}
-                aria-label="Strategy name"
+                aria-label={t('page.strategy_name_input_aria')}
               />
             ) : (
               <h2 className="canvas-hero-title">{strategyName || 'Strategy'}</h2>
@@ -2421,8 +2423,8 @@ export function StrategyPage() {
                 type="button"
                 className="button-canvas-edit-title"
                 onClick={startEditCanvasTitle}
-                aria-label="Edit strategy name"
-                title="Edit name"
+                aria-label={t('page.edit_strategy_name')}
+                title={t('page.edit_name_title')}
               >
                 <svg viewBox="0 0 24 24" fill="none" aria-hidden>
                   <path
@@ -2448,11 +2450,11 @@ export function StrategyPage() {
                 onClick={() => setCanvasTab('strategy')}
                 aria-pressed={canvasTab === 'strategy' || !showSimulationTab}
               >
-                Backtest
+                {t('page.backtest_tab')}
               </button>
               <span
                 className="canvas-header-action-wrap"
-                title={showSimulationTab ? 'Simulation' : 'Run a backtest first'}
+                title={showSimulationTab ? t('page.simulation_tab') : t('page.run_backtest_first')}
               >
                 <button
                   type="button"
@@ -2464,9 +2466,9 @@ export function StrategyPage() {
                   }}
                   disabled={!showSimulationTab}
                   aria-pressed={canvasTab === 'simulation' && showSimulationTab}
-                  title={showSimulationTab ? 'Simulation' : 'Run a backtest first'}
+                  title={showSimulationTab ? t('page.simulation_tab') : t('page.run_backtest_first')}
                 >
-                  Simulation
+                  {t('page.simulation_tab')}
                 </button>
               </span>
               <span className="canvas-header-action-wrap" title={deployTitle}>
@@ -2478,7 +2480,7 @@ export function StrategyPage() {
                     if (deployDisabled) return;
                     setDeployModalOpen(true);
                   }}
-                  aria-label="Deploy live"
+                  aria-label={t('page.deploy_live')}
                   aria-disabled={deployDisabled}
                   title={deployTitle}
                 >
@@ -2490,8 +2492,8 @@ export function StrategyPage() {
                 className="canvas-header-action canvas-header-action-icon canvas-header-action-danger"
                 onClick={() => setDeleteThreadDialogOpen(true)}
                 disabled={deletingThread || showProcessing || Boolean(viewingRunId)}
-                aria-label="Delete strategy"
-                title={viewingRunId ? 'Return to current thread to delete' : 'Delete strategy'}
+                aria-label={t('page.delete_strategy')}
+                title={viewingRunId ? t('page.return_to_current_to_delete') : t('page.delete_strategy')}
               >
                 <svg viewBox="0 0 24 24" fill="none" aria-hidden>
                   <path
@@ -2539,45 +2541,45 @@ export function StrategyPage() {
             className="chat-spinner-row canvas-loading-row"
             role="status"
             aria-live="polite"
-            aria-label="Loading strategy canvas"
+            aria-label={t('page.loading_canvas_aria')}
           >
             <span className="chat-spinner" aria-hidden />
-            <span className="chat-processing-label">Loading strategy canvas…</span>
+            <span className="chat-processing-label">{t('page.loading_canvas')}</span>
           </div>
         ) : null}
         {showCliDescription ? (
           <article className="canvas-text-block" aria-label="Strategy description">
-            <h3 className="canvas-text-block-title">Description</h3>
+            <h3 className="canvas-text-block-title">{t('page.description')}</h3>
             <div className="canvas-text-block-body">{cliDescriptionText}</div>
           </article>
         ) : null}
         {chartError ? <p className="canvas-chart-error">{chartError}</p> : null}
         {!showCanvasLoading && !outputDerived.hasRenderableCharts && !chartError ? (
           <p className="canvas-charts-placeholder muted">
-            No charts yet. Send a message to refresh the strategy run.
+            {t('page.no_charts')}
           </p>
         ) : null}
         <div
           ref={chartsMountRef}
           className="canvas-charts-mount canvas-charts-mount-inline"
-          aria-label="Strategy backtest charts"
+          aria-label={t('page.charts_aria')}
         />
         {showParamsPanel ? (
           <details className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details">
-            <summary className="canvas-pseudocode-summary">Strategy parameters</summary>
+            <summary className="canvas-pseudocode-summary">{t('page.strategy_params')}</summary>
             <CanvasPanelCopyButton
               text={paramsJsonText}
-              ariaLabel="Copy strategy parameters JSON"
+              ariaLabel={t('page.copy_params')}
             />
             <pre className="canvas-pseudocode">{paramsJsonText}</pre>
           </details>
         ) : null}
         {showHyperoptParamsPanel ? (
           <details className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details">
-            <summary className="canvas-pseudocode-summary">Hyperopt parameters</summary>
+            <summary className="canvas-pseudocode-summary">{t('page.hyperopt_params')}</summary>
             <CanvasPanelCopyButton
               text={paramsHyperoptJsonText}
-              ariaLabel="Copy hyperopt parameters JSON"
+              ariaLabel={t('page.copy_hyperopt')}
             />
             <pre className="canvas-pseudocode">{paramsHyperoptJsonText}</pre>
           </details>
@@ -2594,16 +2596,16 @@ export function StrategyPage() {
               }
             }}
           >
-            <summary className="canvas-pseudocode-summary">Strategy Algorithm</summary>
+            <summary className="canvas-pseudocode-summary">{t('page.strategy_algorithm')}</summary>
             <CanvasPanelCopyButton
               text={String(displayAlgorithmText || '').trim()}
-              ariaLabel="Copy strategy algorithm overview"
+              ariaLabel={t('page.copy_algorithm')}
               disabled={algorithmLoading}
             />
             {algorithmLoading ? (
               <div className="chat-spinner-row canvas-algorithm-spinner" role="status" aria-live="polite">
                 <span className="chat-spinner" aria-hidden />
-                <span className="chat-processing-label">Generating overview…</span>
+                <span className="chat-processing-label">{t('page.generating_overview')}</span>
               </div>
             ) : (
               <div className="canvas-algorithm-markdown message-markdown">
@@ -2619,10 +2621,10 @@ export function StrategyPage() {
             key={`source:${displayStrategyRunId}`}
             className="canvas-text-block canvas-text-block-pseudocode canvas-pseudocode-details"
           >
-            <summary className="canvas-pseudocode-summary">Python Source Code</summary>
+            <summary className="canvas-pseudocode-summary">{t('page.python_source')}</summary>
             <CanvasPanelCopyButton
               text={displayPythonCodeText}
-              ariaLabel="Copy Python source code"
+              ariaLabel={t('page.copy_source')}
             />
             <PythonSourceCode code={displayPythonCodeText} />
           </details>
@@ -2738,7 +2740,7 @@ export function StrategyPage() {
     />
     {deployModalOpen
       ? createPortal(
-          <div className="deploy-live-modal" role="dialog" aria-modal="true" aria-label="Deploy to Alpaca">
+          <div className="deploy-live-modal" role="dialog" aria-modal="true" aria-label={t('page.deploy_to_alpaca')}>
             <button
               type="button"
               className="deploy-live-modal-scrim"
@@ -2752,7 +2754,7 @@ export function StrategyPage() {
             />
             <div className="deploy-live-modal-panel">
               <div className="deploy-live-modal-head">
-                <h2 className="deploy-live-modal-title">Deploy to Alpaca</h2>
+                <h2 className="deploy-live-modal-title">{t('page.deploy_to_alpaca')}</h2>
                 <button
                   type="button"
                   className="deploy-live-modal-close"
@@ -2766,18 +2768,18 @@ export function StrategyPage() {
                   ×
                 </button>
               </div>
-              {deployModalPhase === 'loading' ? <p className="deploy-live-modal-muted">Loading accounts…</p> : null}
+              {deployModalPhase === 'loading' ? <p className="deploy-live-modal-muted">{t('page.loading_accounts')}</p> : null}
               {deployModalPhase === 'ready' && deployModalError ? (
                 <p className="deploy-live-modal-error">{deployModalError}</p>
               ) : null}
               {deployModalPhase === 'ready' && deployTradingConfigured && deployAccounts.length === 0 ? (
                 <p className="deploy-live-modal-muted">
-                  No Alpaca accounts yet. Add at least one in Settings, then open this dialog again.
+                  {t('page.no_alpaca_accounts')}
                 </p>
               ) : null}
               {deployModalPhase === 'ready' && deployTradingConfigured && deployAccounts.length > 0 && !deploySelectedAccountReady ? (
                 <p className="deploy-live-modal-muted">
-                  Select an Alpaca account with a saved API key and secret.
+                  {t('page.select_alpaca_account')}
                 </p>
               ) : null}
               {deployModalPhase === 'ready' && deployTradingConfigured && deployAccounts.length > 0 ? (
@@ -2803,7 +2805,7 @@ export function StrategyPage() {
                           <span className="deploy-live-modal-muted">
                             {' '}
                             · {mode}
-                            {!accountReady ? ' · missing credentials' : ''}
+                            {!accountReady ? t('page.missing_credentials') : ''}
                           </span>
                         </span>
                       </label>
@@ -2813,13 +2815,12 @@ export function StrategyPage() {
               ) : null}
               {deployModalPhase === 'ready' && !deployTradingConfigured ? (
                 <p className="deploy-live-modal-muted">
-                  Trading settings are not available on the server. Deploy will use paper mode and server default
-                  Alpaca environment variables.
+                  {t('page.trading_not_configured')}
                 </p>
               ) : null}
               <div className="deploy-live-modal-actions">
                 <button type="button" className="dashboard-btn-ghost" onClick={openTradingSettingsWindow}>
-                  Settings
+                  {t('page.settings')}
                 </button>               
                 <button
                   type="button"
@@ -2837,21 +2838,21 @@ export function StrategyPage() {
                     const tid = String(threadId || '').trim();
                     const rid = String(displayStrategyRunId || '').trim();
                     if (!tid || !rid) {
-                      setDeployModalError('Missing thread_id or strategy run id');
+                      setDeployModalError(t('page.missing_thread_run_id'));
                       return;
                     }
                     if (deployTradingConfigured) {
                       if (!deployAccounts.length) {
-                        setDeployModalError('Add an Alpaca account in Settings first.');
+                        setDeployModalError(t('page.add_alpaca_in_settings'));
                         return;
                       }
                       const sid = String(deploySelectedAccountId || '').trim();
                       if (!sid) {
-                        setDeployModalError('Select an Alpaca account.');
+                        setDeployModalError(t('page.select_alpaca_account_generic'));
                         return;
                       }
                       if (!deploySelectedAccountReady) {
-                        setDeployModalError('Select an Alpaca account with saved API credentials.');
+                        setDeployModalError(t('page.select_alpaca_with_credentials'));
                         return;
                       }
                     }
@@ -2875,7 +2876,7 @@ export function StrategyPage() {
                       });
                       const payload = await res.json().catch(() => ({}));
                       if (!res.ok) {
-                        throw new Error(payload.error || `Deploy failed (${res.status})`);
+                        throw new Error(payload.error || `${t('page.deploy_failed')} (${res.status})`);
                       }
                       const liveRunId = String(payload.run_id || '').trim();
                       setDeployModalOpen(false);
@@ -2890,7 +2891,7 @@ export function StrategyPage() {
                     }
                   }}
                 >
-                  Deploy
+                  {t('page.deploy_btn')}
                 </button>
               </div>
             </div>

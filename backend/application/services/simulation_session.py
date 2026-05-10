@@ -22,10 +22,12 @@ class SimulationSession:
         thread_id: str,
         initial_speed_bps: float = 1.0,
         pending_cmd: Any = None,
+        lang: str = "en",
     ) -> None:
         self.user_id = user_id
         self.thread_id = thread_id
         self.pending_cmd = pending_cmd
+        self.lang: str = lang
         self.events: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self._stop = threading.Event()
         self.pause = threading.Event()

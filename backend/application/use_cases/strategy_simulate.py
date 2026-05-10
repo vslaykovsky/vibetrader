@@ -11,6 +11,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 _MARKET_SESSIONS = {"regular", "extended", "all"}
 
+from application.i18n import t as i18n_t
 from application.queries.historical_bars import HistoricalBarsQuery
 from application.schemas.simulation_dto import InitSimulationCommand, simulation_event
 from application.services.simulation_limits import (
@@ -402,7 +403,7 @@ class StrategySimulateCommandHandler:
                 simulation_event(
                     "status",
                     status="error",
-                    message="call POST /simulation/init before play",
+                    message=i18n_t("sim.call_init_first", sess.lang),
                 )
             )
             return
@@ -446,6 +447,7 @@ class StrategySimulateCommandHandler:
             thread_id=cmd.thread_id,
             initial_speed_bps=cmd.initial_speed_bps,
             pending_cmd=cmd,
+            lang=cmd.lang,
         )
         self._registry.replace(cmd.user_id, cmd.thread_id, session)
         session.emit(
@@ -538,10 +540,7 @@ class StrategySimulateCommandHandler:
                 simulation_event(
                     "status",
                     status="done",
-                    message=(
-                        "Provider returned no OHLC for the requested range — "
-                        "try an earlier start date or a different ticker."
-                    ),
+                    message=i18n_t("sim.no_ohlc", sess.lang),
                 )
             )
             return
@@ -555,10 +554,7 @@ class StrategySimulateCommandHandler:
                 simulation_event(
                     "status",
                     status="done",
-                    message=(
-                        "No market bars available at or after the chosen "
-                        "start date — try an earlier start."
-                    ),
+                    message=i18n_t("sim.no_market_bars", sess.lang),
                 )
             )
             return
@@ -813,10 +809,7 @@ class StrategySimulateCommandHandler:
                     simulation_event(
                         "status",
                         status="done",
-                        message=(
-                            "Provider returned no OHLC for the requested range — "
-                            "try an earlier start date or a different ticker."
-                        ),
+                        message=i18n_t("sim.no_ohlc", sess.lang),
                     )
                 )
                 return
@@ -834,7 +827,7 @@ class StrategySimulateCommandHandler:
                     simulation_event(
                         "status",
                         status="done",
-                        message="No base-scale bars after aggregation.",
+                        message=i18n_t("sim.no_base_scale_bars", sess.lang),
                     )
                 )
                 return
@@ -852,10 +845,7 @@ class StrategySimulateCommandHandler:
                     simulation_event(
                         "status",
                         status="done",
-                        message=(
-                            "No market bars available at or after the chosen "
-                            "start date — try an earlier start."
-                        ),
+                        message=i18n_t("sim.no_market_bars", sess.lang),
                     )
                 )
                 return

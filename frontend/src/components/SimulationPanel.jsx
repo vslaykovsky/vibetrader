@@ -5,6 +5,7 @@ import { useTimeZone } from '../TimeZoneContext.jsx';
 import { mergeBars } from '../lib/chartHistory.js';
 import { startNoonUnix, toIsoDate } from '../lib/dateIso.js';
 import { formatChartTick, formatUnixDateTime, unixToIsoDateUTC } from '../lib/dateTime.js';
+import { t } from '../lib/i18n.js';
 import {
   bucketStart,
   DISPLAY_TF_OPTIONS,
@@ -39,7 +40,7 @@ const SPEED_OPTIONS = [
   { id: '2', bps: 2, label: '2x' },
   { id: '4', bps: 4, label: '4x' },
   { id: '16', bps: 16, label: '16x' },
-  { id: 'max', bps: 1_000_000, label: 'Max' },
+  { id: 'max', bps: 1_000_000, get label() { return t('sim.speed_max'); } },
 ];
 
 /**
@@ -217,7 +218,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(messageFromJsonErrorField(data, 'Failed to load chart OHLC'));
+        throw new Error(messageFromJsonErrorField(data, t('sim.error_load_ohlc')));
       }
       const out = Array.isArray(data.bars) ? data.bars : [];
       out.sort((a, b) => a.unixtime - b.unixtime);
@@ -408,7 +409,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
             if (prefetchEmptyStreakRef.current >= 3) {
               forwardExhaustedRef.current = true;
               if (import.meta.env.DEV) appendLog('[prefetch] giving up — provider seems exhausted');
-              setBarsError('No more historical bars available from provider.');
+              setBarsError(t('sim.error_no_bars_forward'));
             }
           }
         } catch (err) {
@@ -666,7 +667,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
         const msg =
           typeof payload.message === 'string' && payload.message
             ? payload.message
-            : 'Trade stream reported an error; chart playback continues.';
+            : t('sim.error_stream');
         setError(msg);
         stopStream();
       }
@@ -757,7 +758,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
         const data = await response.json().catch(() => ({}));
         if (cancelled) return;
         if (!response.ok) {
-          throw new Error(messageFromJsonErrorField(data, 'Failed to init simulation'));
+          throw new Error(messageFromJsonErrorField(data, t('sim.error_init')));
         }
         setSessionReady(true);
         applyStrategyScaleFromPayload(data, setStrategyTfFromInit);
@@ -798,7 +799,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
         body: JSON.stringify({ thread_id: tid }),
       });
       if (!res.ok) {
-        throw new Error(await readJsonError(res, 'Play failed'));
+        throw new Error(await readJsonError(res, t('sim.error_play')));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -855,7 +856,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
         body: JSON.stringify({ thread_id: threadId, bps: opt.bps }),
       });
       if (!res.ok) {
-        throw new Error(await readJsonError(res, 'Speed change failed'));
+        throw new Error(await readJsonError(res, t('sim.error_speed')));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -919,12 +920,12 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
         const label =
           tr.label ||
           {
-            buy: 'BUY',
-            sell: 'SELL',
-            sell_short: 'SELL SHORT',
-            buy_to_cover: 'BUY TO COVER',
+            buy: t('sim.buy'),
+            sell: t('sim.sell'),
+            sell_short: t('sim.sell_short'),
+            buy_to_cover: t('sim.buy_to_cover'),
           }[action] ||
-          (buy ? 'BUY' : 'SELL');
+          (buy ? t('sim.buy') : t('sim.sell'));
         const dep =
           typeof tr.deposit_ratio === 'number' && Number.isFinite(tr.deposit_ratio)
             ? `${Math.round(tr.deposit_ratio * 100)}`
@@ -937,7 +938,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
             position: 'inBar',
             color: '#9e9e9e',
             shape: 'circle',
-            text: 'ERROR',
+            text: t('sim.error_marker'),
           };
         }
         return {
@@ -945,7 +946,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
           position: buy ? 'belowBar' : 'aboveBar',
           color: buy ? '#26a69a' : '#ef5350',
           shape: buy ? 'arrowUp' : 'arrowDown',
-          text: `${label} @ ${pr} (${dep}% dep.)`,
+          text: `${label} @ ${pr} (${dep}${t('sim.dep_pct')})`,
         };
       })
       .sort((a, b) => a.time - b.time);
@@ -958,19 +959,19 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
   return (
     <div className="simulation-panel">
       <p className="simulation-intro muted">
-        Pick a <strong>Start</strong> date to prepare the session; then press{' '}
-        <strong>Play</strong> to stream bars.
+        {t('sim.intro_prefix')} <strong>{t('sim.start')}</strong> {t('sim.intro_middle')}{' '}
+        <strong>{t('sim.play')}</strong> {t('sim.intro_suffix')}.
       </p>
       <div className="simulation-controls-row">
         <label className="simulation-field">
-          <span>Start</span>
+          <span>{t('sim.start')}</span>
           <button
             type="button"
             className="simulation-date-trigger"
             disabled={busy || initLoading}
             onClick={() => setDatePickerOpen(true)}
           >
-            {startDate.trim() ? startDate : 'Выберите дату'}
+            {startDate.trim() ? startDate : t('sim.pick_date_placeholder')}
           </button>
         </label>
         <DateTimePickerModal
@@ -985,11 +986,11 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
           maxDate={toIsoDate(new Date())}
         />
         <label className="simulation-field">
-          <span>Speed</span>
+          <span>{t('sim.speed')}</span>
           <select
             value={speedPresetId}
             onChange={(e) => void handleSpeedPresetChange(e.target.value)}
-            title="Chart bar reveal rate (bars/second)"
+            title={t('sim.chart_bar_rate_title')}
           >
             {SPEED_OPTIONS.map((o) => (
               <option key={o.id} value={o.id}>
@@ -1004,13 +1005,13 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
           disabled={!sessionReady || (busy && !paused)}
           onClick={() => void handlePlay()}
         >
-          Play
+          {t('sim.play')}
         </button>
         <button type="button" className="simulation-btn" disabled={!busy} onClick={() => void handlePause()}>
-          Pause
+          {t('sim.pause')}
         </button>
         <button type="button" className="simulation-btn" onClick={() => void handleStop()}>
-          Stop
+          {t('sim.stop')}
         </button>
       </div>
       {error ? <p className="simulation-error">{error}</p> : null}
@@ -1018,7 +1019,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
         <div className="simulation-chart-section">
           <div className="simulation-chart-toolbar">
             <label className="simulation-field simulation-field--inline">
-              <span>Chart TF</span>
+              <span>{t('sim.chart_tf')}</span>
               <select
                 value={chartTf}
                 onChange={(e) => {
@@ -1030,12 +1031,12 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
                     setDisplayTfMode(tf);
                   }
                 }}
-                title="Timeframe of the candles on this chart."
+                title={t('sim.chart_tf_title')}
               >
                 {chartTfChoices.map((tf) => (
                   <option key={tf} value={tf}>
                     {tf}
-                    {knownSourceTf === tf ? ' (strategy timeframe)' : ''}
+                    {knownSourceTf === tf ? t('sim.strategy_timeframe') : ''}
                   </option>
                 ))}
               </select>
@@ -1044,7 +1045,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
               <span className="simulation-error simulation-error--inline">{barsError}</span>
             ) : null}
             {barsLoading ? (
-              <span className="simulation-fine-loading muted">Loading chart OHLC…</span>
+              <span className="simulation-fine-loading muted">{t('sim.loading_ohlc')}</span>
             ) : null}
           </div>
           {candles.length > 0 ? (
@@ -1064,20 +1065,20 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
             />
           ) : (
             <p className="simulation-charts-placeholder muted">
-              {barsLoading ? 'Loading chart OHLC…' : barsError || 'Pick a Start date and press Play to stream bars.'}
+              {barsLoading ? t('sim.loading_ohlc') : barsError || t('sim.placeholder_with_data')}
             </p>
           )}
         </div>
       ) : (
         <p className="simulation-charts-placeholder muted">
-          Pick a Start date to prepare the session, then Play to stream bars.
+          {t('sim.placeholder_no_data')}
         </p>
       )}
       <details className="simulation-log-details">
-        <summary>Event log</summary>
-        <div className="simulation-log" aria-label="Simulation event log">
+        <summary>{t('sim.event_log')}</summary>
+        <div className="simulation-log" aria-label={t('sim.event_log_aria')}>
           {logLines.length === 0 ? (
-            <p className="muted">No events yet. Choose Start, then Play.</p>
+            <p className="muted">{t('sim.no_events')}</p>
           ) : (
             logLines.map((line, i) => (
               <div key={`${i}-${line.slice(0, 24)}`} className="simulation-log-line">

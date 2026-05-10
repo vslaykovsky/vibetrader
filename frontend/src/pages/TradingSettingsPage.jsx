@@ -4,7 +4,13 @@ import { useAuth } from '../AuthContext';
 import { useTheme } from '../ThemeContext';
 import { useTimeZone } from '../TimeZoneContext.jsx';
 import { browserTimeZone, normalizeHourFormat, supportedTimeZones } from '../lib/dateTime.js';
+import { currentLang } from '../lib/i18n.js';
 import { ProfileMenu } from '../ProfileMenu';
+
+const LANGUAGE_OPTIONS = [
+  { value: 'en', label: 'English' },
+  { value: 'ru', label: 'Русский' },
+];
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
@@ -13,7 +19,7 @@ const API_BASE_URL =
 export function TradingSettingsPage() {
   const { user, signOut, getAccessToken } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const { timeZone, hourFormat, setTimeZone, setHourFormat, refreshTimeZone } = useTimeZone();
+  const { timeZone, hourFormat, interfaceLang, setTimeZone, setHourFormat, setInterfaceLang, refreshTimeZone } = useTimeZone();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -26,6 +32,7 @@ export function TradingSettingsPage() {
   const [timezoneInput, setTimezoneInput] = useState(timeZone || browserTimeZone());
   const [hourFormatInput, setHourFormatInput] = useState(normalizeHourFormat(hourFormat, 'auto'));
   const [adjustForDividendsInput, setAdjustForDividendsInput] = useState(false);
+  const [langInput, setLangInput] = useState(interfaceLang || currentLang);
   const timezoneOptions = supportedTimeZones();
   const credentialsReady = accounts.some((a) => a?.has_alpaca_api_key && a?.has_alpaca_secret_key);
 
@@ -62,9 +69,13 @@ export function TradingSettingsPage() {
       const nextTimezone = typeof p?.timezone === 'string' && p.timezone ? p.timezone : browserTimeZone();
       const nextHourFormat = normalizeHourFormat(p?.hour_format, hourFormat);
       const nextAdjustForDividends = p?.adjust_for_dividends === true;
+      const nextLang = LANGUAGE_OPTIONS.some((o) => o.value === p?.interface_language)
+        ? p.interface_language
+        : currentLang;
       setTimezoneInput(nextTimezone);
       setHourFormatInput(nextHourFormat);
       setAdjustForDividendsInput(nextAdjustForDividends);
+      setLangInput(nextLang);
       setTimeZone(nextTimezone);
       setHourFormat(nextHourFormat);
       setAccounts(Array.isArray(payload.alpaca_accounts) ? payload.alpaca_accounts : []);
@@ -88,6 +99,7 @@ export function TradingSettingsPage() {
         timezone: timezoneInput,
         hour_format: hourFormatInput,
         adjust_for_dividends: adjustForDividendsInput,
+        interface_language: langInput,
       };
 
       const profileRes = await authFetch(`${API_BASE_URL}/settings/trading/profile`, {
@@ -97,10 +109,16 @@ export function TradingSettingsPage() {
       const profilePayload = await profileRes.json().catch(() => ({}));
       if (!profileRes.ok) throw new Error(profilePayload.error || `Save failed (${profileRes.status})`);
 
+      const langChanged = langInput !== currentLang;
       setTimeZone(timezoneInput);
       setHourFormat(hourFormatInput);
+      setInterfaceLang(langInput);
       setOkMsg('Saved settings.');
       await refreshTimeZone();
+      if (langChanged) {
+        window.location.reload();
+        return;
+      }
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -289,6 +307,31 @@ export function TradingSettingsPage() {
                     <option value="auto">Auto (browser setting)</option>
                     <option value="12h">12-hour</option>
                     <option value="24h">24-hour</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="settings-editor-section">
+                <div className="settings-section-copy">
+                  <span className="home-ms settings-section-icon" aria-hidden>
+                    language
+                  </span>
+                  <div>
+                    <h3>Interface language</h3>
+                    <p>Language used for labels, buttons, and messages in the backtesting canvas. Takes effect after saving.</p>
+                  </div>
+                </div>
+                <div className="settings-form settings-form--inline">
+                  <select
+                    className="settings-input settings-input--wide"
+                    value={langInput}
+                    onChange={(e) => setLangInput(e.target.value)}
+                  >
+                    {LANGUAGE_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>

@@ -229,7 +229,7 @@ def fetch_trading_settings_payload(user_id: str) -> dict[str, Any] | None:
         return None
     pr = _get(
         "profiles",
-        {"id": f"eq.{uid}", "select": "timezone,hour_format,adjust_for_dividends,updated_at"},
+        {"id": f"eq.{uid}", "select": "timezone,hour_format,adjust_for_dividends,interface_language,updated_at"},
     )
     if pr.status_code != 200:
         logger.warning("supabase profiles read status=%s", pr.status_code)
@@ -238,10 +238,12 @@ def fetch_trading_settings_payload(user_id: str) -> dict[str, Any] | None:
     prof: dict[str, Any] = {}
     if isinstance(prows, list) and prows:
         p0 = prows[0]
+        raw_lang = str(p0.get("interface_language") or "").strip().lower()
         prof = {
             "timezone": normalize_timezone(str(p0.get("timezone") or "")),
             "hour_format": normalize_hour_format(str(p0.get("hour_format") or "")) or "auto",
             "adjust_for_dividends": normalize_adjust_for_dividends(p0.get("adjust_for_dividends")),
+            "interface_language": raw_lang if raw_lang in ("en", "ru") else "",
             "updated_at": p0.get("updated_at"),
         }
     ar = _get(
@@ -300,11 +302,12 @@ def upsert_profile_settings(
     user_timezone: str | None = None,
     hour_format: str | None = None,
     adjust_for_dividends: bool | None = None,
+    interface_language: str | None = None,
 ) -> tuple[bool, str]:
     uid = (user_id or "").strip()
     if not uid or not service_role_configured():
         return False, "Trading settings are not configured on the server"
-    if user_timezone is None and hour_format is None and adjust_for_dividends is None:
+    if user_timezone is None and hour_format is None and adjust_for_dividends is None and interface_language is None:
         return False, "No fields to update"
     body: dict[str, Any] = {}
     if user_timezone is not None:
@@ -319,11 +322,16 @@ def upsert_profile_settings(
         body["hour_format"] = fmt
     if adjust_for_dividends is not None:
         body["adjust_for_dividends"] = bool(adjust_for_dividends)
+    if interface_language is not None:
+        lang = str(interface_language).strip().lower()
+        if lang not in ("en", "ru"):
+            return False, "Invalid interface_language: must be 'en' or 'ru'"
+        body["interface_language"] = lang
     rget = _get(
         "profiles",
         {
             "id": f"eq.{urllib.parse.quote(uid, safe='')}",
-            "select": "timezone,hour_format,adjust_for_dividends",
+            "select": "timezone,hour_format,adjust_for_dividends,interface_language",
         },
     )
     has_row = False

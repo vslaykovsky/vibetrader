@@ -46,9 +46,11 @@ def settings_trading_profile_put() -> tuple:
     tz = body.get("timezone")
     fmt = body.get("hour_format")
     adjust = body.get("adjust_for_dividends")
+    lang = body.get("interface_language")
     user_timezone = None
     hour_format = None
     adjust_for_dividends = None
+    interface_language = None
     if "timezone" in body:
         if not isinstance(tz, str):
             return _bad("timezone must be a string")
@@ -61,11 +63,16 @@ def settings_trading_profile_put() -> tuple:
         if not isinstance(adjust, bool):
             return _bad("adjust_for_dividends must be a boolean")
         adjust_for_dividends = bool(adjust)
+    if "interface_language" in body:
+        if not isinstance(lang, str):
+            return _bad("interface_language must be a string")
+        interface_language = lang
     ok, err = upsert_profile_settings(
         str(g.user_id),
         user_timezone=user_timezone,
         hour_format=hour_format,
         adjust_for_dividends=adjust_for_dividends,
+        interface_language=interface_language,
     )
     if not ok:
         return _bad(err or "Save failed", 502)

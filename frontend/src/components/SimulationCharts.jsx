@@ -7,6 +7,7 @@ import {
   createSeriesMarkers,
 } from 'lightweight-charts';
 import { CHART_THEME } from '../lib/chartTheme.js';
+import { t } from '../lib/i18n.js';
 import { coerceChartTimeSeconds, visibleTimeRangeToUnix } from '../lib/chartHistory.js';
 import { attachSyncedCrosshair, attachSyncedTimeScales } from '../lib/lwcSync.js';
 import { formatChartCrosshairTime, formatChartTick } from '../lib/dateTime.js';
@@ -634,7 +635,7 @@ export function SimulationCharts({
   }, [candles, equity, markers, lockedVisibleRange, livePlayback, viewportCapped, onVisibleTimeRangeChange]);
 
   return (
-    <div className="simulation-charts-stack" aria-label="Simulation price and equity charts">
+    <div className="simulation-charts-stack" aria-label={t('sim.charts_aria')}>
       {priceVisible && (
         <div className="simulation-chart-pane">
           <div
@@ -644,13 +645,13 @@ export function SimulationCharts({
             <span className="simulation-chart-pane-caption-chevron">
               {priceCollapsed ? '▶' : '▼'}
             </span>
-            <span className="simulation-chart-pane-caption-text">Price</span>
+            <span className="simulation-chart-pane-caption-text">{t('sim.price')}</span>
             {catalogHelpText ? (
               <span className="strategy-chart-help-wrap">
                 <button
                   type="button"
                   className="strategy-chart-help-btn"
-                  aria-label="Output series descriptions"
+                  aria-label={t('sim.output_series_aria')}
                   onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
                   onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
                 >
@@ -665,7 +666,7 @@ export function SimulationCharts({
               <button
                 type="button"
                 className="strategy-chart-help-btn simulation-chart-remove-btn"
-                aria-label="Remove price chart"
+                aria-label={t('sim.remove_price_chart')}
                 onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
                 onClick={(e) => { e.preventDefault(); e.stopPropagation(); setPriceVisible(false); }}
               >
@@ -689,12 +690,12 @@ export function SimulationCharts({
             <span className="simulation-chart-pane-caption-chevron">
               {equityCollapsed ? '▶' : '▼'}
             </span>
-            <span className="simulation-chart-pane-caption-text">Equity</span>
+            <span className="simulation-chart-pane-caption-text">{t('sim.equity')}</span>
             <span className="strategy-chart-help-wrap simulation-chart-remove-wrap">
               <button
                 type="button"
                 className="strategy-chart-help-btn simulation-chart-remove-btn"
-                aria-label="Remove equity chart"
+                aria-label={t('sim.remove_equity_chart')}
                 onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
                 onClick={(e) => { e.preventDefault(); e.stopPropagation(); setEquityVisible(false); }}
               >

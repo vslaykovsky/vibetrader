@@ -10,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 from flask import Blueprint, Response, g, jsonify, request
 
+from application.i18n import detect_lang, t as i18n_t
 from application.queries.historical_bars import HistoricalBarsQuery, scale_to_timeframe
 from application.schemas.simulation_dto import InitSimulationCommand
 from application.services.simulation_limits import (
@@ -107,13 +108,14 @@ def _adjust_for_dividends_for_request(user_id: str, thread_id: str) -> bool:
 @require_auth
 def simulation_init() -> tuple:
     uid = str(g.user_id)
+    lang = detect_lang(request.headers.get("Accept-Language"))
     payload = request.get_json(silent=True) or {}
     thread_id = str(payload.get("thread_id", "")).strip()
     if not thread_id or not thread_id_allowed(thread_id):
-        return _bad("invalid or missing thread_id")
+        return _bad(i18n_t("err.invalid_thread_id", lang))
     start_d = _parse_iso_date("start_date", str(payload.get("start_date", "")))
     if start_d is None:
-        return _bad("start_date is required (YYYY-MM-DD)")
+        return _bad(i18n_t("err.start_date_required", lang))
     lim_err = simulation_init_validation_error(start_d)
     if lim_err:
         return _bad(lim_err)
@@ -121,9 +123,9 @@ def simulation_init() -> tuple:
     try:
         initial_deposit = float(deposit)
     except (TypeError, ValueError):
-        return _bad("initial_deposit must be a number")
+        return _bad(i18n_t("err.deposit_not_number", lang))
     if initial_deposit <= 0:
-        return _bad("initial_deposit must be positive")
+        return _bad(i18n_t("err.deposit_not_positive", lang))
     bps = _parse_bps(payload.get("initial_speed_bps", 1.0))
     scale_raw = payload.get("initial_scale")
     initial_scale: str | None = None
@@ -131,7 +133,7 @@ def simulation_init() -> tuple:
         try:
             scale_to_timeframe(scale_raw)
         except ValueError:
-            return _bad(f"unsupported initial_scale {scale_raw!r}")
+            return _bad(f"{i18n_t('err.unsupported_initial_scale', lang)} {scale_raw!r}")
         initial_scale = scale_raw.strip().lower()
     cmd = InitSimulationCommand(
         user_id=uid,
@@ -141,6 +143,7 @@ def simulation_init() -> tuple:
         initial_deposit=initial_deposit,
         initial_scale=initial_scale,
         adjust_for_dividends=fetch_adjust_for_dividends(uid),
+        lang=lang,
     )
     try:
         strategy_scale = _handler.init(cmd)
@@ -160,10 +163,11 @@ def simulation_init() -> tuple:
 @require_auth
 def simulation_pause() -> tuple:
     uid = str(g.user_id)
+    lang = detect_lang(request.headers.get("Accept-Language"))
     payload = request.get_json(silent=True) or {}
     thread_id = str(payload.get("thread_id", "")).strip()
     if not thread_id or not thread_id_allowed(thread_id):
-        return _bad("invalid or missing thread_id")
+        return _bad(i18n_t("err.invalid_thread_id", lang))
     _handler.pause(uid, thread_id)
     return jsonify({"ok": True}), 200
 
@@ -172,10 +176,11 @@ def simulation_pause() -> tuple:
 @require_auth
 def simulation_play() -> tuple:
     uid = str(g.user_id)
+    lang = detect_lang(request.headers.get("Accept-Language"))
     payload = request.get_json(silent=True) or {}
     thread_id = str(payload.get("thread_id", "")).strip()
     if not thread_id or not thread_id_allowed(thread_id):
-        return _bad("invalid or missing thread_id")
+        return _bad(i18n_t("err.invalid_thread_id", lang))
     _handler.play(uid, thread_id)
     return jsonify({"ok": True}), 200
 
@@ -184,10 +189,11 @@ def simulation_play() -> tuple:
 @require_auth
 def simulation_speed() -> tuple:
     uid = str(g.user_id)
+    lang = detect_lang(request.headers.get("Accept-Language"))
     payload = request.get_json(silent=True) or {}
     thread_id = str(payload.get("thread_id", "")).strip()
     if not thread_id or not thread_id_allowed(thread_id):
-        return _bad("invalid or missing thread_id")
+        return _bad(i18n_t("err.invalid_thread_id", lang))
     bps = _parse_bps(payload.get("bps", 1.0))
     try:
         _handler.change_speed(uid, thread_id, bps)
@@ -211,20 +217,21 @@ def simulation_display_bars() -> tuple:
     result so the client still receives one ``bars`` array.
     """
     uid = str(g.user_id)
+    lang = detect_lang(request.headers.get("Accept-Language"))
     thread_id = request.args.get("thread_id", "").strip()
     if not thread_id or not thread_id_allowed(thread_id):
-        return _bad("invalid or missing thread_id")
+        return _bad(i18n_t("err.invalid_thread_id", lang))
     scale = (request.args.get("scale") or "").strip().lower()
     try:
         scale_to_timeframe(scale)
     except ValueError:
-        return _bad(f"unsupported scale {scale!r}")
+        return _bad(f"{i18n_t('err.unsupported_scale', lang)} {scale!r}")
     start_d = _parse_iso_date("start_date", str(request.args.get("start_date", "")))
     end_d = _parse_iso_date("end_date", str(request.args.get("end_date", "")))
     if start_d is None or end_d is None:
-        return _bad("start_date and end_date are required (YYYY-MM-DD)")
+        return _bad(i18n_t("err.start_end_required", lang))
     if start_d > end_d:
-        return _bad("start_date must be on or before end_date")
+        return _bad(i18n_t("err.start_before_end", lang))
     span_err = simulation_date_span_error(start_d, end_d)
     if span_err:
         return _bad(span_err)
@@ -291,10 +298,11 @@ def simulation_display_bars() -> tuple:
 @require_auth
 def simulation_stop() -> tuple:
     uid = str(g.user_id)
+    lang = detect_lang(request.headers.get("Accept-Language"))
     payload = request.get_json(silent=True) or {}
     thread_id = str(payload.get("thread_id", "")).strip()
     if not thread_id or not thread_id_allowed(thread_id):
-        return _bad("invalid or missing thread_id")
+        return _bad(i18n_t("err.invalid_thread_id", lang))
     _handler.stop(uid, thread_id)
     return jsonify({"ok": True}), 200
 
@@ -302,13 +310,14 @@ def simulation_stop() -> tuple:
 @simulation_blueprint.get("/simulation/stream")
 @require_auth
 def simulation_stream() -> tuple | Response:
+    lang = detect_lang(request.headers.get("Accept-Language"))
     thread_id = request.args.get("thread_id", "").strip()
     if not thread_id or not thread_id_allowed(thread_id):
-        return _bad("invalid or missing thread_id")
+        return _bad(i18n_t("err.invalid_thread_id", lang))
     uid = str(g.user_id)
     sess = _registry.get(uid, thread_id)
     if sess is None:
-        return _bad("no active simulation for this thread", 404)
+        return _bad(i18n_t("err.no_active_simulation", lang), 404)
 
     def generate():
         last_keepalive = time.monotonic()

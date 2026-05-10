@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useAuth } from './AuthContext';
 import { browserTimeZone, normalizeHourFormat, normalizeTimeZone } from './lib/dateTime.js';
+import { setStoredLang } from './lib/i18n.js';
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
@@ -8,6 +9,8 @@ const API_BASE_URL =
 
 const STORAGE_KEY = 'vibetrader.timezone';
 const HOUR_FORMAT_STORAGE_KEY = 'vibetrader.hourFormat';
+const LANG_STORAGE_KEY = 'vibetrader.lang';
+const SUPPORTED_LANGS = ['en', 'ru'];
 const TimeZoneContext = createContext(null);
 
 function storedTimeZone() {
@@ -46,10 +49,21 @@ function rememberHourFormat(value) {
   }
 }
 
+function storedLang() {
+  if (typeof localStorage === 'undefined') return '';
+  try {
+    const v = localStorage.getItem(LANG_STORAGE_KEY);
+    return SUPPORTED_LANGS.includes(v) ? v : '';
+  } catch {
+    return '';
+  }
+}
+
 export function TimeZoneProvider({ children }) {
   const { user, getAccessToken } = useAuth();
   const [timeZone, setTimeZoneState] = useState(storedTimeZone);
   const [hourFormat, setHourFormatState] = useState(storedHourFormat);
+  const [interfaceLang, setInterfaceLangState] = useState(storedLang);
   const [loading, setLoading] = useState(false);
 
   const setTimeZone = useCallback((value) => {
@@ -62,6 +76,12 @@ export function TimeZoneProvider({ children }) {
     const next = normalizeHourFormat(value, 'auto');
     rememberHourFormat(next);
     setHourFormatState(next);
+  }, []);
+
+  const setInterfaceLang = useCallback((value) => {
+    const next = SUPPORTED_LANGS.includes(value) ? value : '';
+    setStoredLang(next || 'en');
+    setInterfaceLangState(next);
   }, []);
 
   const refreshTimeZone = useCallback(async () => {
@@ -82,6 +102,13 @@ export function TimeZoneProvider({ children }) {
         if (payload?.profile && Object.prototype.hasOwnProperty.call(payload.profile, 'hour_format')) {
           setHourFormat(payload.profile.hour_format || 'auto');
         }
+        if (payload?.profile && Object.prototype.hasOwnProperty.call(payload.profile, 'interface_language')) {
+          const serverLang = payload.profile.interface_language || '';
+          if (SUPPORTED_LANGS.includes(serverLang)) {
+            setStoredLang(serverLang);
+            setInterfaceLangState(serverLang);
+          }
+        }
       }
     } finally {
       setLoading(false);
@@ -101,6 +128,10 @@ export function TimeZoneProvider({ children }) {
       if (event.key === HOUR_FORMAT_STORAGE_KEY) {
         setHourFormatState(normalizeHourFormat(event.newValue, 'auto'));
       }
+      if (event.key === LANG_STORAGE_KEY) {
+        const v = event.newValue;
+        if (SUPPORTED_LANGS.includes(v)) setInterfaceLangState(v);
+      }
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
@@ -110,12 +141,14 @@ export function TimeZoneProvider({ children }) {
     () => ({
       timeZone,
       hourFormat,
+      interfaceLang,
       loading,
       setTimeZone,
       setHourFormat,
+      setInterfaceLang,
       refreshTimeZone,
     }),
-    [hourFormat, loading, refreshTimeZone, setHourFormat, setTimeZone, timeZone],
+    [hourFormat, interfaceLang, loading, refreshTimeZone, setHourFormat, setInterfaceLang, setTimeZone, timeZone],
   );
 
   return <TimeZoneContext.Provider value={value}>{children}</TimeZoneContext.Provider>;

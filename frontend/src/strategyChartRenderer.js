@@ -11,6 +11,7 @@ import {
 } from 'lightweight-charts';
 import Plotly from 'plotly.js-dist-min';
 import { CHART_THEME } from './lib/chartTheme.js';
+import { t, tCol, tVal } from './lib/i18n.js';
 import {
   chartDetailsSignature,
   chartsOrderSignature,
@@ -231,7 +232,7 @@ function enableChartDndHeader(row) {
   if (!header) return;
   header.classList.add('strategy-chart-dnd-handle');
   header.draggable = true;
-  header.title = 'Drag to reorder panels';
+  header.title = t('chart.drag_reorder');
 }
 
 function setupChartPanelDnD(dndRoot, storageKey, n, signal, allPanelIds = null) {
@@ -492,7 +493,7 @@ function makeSection(container, titleText, openStore, panelKey, helpText, onRemo
 
   const titleEl = document.createElement('span');
   titleEl.className = 'strategy-chart-summary-title';
-  titleEl.textContent = titleText || 'Chart';
+  titleEl.textContent = titleText || t('chart.default_title');
   summary.appendChild(titleEl);
 
   const trimmedHelp = typeof helpText === 'string' ? helpText.trim() : '';
@@ -502,7 +503,7 @@ function makeSection(container, titleText, openStore, panelKey, helpText, onRemo
     const helpBtn = document.createElement('button');
     helpBtn.type = 'button';
     helpBtn.className = 'strategy-chart-help-btn';
-    helpBtn.setAttribute('aria-label', 'Chart description');
+    helpBtn.setAttribute('aria-label', t('chart.description_aria'));
     helpBtn.textContent = '?';
     const stopToggle = (ev) => {
       ev.preventDefault();
@@ -523,7 +524,7 @@ function makeSection(container, titleText, openStore, panelKey, helpText, onRemo
   const removeBtn = document.createElement('button');
   removeBtn.type = 'button';
   removeBtn.className = 'strategy-chart-help-btn strategy-chart-remove-btn';
-  removeBtn.setAttribute('aria-label', 'Remove chart');
+  removeBtn.setAttribute('aria-label', t('chart.remove_chart'));
   removeBtn.textContent = 'x';
   const stopRemoveToggle = (ev) => {
     ev.preventDefault();
@@ -620,9 +621,9 @@ function renderLightweightChart(container, chartSpec, openStore, panelKey, helpT
     }
     if (Array.isArray(s.markers) && s.markers.length > 0) {
       const normalizedMarkers = normalizeLwcItems(s.markers, normalizeTime);
-      const sorted = [...normalizedMarkers].sort((a, b) =>
-        a.time < b.time ? -1 : a.time > b.time ? 1 : 0,
-      );
+      const sorted = [...normalizedMarkers]
+        .sort((a, b) => a.time < b.time ? -1 : a.time > b.time ? 1 : 0)
+        .map((m) => typeof m.text === 'string' && m.text ? { ...m, text: tVal(m.text) } : m);
       createSeriesMarkers(series, sorted);
     }
   }
@@ -862,7 +863,7 @@ function renderTablePanel(container, table, title, openStore, panelKey, helpText
   summary.className = 'strategy-chart-summary';
   const titleEl = document.createElement('span');
   titleEl.className = 'strategy-chart-summary-title';
-  titleEl.textContent = typeof title === 'string' && title.trim() ? title : 'Table';
+  titleEl.textContent = typeof title === 'string' && title.trim() ? title : t('chart.table_default_title');
   summary.appendChild(titleEl);
   const trimmedHelp = typeof helpText === 'string' ? helpText.trim() : '';
   if (trimmedHelp) {
@@ -871,7 +872,7 @@ function renderTablePanel(container, table, title, openStore, panelKey, helpText
     const helpBtn = document.createElement('button');
     helpBtn.type = 'button';
     helpBtn.className = 'strategy-chart-help-btn';
-    helpBtn.setAttribute('aria-label', 'Chart description');
+    helpBtn.setAttribute('aria-label', t('chart.description_aria'));
     helpBtn.textContent = '?';
     const stopToggle = (ev) => { ev.preventDefault(); ev.stopPropagation(); };
     helpBtn.addEventListener('mousedown', stopToggle);
@@ -900,7 +901,7 @@ function renderTablePanel(container, table, title, openStore, panelKey, helpText
     'display:flex;justify-content:flex-end;align-items:center;margin-bottom:8px;padding:0 2px;';
   const dlBtn = document.createElement('button');
   dlBtn.type = 'button';
-  dlBtn.textContent = 'Download CSV';
+  dlBtn.textContent = t('chart.download_csv');
   dlBtn.style.cssText =
     'cursor:pointer;font-size:12px;font-weight:600;padding:6px 12px;border-radius:6px;border:1px solid #363a45;background:#2a2e39;color:#d1d4dc;';
   dlBtn.addEventListener('mouseenter', () => {
@@ -946,7 +947,7 @@ function renderTablePanel(container, table, title, openStore, panelKey, helpText
     if (typeof v === 'number' && Number.isFinite(v)) {
       return Number.isInteger(v) ? String(v) : v.toLocaleString('en-US', { maximumFractionDigits: 6 });
     }
-    return String(v);
+    return tVal(String(v));
   };
 
   let rowTimeData = [];
@@ -1023,7 +1024,7 @@ function renderTablePanel(container, table, title, openStore, panelKey, helpText
   const updateHeaders = () => {
     for (const th of hr.children) {
       const col = th?.dataset?.col;
-      const base = typeof col === 'string' ? col.replace(/_/g, ' ') : '';
+      const base = typeof col === 'string' ? tCol(col) : '';
       if (col && col === sortCol && sortDir) {
         th.textContent = `${base} ${sortDir === 'asc' ? '▲' : '▼'}`;
       } else {
@@ -1038,8 +1039,8 @@ function renderTablePanel(container, table, title, openStore, panelKey, helpText
       const th = document.createElement('th');
       th.dataset.col = col;
       th.draggable = true;
-      th.title = 'Click to sort. Drag to reorder columns';
-      th.textContent = col.replace(/_/g, ' ');
+      th.title = t('chart.sort_reorder_hint');
+      th.textContent = tCol(col);
       th.style.cssText =
         'position:sticky;top:0;z-index:1;text-align:left;padding:10px 12px;border-bottom:1px solid #363a45;color:#888;font-weight:600;text-transform:capitalize;cursor:grab;user-select:none;background:#1e2130;';
       th.addEventListener('click', () => {
@@ -1195,22 +1196,22 @@ function buildMetricsPanelItems(metrics) {
 
   const items = [
     {
-      label: 'Total Return',
+      label: t('chart.total_return'),
       value: fmtPercent3(metrics.total_return),
       color: (metrics.total_return ?? 0) >= 0 ? '#26a69a' : '#ef5350',
     },
-    { label: 'Sharpe Ratio', value: fmtNumber3(metrics.sharpe_ratio), color: '#d1d4dc' },
-    { label: 'Max Drawdown', value: fmtPercent3(metrics.max_drawdown), color: '#ef5350' },
-    { label: 'Win Rate', value: fmtPercent3(metrics.win_rate), color: '#d1d4dc' },
+    { label: t('chart.sharpe_ratio'), value: fmtNumber3(metrics.sharpe_ratio), color: '#d1d4dc' },
+    { label: t('chart.max_drawdown'), value: fmtPercent3(metrics.max_drawdown), color: '#ef5350' },
+    { label: t('chart.win_rate'), value: fmtPercent3(metrics.win_rate), color: '#d1d4dc' },
     {
-      label: '# Orders',
+      label: t('chart.orders_count'),
       value:
         typeof metrics.num_trades === 'number' && Number.isFinite(metrics.num_trades)
           ? fmtNumber0(metrics.num_trades)
           : metrics.num_trades,
       color: '#d1d4dc',
     },
-    { label: 'Final Equity', value: `$${fmtNumber3(metrics.final_equity)}`, color: '#d1d4dc' },
+    { label: t('chart.final_equity'), value: `$${fmtNumber3(metrics.final_equity)}`, color: '#d1d4dc' },
   ].filter((item) => item.value != null && item.value !== 'undefined%' && item.value !== '$undefined');
 
   return items;
@@ -1224,7 +1225,7 @@ function renderMetricsPanel(container, metrics, openStore) {
   details.className = 'strategy-chart-details';
   const summary = document.createElement('summary');
   summary.className = 'strategy-chart-summary';
-  summary.textContent = 'Metrics';
+  summary.textContent = t('chart.metrics_title');
   details.appendChild(summary);
 
   if (openStore) {
