@@ -83,6 +83,20 @@ def _best_value_for_ui(best_params: dict | None, best_value: float) -> float | N
     return float(best_value)
 
 
+def _timing_payload(t0: float, finished_steps: int, n_steps: int, timeout_seconds: float) -> dict[str, float]:
+    elapsed = max(0.0, time.perf_counter() - t0)
+    payload = {
+        "elapsed_seconds": elapsed,
+        "timeout_seconds": timeout_seconds,
+    }
+    if finished_steps > 0:
+        seconds_per_step = elapsed / finished_steps
+        eta_seconds = max(0.0, min(seconds_per_step * n_steps, timeout_seconds) - elapsed)
+        payload["seconds_per_step"] = seconds_per_step
+        payload["eta_seconds"] = eta_seconds
+    return payload
+
+
 def _load_json(path: Path) -> dict:
     if not path.is_file():
         return {}
@@ -165,7 +179,7 @@ def main() -> None:
         sys.exit(1)
 
     n_trials = int(cfg.n_trials)
-    wall = 300.0
+    wall = float(cfg.timeout_seconds)
     maximize = cfg.direction != "minimize"
     metric_key = str(cfg.objective_metric)
     seed = cfg.seed
@@ -176,6 +190,7 @@ def main() -> None:
     best_value = float("-inf") if maximize else float("inf")
     best_params: dict | None = None
     completed = 0
+    attempted = 0
     logger.info(
         "hyperopt start: objective=%s direction=%s trials=%s wall=%.3fs trial_timeout=%.3fs seed=%s",
         metric_key,
@@ -205,9 +220,11 @@ def main() -> None:
                     "objective_metric": metric_key,
                     "best_value": _best_value_for_ui(best_params, best_value),
                     "completed_trials": completed,
+                    **_timing_payload(t0, i, n_trials, wall),
                 }
             )
             break
+        attempted = i + 1
         sampled = _sample_from_space(rng, cfg.search_space)
         trial_params = _merge_flat(base, sampled)
         _save_json(PARAMS_PATH, trial_params)
@@ -224,6 +241,7 @@ def main() -> None:
                     "outcome": "timeout",
                     "best_value": _best_value_for_ui(best_params, best_value),
                     "completed_trials": completed,
+                    **_timing_payload(t0, attempted, n_trials, wall),
                 }
             )
             continue
@@ -245,6 +263,7 @@ def main() -> None:
                     "outcome": "sim_failed",
                     "best_value": _best_value_for_ui(best_params, best_value),
                     "completed_trials": completed,
+                    **_timing_payload(t0, attempted, n_trials, wall),
                 }
             )
             continue
@@ -260,6 +279,7 @@ def main() -> None:
                     "outcome": "no_metrics",
                     "best_value": _best_value_for_ui(best_params, best_value),
                     "completed_trials": completed,
+                    **_timing_payload(t0, attempted, n_trials, wall),
                 }
             )
             continue
@@ -281,6 +301,7 @@ def main() -> None:
                     "outcome": "missing_objective",
                     "best_value": _best_value_for_ui(best_params, best_value),
                     "completed_trials": completed,
+                    **_timing_payload(t0, attempted, n_trials, wall),
                 }
             )
             continue
@@ -304,6 +325,7 @@ def main() -> None:
                     "outcome": "bad_objective",
                     "best_value": _best_value_for_ui(best_params, best_value),
                     "completed_trials": completed,
+                    **_timing_payload(t0, attempted, n_trials, wall),
                 }
             )
             continue
@@ -341,6 +363,7 @@ def main() -> None:
                 "new_best": bool(better),
                 "best_value": _best_value_for_ui(best_params, best_value),
                 "completed_trials": completed,
+                **_timing_payload(t0, attempted, n_trials, wall),
             }
         )
     if best_params is None:
@@ -374,6 +397,7 @@ def main() -> None:
             "best_value": _best_value_for_ui(best_params, best_value),
             "completed_trials": completed,
             "n_trials": n_trials,
+            **_timing_payload(t0, attempted, n_trials, wall),
         }
     )
 

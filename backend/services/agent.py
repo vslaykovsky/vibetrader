@@ -5,6 +5,7 @@ dotenv.load_dotenv()
 from langsmith import traceable
 import json
 import logging
+import math
 import orjson
 import os
 import re
@@ -164,7 +165,51 @@ CODING_TOOL = 'codex'
 logger = logging.getLogger(__name__)
 
 
-@traceable(name="run_logged_subprocess")
+def _tail(s: str, max_chars: int = 12_000) -> str:
+    if len(s) <= max_chars:
+        return s
+    return s[-max_chars:]
+
+
+_TRACE_CANVAS_KEYS = frozenset({"canvas", "existing_canvas"})
+_TRACE_STRING_MAX_CHARS = 12_000
+
+
+def _trace_sanitize(value: Any) -> Any:
+    if isinstance(value, subprocess.CompletedProcess):
+        return {
+            "args": value.args,
+            "returncode": value.returncode,
+            "stdout": _tail(str(value.stdout or ""), _TRACE_STRING_MAX_CHARS),
+            "stderr": _tail(str(value.stderr or ""), _TRACE_STRING_MAX_CHARS),
+        }
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        out: dict[Any, Any] = {}
+        for key, item in value.items():
+            if str(key) in _TRACE_CANVAS_KEYS or "canvas" in str(key).lower():
+                continue
+            out[key] = _trace_sanitize(item)
+        return out
+    if isinstance(value, list):
+        return [_trace_sanitize(item) for item in value]
+    if isinstance(value, tuple):
+        return [_trace_sanitize(item) for item in value]
+    if isinstance(value, str):
+        return _tail(value, _TRACE_STRING_MAX_CHARS)
+    if callable(value):
+        return getattr(value, "__name__", repr(value))
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return repr(value)
+
+
+_TRACE_INPUTS = lambda inputs: _trace_sanitize(inputs)
+_TRACE_OUTPUTS = lambda outputs: _trace_sanitize(outputs)
+
+
+@traceable(name="run_logged_subprocess", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def _run_logged_subprocess(
     label: str,
     cmd: list[str],
@@ -224,7 +269,7 @@ def _kill_subprocess_tree(proc: subprocess.Popen[str]) -> None:
         pass
 
 
-@traceable(name="run_logged_subprocess_stream")
+@traceable(name="run_logged_subprocess_stream", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def _run_logged_subprocess_stream(
     label: str,
     cmd: list[str],
@@ -336,6 +381,38 @@ def _hyperopt_status_float_str(v: float) -> str:
     return t
 
 
+def _hyperopt_status_duration_str(v: Any) -> str | None:
+    try:
+        seconds = float(v)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(seconds) or seconds < 0:
+        return None
+    if seconds < 60:
+        t = f"{seconds:.1f}".rstrip("0").rstrip(".")
+        return f"{t}s"
+    minutes = int(seconds // 60)
+    rem = int(round(seconds - minutes * 60))
+    if rem == 60:
+        minutes += 1
+        rem = 0
+    if minutes < 60:
+        return f"{minutes}m {rem}s" if rem else f"{minutes}m"
+    hours = minutes // 60
+    mins = minutes % 60
+    return f"{hours}h {mins}m" if mins else f"{hours}h"
+
+
+def _append_hyperopt_timing_parts(parts: list[str], d: dict[str, Any], *, include_eta: bool = True) -> None:
+    per_step = _hyperopt_status_duration_str(d.get("seconds_per_step"))
+    if per_step is not None:
+        parts.append(f"{per_step}/step")
+    if include_eta:
+        eta = _hyperopt_status_duration_str(d.get("eta_seconds"))
+        if eta is not None:
+            parts.append(f"ETA {eta}")
+
+
 def _hyperopt_ui_line_to_status_text(raw_line: str) -> str | None:
     s = raw_line.strip()
     if not s.startswith("{") or "hyperopt_ui" not in s:
@@ -371,6 +448,7 @@ def _hyperopt_ui_line_to_status_text(raw_line: str) -> str | None:
                 parts.append(f"best {mk}={best}")
         if out and out != "completed":
             parts.append(out)
+        _append_hyperopt_timing_parts(parts, d)
         return " · ".join(parts)[:512]
     if ev == "stopped":
         t = d.get("trial")
@@ -382,16 +460,27 @@ def _hyperopt_ui_line_to_status_text(raw_line: str) -> str | None:
                 parts.append(f"best {mk}={_hyperopt_status_float_str(float(best))}")
             except (TypeError, ValueError):
                 parts.append(f"best {mk}={best}")
+        _append_hyperopt_timing_parts(parts, d, include_eta=False)
         return " · ".join(parts)[:512]
     if ev == "done":
         best = d.get("best_value")
         c = d.get("completed_trials")
         if best is not None:
             try:
-                return f"Hyperopt · done · best {mk}={_hyperopt_status_float_str(float(best))} ({c} ok trials)"[:512]
+                parts = [
+                    "Hyperopt",
+                    "done",
+                    f"best {mk}={_hyperopt_status_float_str(float(best))} ({c} ok trials)",
+                ]
+                _append_hyperopt_timing_parts(parts, d, include_eta=False)
+                return " · ".join(parts)[:512]
             except (TypeError, ValueError):
-                return f"Hyperopt · done · best {mk}={best} ({c} ok trials)"[:512]
-        return f"Hyperopt · done ({c} ok trials)"[:512]
+                parts = ["Hyperopt", "done", f"best {mk}={best} ({c} ok trials)"]
+                _append_hyperopt_timing_parts(parts, d, include_eta=False)
+                return " · ".join(parts)[:512]
+        parts = ["Hyperopt", f"done ({c} ok trials)"]
+        _append_hyperopt_timing_parts(parts, d, include_eta=False)
+        return " · ".join(parts)[:512]
     return None
 
 
@@ -687,12 +776,6 @@ AGENT_TOOLS: list[dict[str, Any]] = [
 ]
 
 
-def _tail(s: str, max_chars: int = 12_000) -> str:
-    if len(s) <= max_chars:
-        return s
-    return s[-max_chars:]
-
-
 def _trim_tool_payload_streams(
     payload: dict[str, Any],
     max_json_len: int,
@@ -720,7 +803,7 @@ def _read_strategy_params_text(thread_id: str) -> str:
         return ""
 
 
-@traceable(name="run_analyse_code")
+@traceable(name="run_analyse_code", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def run_analyse_code(
     *,
     thread_id: str,
@@ -898,7 +981,7 @@ def _ticker_sql_prompt_vocabulary() -> tuple[list[str], list[str]]:
     return sorted({str(v) for v in providers if str(v)}), sorted({str(v) for v in tags if str(v)})
 
 
-@traceable(name="generate_ticker_listing_sql")
+@traceable(name="generate_ticker_listing_sql", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def _generate_ticker_listing_sql(*, query: str, limit: int) -> str:
     try:
         from db.session import engine
@@ -936,7 +1019,7 @@ def _generate_ticker_listing_sql(*, query: str, limit: int) -> str:
     return _normalize_ticker_listing_sql(_aimessage_plain_text(msg))
 
 
-@traceable(name="execute_ticker_listing_sql")
+@traceable(name="execute_ticker_listing_sql", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def _execute_ticker_listing_sql(
     sql: str,
     *,
@@ -971,7 +1054,7 @@ def _execute_ticker_listing_sql(
     }
 
 
-@traceable(name="run_list_tickers")
+@traceable(name="run_list_tickers", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def run_list_tickers(*, query: str, limit: Any = None) -> dict[str, Any]:
     q = (query or "").strip()
     if not q:
@@ -989,7 +1072,7 @@ def run_list_tickers(*, query: str, limit: Any = None) -> dict[str, Any]:
     return payload
 
 
-@traceable(name="generate_strategy_algorithm_pseudocode")
+@traceable(name="generate_strategy_algorithm_pseudocode", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def generate_strategy_algorithm_pseudocode(*, code: str, language: str = "") -> dict[str, Any]:
     src = (code or "").strip()
     if not src:
@@ -1090,7 +1173,7 @@ def canvas_with_output(existing_canvas: dict[str, Any], thread_id: str) -> dict[
     return sanitize_json_for_postgres(merged)
 
 
-@traceable(name="run_codex_exec")
+@traceable(name="run_codex_exec", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def _run_codex_exec(
     task: str,
     cwd: Path,
@@ -1119,7 +1202,7 @@ def _run_codex_exec(
     return proc
 
 
-@traceable(name="run_claude_exec")
+@traceable(name="run_claude_exec", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def _run_claude_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     cmd: list[str] = ['claude', '--output-format', 'json', '--permission-mode', 'bypassPermissions']
     cmd.extend(["-p", task ])
@@ -1137,7 +1220,7 @@ def _run_coding_agent_exec(
     return tool, _run_codex_exec(task, cwd, codex_thread_id=codex_thread_id)
 
 
-@traceable(name="run_simulation")
+@traceable(name="run_simulation", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def _run_simulation(*, workspace: Path) -> subprocess.CompletedProcess[str]:
     cmd: list[str] = [
         sys.executable,
@@ -1157,7 +1240,7 @@ def _run_simulation(*, workspace: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-@traceable(name="run_logged_subprocess_with_freeze_watchdog")
+@traceable(name="run_logged_subprocess_with_freeze_watchdog", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def _run_logged_subprocess_with_freeze_watchdog(
     *,
     label: str,
@@ -1295,7 +1378,7 @@ def _run_logged_subprocess_with_freeze_watchdog(
     return completed
 
 
-@traceable(name="run_workspace_command")
+@traceable(name="run_workspace_command", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def _run_workspace_command(
     command: str,
     cwd: Path,
@@ -1353,7 +1436,7 @@ def _coding_agent_usage_limit_error(text: str) -> bool:
     )
 
 
-@traceable(name="run_update_strategy")
+@traceable(name="run_update_strategy", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def run_update_strategy(
     thread_id: str,
     task: str,
@@ -1593,7 +1676,7 @@ def _is_hyperopt_command(command: str) -> bool:
     return len(parts) == 1 or parts[0] in ("python", "python3") or parts[0] == sys.executable
 
 
-@traceable(name="run_backtest")
+@traceable(name="run_backtest", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def run_backtest(
     thread_id: str,
     command: str,
@@ -1959,7 +2042,7 @@ def _invoke_agent_model(llm_tools: Any, chat_messages: list[BaseMessage], on_tok
     return msg
 
 
-@traceable(name="build_agent_reply")
+@traceable(name="build_agent_reply", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def build_agent_reply(
     messages: list[dict[str, Any]],
     existing_canvas: dict[str, Any],

@@ -209,6 +209,9 @@ def test_strategy_lightweight_response_splits_canvas_payload_for_admin():
             headers=headers,
         )
         assert canvas_res.status_code == 200
+        assert canvas_res.headers.get("ETag") == f'"{run_id}"'
+        assert canvas_res.headers.get("Cache-Control") == "private, no-cache"
+        assert canvas_res.headers.get("Vary") == "Authorization"
         canvas_body = canvas_res.get_json()
         assert canvas_body == {
             "id": run_id,
@@ -222,6 +225,25 @@ def test_strategy_lightweight_response_splits_canvas_payload_for_admin():
             "python_code": code,
             "codex_thread_id": "",
         }
+
+        cached_canvas_res = client.get(
+            f"/strategy/canvas?thread_id={thread_id}",
+            headers={**headers, "If-None-Match": f'"{run_id}"'},
+        )
+        assert cached_canvas_res.status_code == 304
+        assert cached_canvas_res.headers.get("ETag") == f'"{run_id}"'
+        assert cached_canvas_res.headers.get("Cache-Control") == "private, no-cache"
+        assert cached_canvas_res.headers.get("Vary") == "Authorization"
+        assert cached_canvas_res.get_data() == b""
+
+        run_canvas_res = client.get(
+            f"/strategy/canvas?id={run_id}",
+            headers=headers,
+        )
+        assert run_canvas_res.status_code == 200
+        assert run_canvas_res.headers.get("ETag") == f'"{run_id}"'
+        assert run_canvas_res.headers.get("Cache-Control") == "private, max-age=31536000, immutable"
+        assert run_canvas_res.headers.get("Vary") == "Authorization"
     finally:
         if prev is not None:
             os.environ["SUPABASE_JWT_SECRET"] = prev

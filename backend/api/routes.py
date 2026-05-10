@@ -20,6 +20,8 @@ from db.strategy_queries import (
 from services.agent import (
     STRATEGIES_DIR,
     CHAT_MODEL,
+    _TRACE_INPUTS,
+    _TRACE_OUTPUTS,
     build_agent_reply,
     canvas_with_output,
     generate_strategy_algorithm_pseudocode,
@@ -239,6 +241,43 @@ def serialize_strategy_canvas(strategy: Strategy) -> dict:
     return payload
 
 
+def _strategy_canvas_etag(strategy: Strategy) -> str:
+    return str(strategy.id or "")
+
+
+def _strategy_canvas_not_modified(strategy: Strategy) -> bool:
+    etag = _strategy_canvas_etag(strategy)
+    return bool(etag and request.if_none_match.contains(etag))
+
+
+def _apply_strategy_canvas_cache_headers(
+    response: Response,
+    strategy: Strategy,
+    *,
+    immutable: bool,
+) -> Response:
+    etag = _strategy_canvas_etag(strategy)
+    if etag:
+        response.set_etag(etag)
+    response.headers["Vary"] = "Authorization"
+    response.headers["Cache-Control"] = (
+        "private, max-age=31536000, immutable"
+        if immutable
+        else "private, no-cache"
+    )
+    return response
+
+
+def _strategy_canvas_not_modified_response(strategy: Strategy, *, immutable: bool) -> Response:
+    response = Response(status=304)
+    return _apply_strategy_canvas_cache_headers(response, strategy, immutable=immutable)
+
+
+def _strategy_canvas_response(strategy: Strategy, *, immutable: bool) -> Response:
+    response = jsonify(serialize_strategy_canvas(strategy))
+    return _apply_strategy_canvas_cache_headers(response, strategy, immutable=immutable)
+
+
 def _include_strategy_heavy_fields() -> bool:
     raw = request.args.get("include_canvas", "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
@@ -432,7 +471,7 @@ def _restore_thread_workspace_if_no_newer_run(
     restore_strategy_workspace_from_snapshot(thread_id, code=code, canvas=canvas)
 
 
-@traceable(name="post_strategy")
+@traceable(name="post_strategy", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def _execute_strategy_agent_job(run_id: str, thread_id: str) -> None:
     stream = StrategyStreamPublisher(run_id)
     stream.status("Starting…")
@@ -671,11 +710,19 @@ def get_strategy_canvas() -> tuple:
     if run_id:
         session = SessionLocal()
         try:
-            strategy = get_strategy_by_id(session, run_id)
-            if strategy is None:
+            cached_strategy = (
+                session.query(Strategy)
+                .options(defer(Strategy.canvas), defer(Strategy.code), defer(Strategy.algorithm))
+                .filter(Strategy.id == run_id)
+                .first()
+            )
+            if cached_strategy is None:
                 return _validation_error("strategy not found")
-            _stamp_langsmith_thread_metadata(strategy.thread_id)
-            return jsonify(serialize_strategy_canvas(strategy)), 200
+            _stamp_langsmith_thread_metadata(cached_strategy.thread_id)
+            if _strategy_canvas_not_modified(cached_strategy):
+                return _strategy_canvas_not_modified_response(cached_strategy, immutable=True)
+            strategy = get_strategy_by_id(session, run_id)
+            return _strategy_canvas_response(strategy, immutable=True), 200
         finally:
             session.close()
 
@@ -688,6 +735,9 @@ def get_strategy_canvas() -> tuple:
 
     session = SessionLocal()
     try:
+        cached_strategy = _latest_thread_strategy_lightweight(session, thread_id)
+        if cached_strategy is not None and _strategy_canvas_not_modified(cached_strategy):
+            return _strategy_canvas_not_modified_response(cached_strategy, immutable=False)
         workspace = Path(STRATEGIES_DIR) / thread_id
         needs_restore = not workspace.is_dir()
         strategy = ensure_latest_thread_strategy(
@@ -703,7 +753,7 @@ def get_strategy_canvas() -> tuple:
                 code=getattr(strategy, "code", "") or "",
                 canvas=dict(getattr(strategy, "canvas", {}) or {}),
             )
-        return jsonify(serialize_strategy_canvas(strategy)), 200
+        return _strategy_canvas_response(strategy, immutable=False), 200
     finally:
         session.close()
 
@@ -776,7 +826,7 @@ def post_strategy() -> tuple:
 
 @strategy_blueprint.post("/strategy/algorithm")
 @require_auth
-@traceable
+@traceable(process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def post_strategy_algorithm() -> tuple:
     payload = request.get_json(silent=True) or {}
     run_id = str(payload.get("id", "")).strip()
