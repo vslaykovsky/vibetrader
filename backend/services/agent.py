@@ -2294,13 +2294,6 @@ def build_agent_reply(
     max_iterations = 10
     last_strategy_name = ""
     codex_thread_ref = {"value": _clean_codex_thread_id(codex_thread_id)}
-    llm = ChatOpenRouter(
-        model=CHAT_MODEL,
-        request_timeout=120_000,
-        reasoning={"effort": CHAT_REASONING_EFFORT},
-        openrouter_provider=OPENROUTER_PROVIDER,
-    )
-    llm_tools = llm.bind_tools(AGENT_TOOLS)
     tool_handlers = _tool_handlers_for_thread(
         thread_id,
         on_progress=on_progress,
@@ -2313,6 +2306,13 @@ def build_agent_reply(
         )
         if on_progress:
             on_progress("Thinking…")
+        llm = ChatOpenRouter(
+            model=CHAT_MODEL,
+            request_timeout=120_000,
+            reasoning={"effort": CHAT_REASONING_EFFORT},
+            openrouter_provider=OPENROUTER_PROVIDER,
+        )
+        llm_tools = llm.bind_tools(AGENT_TOOLS)
         assistant_msg = _invoke_agent_model(llm_tools, chat_messages, on_token)
         chat_messages.append(_strip_reasoning_details(assistant_msg))
         tool_calls = assistant_msg.tool_calls or []

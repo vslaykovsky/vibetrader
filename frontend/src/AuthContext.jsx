@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { supabase } from './supabaseClient';
 
 const AuthContext = createContext(null);
@@ -20,20 +20,20 @@ export function AuthProvider({ children }) {
     return () => subscription.unsubscribe();
   }, []);
 
-  async function signInWithGoogle() {
+  const signInWithGoogle = useCallback(async () => {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: { redirectTo: `${window.location.origin}/auth/callback` },
     });
     if (error) throw error;
-  }
+  }, []);
 
-  async function signOut() {
+  const signOut = useCallback(async () => {
     const { error } = await supabase.auth.signOut();
     if (error) throw error;
-  }
+  }, []);
 
-  async function getAccessToken() {
+  const getAccessToken = useCallback(async () => {
     const { data: { session }, error } = await supabase.auth.getSession();
     if (error || !session) return null;
     const nowSec = Math.floor(Date.now() / 1000);
@@ -48,16 +48,19 @@ export function AuthProvider({ children }) {
       }
     }
     return session.access_token ?? null;
-  }
+  }, []);
 
-  const value = {
-    session,
-    user: session?.user ?? null,
-    loading,
-    signInWithGoogle,
-    signOut,
-    getAccessToken,
-  };
+  const value = useMemo(
+    () => ({
+      session,
+      user: session?.user ?? null,
+      loading,
+      signInWithGoogle,
+      signOut,
+      getAccessToken,
+    }),
+    [getAccessToken, loading, session, signInWithGoogle, signOut],
+  );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

@@ -815,6 +815,7 @@ export function StrategyPage() {
   const serverJobStatusRef = useRef(null);
   const viewingRunIdRef = useRef(null);
   const liveStrategyRunIdRef = useRef('');
+  const strategyStreamHandlersRef = useRef({});
   const lastStreamEventSeqByRunIdRef = useRef({});
   const ignoredStreamRunIdsRef = useRef(new Set());
   const algorithmFetchAbortRef = useRef(null);
@@ -1880,6 +1881,15 @@ export function StrategyPage() {
     return () => controller.abort();
   }, [sidebarOpen, signedInUserId]);
 
+  strategyStreamHandlersRef.current = {
+    applyAssistantDelta,
+    mergeStrategyNameFromPayload,
+    setCanvasIfChanged,
+    setMessagesFromStrategyPayload,
+    shouldApplyStreamEvent,
+    syncLiveStrategyFromServer,
+  };
+
   useEffect(() => {
     if (serverJob.status !== 'running') {
       return undefined;
@@ -1900,8 +1910,9 @@ export function StrategyPage() {
       evtSource.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data);
-          setMessagesFromStrategyPayload(payload);
-          setCanvasIfChanged(payload.canvas);
+          const handlers = strategyStreamHandlersRef.current;
+          handlers.setMessagesFromStrategyPayload?.(payload);
+          handlers.setCanvasIfChanged?.(payload.canvas);
           if (typeof payload.id === 'string') {
             setLiveStrategyRunId(payload.id);
           }
@@ -1913,7 +1924,7 @@ export function StrategyPage() {
             status: payload.status ?? null,
             statusText: payload.status_text || '',
           });
-          mergeStrategyNameFromPayload(payload);
+          handlers.mergeStrategyNameFromPayload?.(payload);
           if (payload.status !== 'running') {
             setSubmitting(false);
             evtSource.close();
@@ -1925,7 +1936,7 @@ export function StrategyPage() {
 
       evtSource.addEventListener('assistant_delta', (event) => {
         try {
-          applyAssistantDelta(JSON.parse(event.data));
+          strategyStreamHandlersRef.current.applyAssistantDelta?.(JSON.parse(event.data));
         } catch {
         }
       });
@@ -1933,7 +1944,7 @@ export function StrategyPage() {
       evtSource.addEventListener('agent_status', (event) => {
         try {
           const payload = JSON.parse(event.data);
-          if (!shouldApplyStreamEvent(payload)) {
+          if (!strategyStreamHandlersRef.current.shouldApplyStreamEvent?.(payload)) {
             return;
           }
           setServerJob((prev) => ({
@@ -1948,7 +1959,7 @@ export function StrategyPage() {
       evtSource.addEventListener('agent_error', (event) => {
         try {
           const payload = JSON.parse(event.data);
-          if (shouldApplyStreamEvent(payload) && payload.message) {
+          if (strategyStreamHandlersRef.current.shouldApplyStreamEvent?.(payload) && payload.message) {
             setError(payload.message);
           }
         } catch {
@@ -1956,9 +1967,12 @@ export function StrategyPage() {
       });
 
       evtSource.onerror = () => {
+        if (cancelled) {
+          return;
+        }
         evtSource.close();
         setSubmitting(false);
-        void syncLiveStrategyFromServer();
+        void strategyStreamHandlersRef.current.syncLiveStrategyFromServer?.();
       };
     })();
 
@@ -1970,12 +1984,6 @@ export function StrategyPage() {
     threadId,
     serverJob.status,
     getAccessToken,
-    syncLiveStrategyFromServer,
-    mergeStrategyNameFromPayload,
-    setCanvasIfChanged,
-    setMessagesFromStrategyPayload,
-    applyAssistantDelta,
-    shouldApplyStreamEvent,
   ]);
 
   useLayoutEffect(() => {
