@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 from datetime import datetime, timedelta
 import dotenv
 dotenv.load_dotenv()
@@ -24,7 +25,6 @@ from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
     ToolMessage,
-    message_chunk_to_message,
 )
 
 from langchain_openrouter import ChatOpenRouter
@@ -33,6 +33,8 @@ from langchain_openrouter import ChatOpenRouter
 CHAT_MODEL = os.getenv("CHAT_MODEL", "openai/gpt-5.4")
 CHAT_REASONING_EFFORT = os.getenv("CHAT_REASONING_EFFORT", "medium")
 OPENROUTER_PROVIDER = {"only": ["OpenAI", "Anthropic"], "allow_fallbacks": False}
+CHAT_OPENROUTER_AINVOKE_TIMEOUT_SECONDS = 120
+CHAT_OPENROUTER_AINVOKE_TIMEOUT_RETRIES = 3
 
 CODEX_MODEL = os.getenv("CODEX_MODEL", "gpt-5.4")
 CODEX_REASONING_EFFORT = os.getenv("CODEX_REASONING_EFFORT", "high")
@@ -127,6 +129,7 @@ Analysis and optimization
 * For EDA, market research, or charts without a tradable strategy, use update_strategy then run_backtest.
 * For explicit parameter optimization requests, use run_hyperopt. Use parameters_hyperopt_json for study-only overrides and parameters_json for base simulation inputs. Do not run hyperopt for ordinary strategy creation, strategy edits, parameter changes, EDA, or backtest refreshes.
 * If params.json contains run_mode, treat the strategy as trainable and run separate train and out-of-sample test backtests with run_mode/date overrides rather than one combined run.
+* For questions about how the latest strategy run performed on historical data, use analyse_run. This includes questions about specific trades, orders, fills, entries/exits, PnL, metrics, dates, bars, or why something happened in the latest backtest. Do not use analyse_code for these.
 
 Canvas and data
 * The canvas shows latest run output: interactive price/indicator charts plus emitted panels. Users can pan, zoom, collapse sections, remove with "x", reorder by drag, and hover "?" for per-chart help; UI state is local to that run.
@@ -151,7 +154,9 @@ RUN_BACKTEST_TOOL_NAME = "run_backtest"
 RUN_HYPEROPT_TOOL_NAME = "run_hyperopt"
 UPDATE_STRATEGY_TOOL_MESSAGE_MAX_JSON = 1024
 RUN_EXECUTION_TOOL_MESSAGE_MAX_JSON = 4096
+ANALYSE_RUN_TOOL_MESSAGE_MAX_JSON = 4096
 ANALYSE_CODE_TOOL_NAME = "analyse_code"
+ANALYSE_RUN_TOOL_NAME = "analyse_run"
 LIST_TICKERS_TOOL_NAME = "list_tickers"
 TICKER_LIST_DEFAULT_LIMIT = 25
 TICKER_LIST_MAX_LIMIT = 100
@@ -756,10 +761,35 @@ AGENT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": ANALYSE_RUN_TOOL_NAME,
+            "description": (
+                "Use Codex to answer questions about how the latest backtest or historical strategy run performed. "
+                "Use this for specific trades, orders, fills, entries/exits, PnL, metrics, dates, bars, or why a runtime "
+                "event happened. It inspects run output files; no file edits."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": (
+                            "A natural-language question about latest run output, historical performance, specific dates, "
+                            "trades, fills, bars, PnL, or metrics."
+                        ),
+                    }
+                },
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": ANALYSE_CODE_TOOL_NAME,
             "description": (
                 "Answer quick questions about this thread's current strategy.py logic and params only. "
-                "No file edits; not for simulator, portfolio, fills, metrics, or platform behavior."
+                "No file edits; not for historical performance, specific trades, dates, simulator, portfolio, fills, "
+                "metrics, run output, or platform behavior."
             ),
             "parameters": {
                 "type": "object",
@@ -841,15 +871,151 @@ def run_analyse_code(
         request_timeout=120_000,
         openrouter_provider=OPENROUTER_PROVIDER,
     )
-    msg = llm.invoke(
+    msg = _run_chat_openrouter_ainvoke(
+        llm,
         [
             SystemMessage(content=analysis_system),
             SystemMessage(content=context),
             HumanMessage(content=q),
-        ]
+        ],
+        timeout_seconds=120,
     )
     answer = _aimessage_plain_text(msg).strip()
     return {"ok": True, "answer": answer}
+
+
+def _codex_content_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for block in value:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                else:
+                    nested = block.get("content")
+                    if isinstance(nested, (str, list)):
+                        parts.append(_codex_content_text(nested))
+        return "".join(parts)
+    return ""
+
+
+def _codex_event_answer_text(event: dict[str, Any]) -> str:
+    item = event.get("item")
+    if isinstance(item, dict):
+        item_type = str(item.get("type") or "")
+        role = str(item.get("role") or "")
+        if item_type in ("agent_message", "assistant_message") or (
+            item_type == "message" and role == "assistant"
+        ):
+            text = _codex_content_text(item.get("content"))
+            if text:
+                return text
+            text = _codex_content_text(item.get("text"))
+            if text:
+                return text
+    message = event.get("message")
+    if isinstance(message, dict):
+        role = str(message.get("role") or "")
+        if not role or role == "assistant":
+            text = _codex_content_text(message.get("content"))
+            if text:
+                return text
+            text = _codex_content_text(message.get("text"))
+            if text:
+                return text
+    event_type = str(event.get("type") or "")
+    if event_type in ("agent_message", "assistant_message"):
+        text = _codex_content_text(event.get("content"))
+        if text:
+            return text
+        text = _codex_content_text(event.get("text"))
+        if text:
+            return text
+    for key in ("answer", "final_answer", "output"):
+        text = _codex_content_text(event.get(key))
+        if text:
+            return text
+    return ""
+
+
+def _codex_stdout_final_answer(stdout: str) -> str:
+    answers: list[str] = []
+    for line in (stdout or "").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        text = _codex_event_answer_text(event).strip()
+        if text:
+            answers.append(text)
+    return answers[-1].strip() if answers else ""
+
+
+def _codex_analyse_run_task(question: str) -> str:
+    return f"""Answer the user's question by inspecting this strategy workspace and the latest run output.
+
+User question:
+{question}
+
+Rules:
+- Do not edit, create, delete, or rename files.
+- Use actual workspace data such as params.json, backtest.json, metrics.json, strategy.py, utils.py, trained_model_params.json, and emitted output JSON.
+- This is a historical performance analysis request: trades, fills, entries, exits, PnL, metrics, dates, bars, indicator values, or why a runtime event happened.
+- You may run read-only shell or Python commands to inspect files.
+- If the necessary output data is missing, say exactly what is missing and do not guess.
+- Respond directly and concisely in plain text.
+"""
+
+
+@traceable(name="run_analyse_run", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
+def run_analyse_run(
+    *,
+    thread_id: str,
+    question: str,
+    on_progress: ProgressCallback = None,
+    codex_thread_id: str | None = None,
+) -> dict[str, Any]:
+    q = (question or "").strip()
+    if not q:
+        return {"ok": False, "error": "question is empty"}
+    if not thread_id_allowed(thread_id):
+        return {"ok": False, "error": "invalid thread_id"}
+    root = ensure_strategy_workspace(thread_id)
+    if on_progress:
+        on_progress("Analyzing latest run output, this may take a few minutes…")
+    existing_codex_thread_id = _clean_codex_thread_id(codex_thread_id)
+    proc = _run_codex_exec(
+        _codex_analyse_run_task(q),
+        root,
+        codex_thread_id=existing_codex_thread_id,
+    )
+    next_codex_thread_id = _codex_thread_id_from_stdout(proc.stdout or "") or existing_codex_thread_id
+    answer = _codex_stdout_final_answer(proc.stdout or "")
+    result: dict[str, Any] = {
+        "runner": "codex",
+        "codex_returncode": proc.returncode,
+        "codex_stdout": _tail(proc.stdout or ""),
+        "codex_stderr": _tail(proc.stderr or ""),
+        "codex_thread_id": next_codex_thread_id,
+        "ok": proc.returncode == 0,
+    }
+    if answer:
+        result["answer"] = answer
+    if proc.returncode != 0:
+        combined_output = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+        if _coding_agent_usage_limit_error(combined_output):
+            result["error"] = INTERNAL_LIMITS_MESSAGE
+            result["terminal"] = True
+        else:
+            result["error"] = "codex exec failed"
+    return result
 
 
 _TICKER_SQL_BLOCKED_RE = re.compile(
@@ -1006,15 +1172,18 @@ def _generate_ticker_listing_sql(*, query: str, limit: int) -> str:
         "For liquid, popular, or high-volume requests, order by last_day_volume_usd IS NULL, last_day_volume_usd DESC. "
         f"Use SQL compatible with {dialect}. Include LIMIT {limit}. Return only SQL."
     )
-    msg = ChatOpenRouter(
+    llm = ChatOpenRouter(
         model=TICKER_SQL_MODEL,
         request_timeout=60_000,
         openrouter_provider=OPENROUTER_PROVIDER,
-    ).invoke(
+    )
+    msg = _run_chat_openrouter_ainvoke(
+        llm,
         [
             SystemMessage(content=system),
             HumanMessage(content=(query or "").strip()),
-        ]
+        ],
+        timeout_seconds=60,
     )
     return _normalize_ticker_listing_sql(_aimessage_plain_text(msg))
 
@@ -1102,14 +1271,16 @@ def generate_strategy_algorithm_pseudocode(*, code: str, language: str = "") -> 
         request_timeout=120_000,
         openrouter_provider=OPENROUTER_PROVIDER,
     )
-    msg = llm.invoke(
+    msg = _run_chat_openrouter_ainvoke(
+        llm,
         [
             SystemMessage(content=system),
             HumanMessage(
                 content="Extract core-algorithm pseudocode from this strategy.py (business logic only, no I/O boilerplate).\n\n"
                 + src
             ),
-        ]
+        ],
+        timeout_seconds=120,
     )
     text = _aimessage_plain_text(msg).strip()
     return {"ok": True, "algorithm": text or "(empty response)"}
@@ -1870,6 +2041,16 @@ def _tool_handlers_for_thread(
             question=str(args.get("question", "")),
         )
 
+    def _analyse_run(args: dict[str, Any]) -> dict[str, Any]:
+        payload = run_analyse_run(
+            thread_id=thread_id,
+            question=str(args.get("question", "")),
+            on_progress=on_progress,
+            codex_thread_id=(codex_thread_ref or {}).get("value", ""),
+        )
+        _remember_codex_thread_id(payload)
+        return payload
+
     def _list_tickers(args: dict[str, Any]) -> dict[str, Any]:
         return run_list_tickers(
             query=str(args.get("query", "")),
@@ -1881,6 +2062,7 @@ def _tool_handlers_for_thread(
         UPDATE_STRATEGY_TOOL_NAME: _update,
         RUN_BACKTEST_TOOL_NAME: _run_backtest_tool,
         RUN_HYPEROPT_TOOL_NAME: _run_hyperopt_tool,
+        ANALYSE_RUN_TOOL_NAME: _analyse_run,
         ANALYSE_CODE_TOOL_NAME: _analyse,
     }
 
@@ -1976,6 +2158,52 @@ def _aimessage_plain_text(msg: AIMessage) -> str:
     return str(c)
 
 
+async def _chat_openrouter_ainvoke_with_timeout_retries(
+    llm: Any,
+    chat_messages: list[BaseMessage],
+    *,
+    timeout_seconds: float = CHAT_OPENROUTER_AINVOKE_TIMEOUT_SECONDS,
+    retries: int = CHAT_OPENROUTER_AINVOKE_TIMEOUT_RETRIES,
+) -> AIMessage:
+    last_timeout: TimeoutError | None = None
+    for retry in range(retries + 1):
+        try:
+            msg = await asyncio.wait_for(llm.ainvoke(chat_messages), timeout=timeout_seconds)
+            if isinstance(msg, AIMessage):
+                return msg
+            return AIMessage(content=getattr(msg, "content", ""))
+        except asyncio.TimeoutError as e:
+            last_timeout = e
+            if retry >= retries:
+                raise
+            logger.warning(
+                "ChatOpenRouter ainvoke timed out; retrying",
+                extra={
+                    "attempt": retry + 1,
+                    "max_retries": retries,
+                    "timeout_seconds": timeout_seconds,
+                },
+            )
+    raise last_timeout or TimeoutError("ChatOpenRouter ainvoke timed out")
+
+
+def _run_chat_openrouter_ainvoke(
+    llm: Any,
+    chat_messages: list[BaseMessage],
+    *,
+    timeout_seconds: float = CHAT_OPENROUTER_AINVOKE_TIMEOUT_SECONDS,
+    retries: int = CHAT_OPENROUTER_AINVOKE_TIMEOUT_RETRIES,
+) -> AIMessage:
+    return asyncio.run(
+        _chat_openrouter_ainvoke_with_timeout_retries(
+            llm,
+            chat_messages,
+            timeout_seconds=timeout_seconds,
+            retries=retries,
+        )
+    )
+
+
 def _tool_call_parts(tc: Any) -> tuple[str, dict[str, Any], str]:
     if isinstance(tc, dict):
         name = str(tc.get("name", "") or "")
@@ -2016,29 +2244,11 @@ def _strip_reasoning_details(msg: AIMessage) -> AIMessage:
 
 
 def _invoke_agent_model(llm_tools: Any, chat_messages: list[BaseMessage], on_token: TokenCallback) -> AIMessage:
-    if on_token is None:
-        return llm_tools.invoke(chat_messages)
-    merged = None
-    emitted_text = ""
-    try:
-        for chunk in llm_tools.stream(chat_messages):
-            merged = chunk if merged is None else merged + chunk
-            if getattr(chunk, "tool_call_chunks", None):
-                continue
-            delta = _aimessage_plain_text(chunk)
-            if delta:
-                emitted_text += delta
-                on_token(delta)
-    except Exception:
-        logger.exception("streaming model invocation failed; falling back to blocking invocation")
-        return llm_tools.invoke(chat_messages)
-    if merged is None:
-        return AIMessage(content="")
-    msg = message_chunk_to_message(merged)
-    if not isinstance(msg, AIMessage):
-        return AIMessage(content=getattr(msg, "content", ""))
-    if msg.tool_calls and emitted_text:
-        logger.info("model streamed text before tool call", extra={"emitted_chars": len(emitted_text)})
+    msg = _run_chat_openrouter_ainvoke(llm_tools, chat_messages)
+    if on_token is not None and not msg.tool_calls:
+        content = _aimessage_plain_text(msg)
+        if content:
+            on_token(content)
     return msg
 
 
@@ -2169,6 +2379,13 @@ def build_agent_reply(
                     RUN_EXECUTION_TOOL_MESSAGE_MAX_JSON,
                     "backtest_stdout",
                     "backtest_stderr",
+                )
+            elif name == ANALYSE_RUN_TOOL_NAME:
+                limited = _trim_tool_payload_streams(
+                    tool_payload,
+                    ANALYSE_RUN_TOOL_MESSAGE_MAX_JSON,
+                    "codex_stdout",
+                    "codex_stderr",
                 )
             chat_messages.append(
                 ToolMessage(content=json.dumps(limited), tool_call_id=tid)
