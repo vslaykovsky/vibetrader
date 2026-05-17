@@ -134,8 +134,8 @@ What the user can see in backtest canvas only:
 
 Charts rules:
 - Use subscriptions for all market data. Do not fetch data with yfinance or any other source inside `strategy.py`.
-- Do not produce duplicate charts. Check what is already emitted automatically and only produce new unique charts. 
-- Only output charts, OutputIndicatorDataPoint items for data that was explicitly mentioned in the user request!
+- Do not produce duplicate charts. Check what is already emitted automatically and only produce new unique charts.
+- Only output charts, OutputIndicatorDataPoint items for data that was explicitly mentioned as chart/visual data in the user request! 
 - Prefer OutputIndicatorDataPoint when producing new charts as they are accessible in both backtest and live trading. 
 - Only use LightweightChartsChart, PlotlyChart, TableChart if the data cannot be rendered and is not already rendered by using OutputIndicatorSubscriptionOrder, OutputTickerSubscription and OutputIndicatorDataPoint
 - Use `PlotlyChart` only as a last resort; it is backtest-only, not interactive, and not synchronized with lightweight charts. When deciding between LightweightChartsChart and PlotlyChart choose LightweightChartsChart if possible. 
