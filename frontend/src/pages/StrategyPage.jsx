@@ -818,6 +818,7 @@ export function StrategyPage() {
   const strategyStreamHandlersRef = useRef({});
   const lastStreamEventSeqByRunIdRef = useRef({});
   const ignoredStreamRunIdsRef = useRef(new Set());
+  const closedStreamRunIdsRef = useRef(new Set());
   const algorithmFetchAbortRef = useRef(null);
   const canvasLoadSeqRef = useRef(0);
   const chartsMountRef = useRef(null);
@@ -1000,6 +1001,31 @@ export function StrategyPage() {
     setCanvas((prev) => (canvasPayloadsEqual(prev, normalized) ? prev : normalized));
   }, []);
 
+  const rememberRunStatus = useCallback((runId, status) => {
+    const rid = typeof runId === 'string' ? runId.trim() : '';
+    if (!rid) {
+      return;
+    }
+    if (status == null) {
+      return;
+    }
+    if (status === 'running') {
+      if (!closedStreamRunIdsRef.current.has(rid)) {
+        closedStreamRunIdsRef.current.delete(rid);
+      }
+    } else {
+      closedStreamRunIdsRef.current.add(rid);
+    }
+  }, []);
+
+  const visibleRunStatus = useCallback((runId, status) => {
+    const rid = typeof runId === 'string' ? runId.trim() : '';
+    if (rid && status === 'running' && closedStreamRunIdsRef.current.has(rid)) {
+      return null;
+    }
+    return status ?? null;
+  }, []);
+
   const applyLiveCanvasPayload = useCallback(
     (payload) => {
       setCanvasIfChanged(payload?.canvas);
@@ -1012,13 +1038,14 @@ export function StrategyPage() {
       setLiveStrategyPythonCode(typeof payload?.python_code === 'string' ? payload.python_code : '');
       if (payload?.status != null || payload?.status_text != null) {
         setServerJob({
-          status: payload.status ?? null,
+          status: visibleRunStatus(payload?.id, payload?.status),
           statusText: payload.status_text || '',
         });
       }
+      rememberRunStatus(payload?.id, payload?.status);
       mergeStrategyNameFromPayload(payload);
     },
-    [mergeStrategyNameFromPayload, setCanvasIfChanged],
+    [mergeStrategyNameFromPayload, rememberRunStatus, setCanvasIfChanged, visibleRunStatus],
   );
 
   const setMessagesFromStrategyPayload = useCallback((payload) => {
@@ -1055,7 +1082,7 @@ export function StrategyPage() {
           return;
         }
         const payload = await response.json().catch(() => ({}));
-        if (signal?.aborted || viewingRunIdRef.current) {
+        if (signal?.aborted || viewingRunIdRef.current || canvasLoadSeqRef.current !== seq) {
           return;
         }
         applyLiveCanvasPayload(payload);
@@ -1075,6 +1102,9 @@ export function StrategyPage() {
       return false;
     }
     if (ignoredStreamRunIdsRef.current.has(rid)) {
+      return false;
+    }
+    if (closedStreamRunIdsRef.current.has(rid)) {
       return false;
     }
     const prev = Number(lastStreamEventSeqByRunIdRef.current[rid] || 0);
@@ -1184,9 +1214,10 @@ export function StrategyPage() {
       }
       setLiveStrategyPythonCode(typeof payload.python_code === 'string' ? payload.python_code : '');
       setServerJob({
-        status: payload.status ?? null,
+        status: visibleRunStatus(payload.id, payload.status),
         statusText: payload.status_text || '',
       });
+      rememberRunStatus(payload.id, payload.status);
       mergeStrategyNameFromPayload(payload);
       void fetchLiveCanvas();
     } catch {
@@ -1197,7 +1228,9 @@ export function StrategyPage() {
     authFetch,
     fetchLiveCanvas,
     mergeStrategyNameFromPayload,
+    rememberRunStatus,
     setMessagesFromStrategyPayload,
+    visibleRunStatus,
   ]);
 
   const prevJobStatusRef = useRef(null);
@@ -1404,7 +1437,7 @@ export function StrategyPage() {
         }
         if (payload.status != null || payload.status_text != null) {
           setServerJob({
-            status: payload.status ?? null,
+            status: visibleRunStatus(payload.id, payload.status),
             statusText: payload.status_text || '',
           });
         }
@@ -1423,9 +1456,10 @@ export function StrategyPage() {
       }
       setLiveStrategyPythonCode(typeof payload.python_code === 'string' ? payload.python_code : '');
       setServerJob({
-        status: payload.status ?? null,
+        status: visibleRunStatus(payload.id, payload.status),
         statusText: payload.status_text || '',
       });
+      rememberRunStatus(payload.id, payload.status);
       mergeStrategyNameFromPayload(payload);
       if (payload.status !== 'running') {
         setSubmitting(false);
@@ -1453,9 +1487,11 @@ export function StrategyPage() {
     location.search,
     mergeStrategyNameFromPayload,
     navigate,
+    rememberRunStatus,
     setCanvasIfChanged,
     setMessagesFromStrategyPayload,
     threadId,
+    visibleRunStatus,
   ]);
 
   const handleViewStrategy = useCallback(async (runId) => {
@@ -1485,6 +1521,7 @@ export function StrategyPage() {
     hydratingForRef.current = '';
     prevJobStatusRef.current = null;
     lastStreamEventSeqByRunIdRef.current = {};
+    closedStreamRunIdsRef.current = new Set();
     setStreamingAssistantRunId('');
     setStrategyNameByRunId({});
     setEditingCanvasTitle(false);
@@ -1622,7 +1659,7 @@ export function StrategyPage() {
       setLiveStrategyAlgorithm(typeof next.algorithm === 'string' ? next.algorithm : '');
       setLiveStrategyPythonCode(typeof next.python_code === 'string' ? next.python_code : '');
       setServerJob({
-        status: next.status ?? null,
+        status: visibleRunStatus(next.id, next.status),
         statusText: next.status_text || '',
       });
       setSubmitting(false);
@@ -1727,9 +1764,10 @@ export function StrategyPage() {
         setLiveStrategyAlgorithm(typeof payload.algorithm === 'string' ? payload.algorithm : '');
         setLiveStrategyPythonCode(typeof payload.python_code === 'string' ? payload.python_code : '');
         setServerJob({
-          status: payload.status ?? null,
+          status: visibleRunStatus(payload.id, payload.status),
           statusText: payload.status_text || '',
         });
+        rememberRunStatus(payload.id, payload.status);
         mergeStrategyNameFromPayload(payload);
         const loc = locationRef.current;
         const rawDraft = loc?.state?.draft;
@@ -1762,6 +1800,8 @@ export function StrategyPage() {
     handleSubmit,
     fetchLiveCanvas,
     setMessagesFromStrategyPayload,
+    rememberRunStatus,
+    visibleRunStatus,
   ]);
 
   useEffect(() => {
@@ -1894,6 +1934,16 @@ export function StrategyPage() {
     if (serverJob.status !== 'running') {
       return undefined;
     }
+    const activeRunId = String(liveStrategyRunIdRef.current || '').trim();
+    if (activeRunId && closedStreamRunIdsRef.current.has(activeRunId)) {
+      setSubmitting(false);
+      setServerJob((prev) => (
+        prev.status === 'running'
+          ? { status: null, statusText: '' }
+          : prev
+      ));
+      return undefined;
+    }
 
     let evtSource;
     let cancelled = false;
@@ -1921,9 +1971,10 @@ export function StrategyPage() {
           }
           setLiveStrategyPythonCode(typeof payload.python_code === 'string' ? payload.python_code : '');
           setServerJob({
-            status: payload.status ?? null,
+            status: visibleRunStatus(payload.id, payload.status),
             statusText: payload.status_text || '',
           });
+          rememberRunStatus(payload.id, payload.status);
           handlers.mergeStrategyNameFromPayload?.(payload);
           if (payload.status !== 'running') {
             setSubmitting(false);
@@ -1941,17 +1992,50 @@ export function StrategyPage() {
         }
       });
 
+      evtSource.addEventListener('assistant_done', (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (!strategyStreamHandlersRef.current.shouldApplyStreamEvent?.(payload)) {
+            return;
+          }
+          const rid = typeof payload?.run_id === 'string' ? payload.run_id.trim() : '';
+          if (rid) {
+            closedStreamRunIdsRef.current.add(rid);
+          }
+          setStreamingAssistantRunId((prev) => (prev === rid ? '' : prev));
+          setSubmitting(false);
+          setServerJob((prev) => (
+            prev.status === 'running'
+              ? { status: null, statusText: '' }
+              : prev
+          ));
+          window.setTimeout(() => {
+            void strategyStreamHandlersRef.current.syncLiveStrategyFromServer?.();
+          }, 150);
+        } catch {
+        }
+      });
+
       evtSource.addEventListener('agent_status', (event) => {
         try {
           const payload = JSON.parse(event.data);
           if (!strategyStreamHandlersRef.current.shouldApplyStreamEvent?.(payload)) {
             return;
           }
-          setServerJob((prev) => ({
-            ...prev,
-            status: prev.status || 'running',
-            statusText: payload.status_text || prev.statusText || '',
-          }));
+          const rid = typeof payload?.run_id === 'string' ? payload.run_id.trim() : '';
+          if (rid && liveStrategyRunIdRef.current && rid !== liveStrategyRunIdRef.current) {
+            return;
+          }
+          setServerJob((prev) => {
+            if (prev.status && prev.status !== 'running') {
+              return prev;
+            }
+            return {
+              ...prev,
+              status: 'running',
+              statusText: payload.status_text || prev.statusText || '',
+            };
+          });
         } catch {
         }
       });
@@ -1972,6 +2056,11 @@ export function StrategyPage() {
         }
         evtSource.close();
         setSubmitting(false);
+        setServerJob((prev) => (
+          prev.status === 'running'
+            ? { status: null, statusText: '' }
+            : prev
+        ));
         void strategyStreamHandlersRef.current.syncLiveStrategyFromServer?.();
       };
     })();
@@ -1984,6 +2073,8 @@ export function StrategyPage() {
     threadId,
     serverJob.status,
     getAccessToken,
+    rememberRunStatus,
+    visibleRunStatus,
   ]);
 
   useLayoutEffect(() => {
@@ -2068,8 +2159,11 @@ export function StrategyPage() {
     };
   }, [displayOutput, hourFormat, threadId, timeZone]);
 
+  const liveStreamClosed =
+    Boolean(liveStrategyRunId) && closedStreamRunIdsRef.current.has(liveStrategyRunId);
   const showProcessing =
     (submitting || serverJob.status === 'running') &&
+    !liveStreamClosed &&
     (!streamingAssistantRunId || streamingAssistantRunId !== liveStrategyRunId);
   const processingLabel =
     serverJob.status === 'running'

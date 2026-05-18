@@ -4,16 +4,16 @@ import json
 import threading
 import time
 
+from datetime import datetime, timedelta, timezone
 from flask import Blueprint, Response, current_app, g, jsonify, request, stream_with_context
 import logging
 from pathlib import Path
-from sqlalchemy import desc, text
+from sqlalchemy import desc, or_, text
 from sqlalchemy.orm import defer
 from auth import require_auth
 from db.models import Strategy
 from db.session import SessionLocal
 from db.strategy_queries import (
-    ensure_latest_thread_strategy,
     get_strategy_by_id,
     latest_thread_strategy,
 )
@@ -38,6 +38,7 @@ from langsmith.run_helpers import get_current_run_tree
 
 strategy_blueprint = Blueprint("strategy", __name__)
 logger = logging.getLogger(__name__)
+STALE_RUNNING_AFTER = timedelta(hours=6)
 
 
 def _sse_json(payload: dict, *, event: str | None = None, event_id: int | None = None) -> str:
@@ -68,6 +69,39 @@ def _stream_event_payload(event: dict) -> dict:
     }
     payload.update(data)
     return payload
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _as_utc(value) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _running_cutoff() -> datetime:
+    return (_now_utc() - STALE_RUNNING_AFTER).replace(tzinfo=None)
+
+
+def _strategy_running_is_stale(strategy: Strategy) -> bool:
+    if str(getattr(strategy, "status", "") or "") != "running":
+        return False
+    created_at = _as_utc(getattr(strategy, "created_at", None))
+    if created_at is None:
+        return False
+    return _now_utc() - created_at > STALE_RUNNING_AFTER
+
+
+def _strategy_status_fields(strategy: Strategy) -> tuple[str, str]:
+    status = str(getattr(strategy, "status", "") or "")
+    status_text = str(getattr(strategy, "status_text", "") or "")
+    if status == "running" and _strategy_running_is_stale(strategy):
+        return "failure", status_text or "Run did not finish."
+    return status, status_text
 
 
 def _messages_with_admin_extras(
@@ -121,6 +155,65 @@ def _messages_without_admin_extras(messages: list) -> list:
         item.pop("langsmith_trace", None)
         out.append(item)
     return out
+
+
+def _current_user_id() -> str:
+    return str(getattr(g, "user_id", "") or "").strip()
+
+
+def _owned_or_legacy_filter(uid: str):
+    return or_(Strategy.created_by == uid, Strategy.created_by.is_(None))
+
+
+def _strategy_accessible_to_current_user(strategy: Strategy) -> bool:
+    if bool(getattr(g, "is_admin", False)):
+        return True
+    owner = str(getattr(strategy, "created_by", "") or "").strip()
+    return not owner or owner == _current_user_id()
+
+
+def _latest_thread_strategy_for_user(session, thread_id: str, uid: str) -> Strategy | None:
+    return (
+        session.query(Strategy)
+        .filter(Strategy.thread_id == thread_id, _owned_or_legacy_filter(uid))
+        .order_by(desc(Strategy.created_at), desc(Strategy.id))
+        .first()
+    )
+
+
+def _latest_thread_strategy_lightweight_for_user(
+    session,
+    thread_id: str,
+    uid: str,
+) -> Strategy | None:
+    return (
+        session.query(Strategy)
+        .options(defer(Strategy.canvas), defer(Strategy.code), defer(Strategy.algorithm))
+        .filter(Strategy.thread_id == thread_id, _owned_or_legacy_filter(uid))
+        .order_by(desc(Strategy.created_at), desc(Strategy.id))
+        .first()
+    )
+
+
+def _ensure_latest_thread_strategy_for_user(
+    session,
+    thread_id: str,
+    uid: str,
+    created_by_email: str | None,
+) -> Strategy:
+    strategy = _latest_thread_strategy_for_user(session, thread_id, uid)
+    if strategy is not None:
+        return strategy
+    strategy = Strategy(
+        thread_id=thread_id,
+        created_by=uid,
+        created_by_email=created_by_email,
+        messages=[],
+        canvas={},
+    )
+    session.add(strategy)
+    session.flush()
+    return strategy
 
 
 def _strategy_name_from_canvas(canvas: dict | None) -> str:
@@ -198,6 +291,7 @@ def serialize_strategy(
     include_python_code: bool = True,
 ) -> dict:
     is_admin = bool(g.is_admin)
+    status, status_text = _strategy_status_fields(strategy)
     messages = redact_secret_json_values_for_user(list(strategy.messages or []))
     if is_admin:
         messages = _messages_with_admin_extras(messages, strategy, langsmith_traces)
@@ -207,8 +301,8 @@ def serialize_strategy(
         "id": strategy.id,
         "thread_id": strategy.thread_id,
         "messages": messages,
-        "status": strategy.status,
-        "status_text": strategy.status_text or "",
+        "status": status,
+        "status_text": status_text,
         "langsmith_trace": (strategy.langsmith_trace or "") if is_admin else "",
         "strategy_name": strategy.strategy_name or "",
         "language": strategy.language or "",
@@ -226,12 +320,13 @@ def serialize_strategy(
 
 def serialize_strategy_canvas(strategy: Strategy) -> dict:
     is_admin = bool(g.is_admin)
+    status, status_text = _strategy_status_fields(strategy)
     payload = {
         "id": strategy.id,
         "thread_id": strategy.thread_id,
         "canvas": redact_secret_json_values_for_user(dict(strategy.canvas or {})),
-        "status": strategy.status,
-        "status_text": strategy.status_text or "",
+        "status": status,
+        "status_text": status_text,
         "strategy_name": strategy.strategy_name or "",
         "algorithm": strategy.algorithm or "",
         "created_at": strategy.created_at.isoformat() if strategy.created_at else None,
@@ -284,16 +379,6 @@ def _include_strategy_heavy_fields() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
-def _latest_thread_strategy_lightweight(session, thread_id: str) -> Strategy | None:
-    return (
-        session.query(Strategy)
-        .options(defer(Strategy.canvas), defer(Strategy.code), defer(Strategy.algorithm))
-        .filter_by(thread_id=thread_id)
-        .order_by(desc(Strategy.created_at))
-        .first()
-    )
-
-
 @strategy_blueprint.get("/threads")
 @require_auth
 def list_threads() -> tuple:
@@ -340,6 +425,7 @@ def list_recent_threads() -> tuple:
 @strategy_blueprint.delete("/threads/<thread_id>")
 @require_auth
 def delete_thread(thread_id: str) -> tuple:
+    uid = _current_user_id()
     thread_id = (thread_id or "").strip()
     if not thread_id:
         return _validation_error("thread_id is required")
@@ -350,7 +436,7 @@ def delete_thread(thread_id: str) -> tuple:
     try:
         deleted = (
             session.query(Strategy)
-            .filter_by(thread_id=thread_id)
+            .filter(Strategy.thread_id == thread_id, _owned_or_legacy_filter(uid))
             .delete(synchronize_session=False)
         )
         session.commit()
@@ -362,6 +448,7 @@ def delete_thread(thread_id: str) -> tuple:
 @strategy_blueprint.post("/threads/<thread_id>/revert")
 @require_auth
 def revert_thread(thread_id: str) -> tuple:
+    uid = _current_user_id()
     thread_id = (thread_id or "").strip()
     if not thread_id:
         return _validation_error("thread_id is required")
@@ -378,12 +465,18 @@ def revert_thread(thread_id: str) -> tuple:
         target = session.get(Strategy, run_id)
         if target is None or target.thread_id != thread_id:
             return _validation_error("strategy not found")
+        if not _strategy_accessible_to_current_user(target):
+            return jsonify({"error": "forbidden", "status": None, "status_text": None}), 403
         if target.created_at is None:
             return _validation_error("strategy has no created_at")
 
         deleted = (
             session.query(Strategy)
-            .filter(Strategy.thread_id == thread_id, Strategy.created_at > target.created_at)
+            .filter(
+                Strategy.thread_id == thread_id,
+                _owned_or_legacy_filter(uid),
+                Strategy.created_at > target.created_at,
+            )
             .delete(synchronize_session=False)
         )
         session.commit()
@@ -610,7 +703,7 @@ def patch_strategy() -> tuple:
 @strategy_blueprint.get("/strategy")
 @require_auth
 def get_strategy() -> tuple:
-    uid = g.user_id
+    uid = _current_user_id()
     include_heavy_fields = _include_strategy_heavy_fields()
     run_id = request.args.get("id", "").strip()
     if run_id:
@@ -627,6 +720,8 @@ def get_strategy() -> tuple:
                 )
             if strategy is None:
                 return _validation_error("strategy not found")
+            if not _strategy_accessible_to_current_user(strategy):
+                return jsonify({"error": "forbidden", "status": None, "status_text": None}), 403
             _stamp_langsmith_thread_metadata(strategy.thread_id)
             traces = (
                 _thread_langsmith_traces(session, strategy.thread_id)
@@ -661,14 +756,14 @@ def get_strategy() -> tuple:
         needs_restore = not workspace.is_dir()
         created_strategy = False
         if include_heavy_fields:
-            strategy = ensure_latest_thread_strategy(
+            strategy = _ensure_latest_thread_strategy_for_user(
                 session,
                 thread_id,
                 uid,
                 getattr(g, "user_email", None),
             )
         else:
-            strategy = _latest_thread_strategy_lightweight(session, thread_id)
+            strategy = _latest_thread_strategy_lightweight_for_user(session, thread_id, uid)
             if strategy is None:
                 created_strategy = True
                 strategy = Strategy(
@@ -708,7 +803,7 @@ def get_strategy() -> tuple:
 @strategy_blueprint.get("/strategy/canvas")
 @require_auth
 def get_strategy_canvas() -> tuple:
-    uid = g.user_id
+    uid = _current_user_id()
     run_id = request.args.get("id", "").strip()
     if run_id:
         session = SessionLocal()
@@ -721,6 +816,8 @@ def get_strategy_canvas() -> tuple:
             )
             if cached_strategy is None:
                 return _validation_error("strategy not found")
+            if not _strategy_accessible_to_current_user(cached_strategy):
+                return jsonify({"error": "forbidden", "status": None, "status_text": None}), 403
             if _strategy_canvas_not_modified(cached_strategy):
                 return _strategy_canvas_not_modified_response(cached_strategy, immutable=True)
             _stamp_langsmith_thread_metadata(cached_strategy.thread_id)
@@ -737,13 +834,13 @@ def get_strategy_canvas() -> tuple:
 
     session = SessionLocal()
     try:
-        cached_strategy = _latest_thread_strategy_lightweight(session, thread_id)
+        cached_strategy = _latest_thread_strategy_lightweight_for_user(session, thread_id, uid)
         if cached_strategy is not None and _strategy_canvas_not_modified(cached_strategy):
             return _strategy_canvas_not_modified_response(cached_strategy, immutable=False)
         _stamp_langsmith_thread_metadata(thread_id)
         workspace = Path(STRATEGIES_DIR) / thread_id
         needs_restore = not workspace.is_dir()
-        strategy = ensure_latest_thread_strategy(
+        strategy = _ensure_latest_thread_strategy_for_user(
             session,
             thread_id,
             uid,
@@ -764,7 +861,7 @@ def get_strategy_canvas() -> tuple:
 @strategy_blueprint.post("/strategy")
 @require_auth
 def post_strategy() -> tuple:
-    uid = g.user_id
+    uid = _current_user_id()
     payload = request.get_json(silent=True) or {}
     thread_id = str(payload.get("thread_id", "")).strip()
     content = str(payload.get("message", "")).strip()
@@ -780,7 +877,12 @@ def post_strategy() -> tuple:
     try:
         running = (
             session.query(Strategy)
-            .filter(Strategy.thread_id == thread_id, Strategy.status == "running")
+            .filter(
+                Strategy.thread_id == thread_id,
+                _owned_or_legacy_filter(uid),
+                Strategy.status == "running",
+                or_(Strategy.created_at.is_(None), Strategy.created_at >= _running_cutoff()),
+            )
             .order_by(desc(Strategy.created_at))
             .first()
         )
@@ -790,7 +892,7 @@ def post_strategy() -> tuple:
             out["error"] = "A strategy update is already in progress."
             return jsonify(out), 409
 
-        latest = latest_thread_strategy(session, thread_id)
+        latest = _latest_thread_strategy_for_user(session, thread_id, uid)
         prev_messages = list(latest.messages or []) if latest else []
         prev_canvas = dict(latest.canvas or {}) if latest else {}
         prev_code = getattr(latest, "code", "") if latest else ""
@@ -875,9 +977,22 @@ def post_strategy_algorithm() -> tuple:
 @strategy_blueprint.get("/strategy/stream")
 @require_auth
 def strategy_stream():
+    uid = _current_user_id()
     thread_id = request.args.get("thread_id", "").strip()
     if not thread_id or not thread_id_allowed(thread_id):
         return _validation_error("invalid or missing thread_id")
+
+    session = SessionLocal()
+    try:
+        current_strategy = _latest_thread_strategy_for_user(session, thread_id, uid)
+        if current_strategy is None:
+            return Response(status=204)
+        status, _ = _strategy_status_fields(current_strategy)
+        if status != "running":
+            return Response(status=204)
+    finally:
+        session.close()
+
     def generate():
         last_snapshot = None
         last_keepalive = time.monotonic()
@@ -888,7 +1003,7 @@ def strategy_stream():
             while True:
                 session = SessionLocal()
                 try:
-                    strategy = latest_thread_strategy(session, thread_id)
+                    strategy = _latest_thread_strategy_for_user(session, thread_id, uid)
                     if strategy is None:
                         break
                     run_id = str(strategy.id or "")
@@ -910,7 +1025,8 @@ def strategy_stream():
                         last_snapshot = snapshot
                         yield f"data: {snapshot}\n\n"
                         last_keepalive = time.monotonic()
-                    done = strategy.status != "running"
+                    status, _ = _strategy_status_fields(strategy)
+                    done = status != "running"
                 finally:
                     session.close()
                 if subscriber is not None:

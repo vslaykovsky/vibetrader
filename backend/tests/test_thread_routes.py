@@ -106,6 +106,147 @@ def test_list_threads_returns_only_authenticated_user_threads():
             os.environ.pop("SUPABASE_JWT_SECRET", None)
 
 
+def test_strategy_thread_routes_use_authenticated_user_latest_run():
+    prev = os.environ.get("SUPABASE_JWT_SECRET")
+    os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
+    owner = f"thread-owner-{uuid.uuid4()}"
+    other = f"thread-other-{uuid.uuid4()}"
+    thread_id = str(uuid.uuid4())
+    owner_created_at = datetime(2096, 1, 1, 12, 0, 0)
+    other_created_at = owner_created_at + timedelta(minutes=1)
+    session = SessionLocal()
+    try:
+        owner_row = Strategy(
+            thread_id=thread_id,
+            created_by=owner,
+            created_by_email="owner@example.com",
+            messages=[{"role": "user", "content": "owner prompt"}],
+            canvas={"output": {"data.json": {"owner": True}}},
+            code="",
+            status="success",
+            status_text="",
+            strategy_name="Owner strategy",
+            created_at=owner_created_at,
+        )
+        other_row = Strategy(
+            thread_id=thread_id,
+            created_by=other,
+            created_by_email="other@example.com",
+            messages=[{"role": "user", "content": "other prompt"}],
+            canvas={"output": {"data.json": {"other": True}}},
+            code="",
+            status="running",
+            status_text="Thinking…",
+            strategy_name="Other strategy",
+            created_at=other_created_at,
+        )
+        session.add(owner_row)
+        session.add(other_row)
+        session.commit()
+        owner_run_id = owner_row.id
+        other_run_id = other_row.id
+    finally:
+        session.close()
+
+    app = create_app()
+    try:
+        client = app.test_client()
+        owner_headers = _auth_headers("owner@example.com", owner)
+        other_headers = _auth_headers("other@example.com", other)
+
+        owner_response = client.get(
+            f"/strategy?thread_id={thread_id}&include_canvas=0",
+            headers=owner_headers,
+        )
+        assert owner_response.status_code == 200
+        assert owner_response.get_json() == {
+            "id": owner_run_id,
+            "thread_id": thread_id,
+            "messages": [{"role": "user", "content": "owner prompt"}],
+            "status": "success",
+            "status_text": "",
+            "langsmith_trace": "",
+            "strategy_name": "Owner strategy",
+            "language": "",
+            "created_at": owner_created_at.isoformat(),
+        }
+
+        owner_canvas_response = client.get(
+            f"/strategy/canvas?thread_id={thread_id}",
+            headers=owner_headers,
+        )
+        assert owner_canvas_response.status_code == 200
+        assert owner_canvas_response.get_json() == {
+            "id": owner_run_id,
+            "thread_id": thread_id,
+            "canvas": {"output": {"data.json": {"owner": True}}},
+            "status": "success",
+            "status_text": "",
+            "strategy_name": "Owner strategy",
+            "algorithm": "",
+            "created_at": owner_created_at.isoformat(),
+        }
+
+        other_response = client.get(
+            f"/strategy?thread_id={thread_id}&include_canvas=0",
+            headers=other_headers,
+        )
+        assert other_response.status_code == 200
+        assert other_response.get_json() == {
+            "id": other_run_id,
+            "thread_id": thread_id,
+            "messages": [{"role": "user", "content": "other prompt"}],
+            "status": "running",
+            "status_text": "Thinking…",
+            "langsmith_trace": "",
+            "strategy_name": "Other strategy",
+            "language": "",
+            "created_at": other_created_at.isoformat(),
+        }
+    finally:
+        if prev is not None:
+            os.environ["SUPABASE_JWT_SECRET"] = prev
+        else:
+            os.environ.pop("SUPABASE_JWT_SECRET", None)
+
+
+def test_strategy_stream_returns_no_content_for_finished_latest_run():
+    prev = os.environ.get("SUPABASE_JWT_SECRET")
+    os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
+    owner = f"stream-owner-{uuid.uuid4()}"
+    thread_id = str(uuid.uuid4())
+    session = SessionLocal()
+    try:
+        row = Strategy(
+            thread_id=thread_id,
+            created_by=owner,
+            created_by_email="owner@example.com",
+            messages=[{"role": "user", "content": "done"}],
+            canvas={"output": {"data.json": {"done": True}}},
+            code="",
+            status="success",
+            status_text="",
+        )
+        session.add(row)
+        session.commit()
+    finally:
+        session.close()
+
+    app = create_app()
+    try:
+        response = app.test_client().get(
+            f"/strategy/stream?thread_id={thread_id}",
+            headers=_auth_headers("owner@example.com", owner),
+        )
+        assert response.status_code == 204
+        assert response.get_data() == b""
+    finally:
+        if prev is not None:
+            os.environ["SUPABASE_JWT_SECRET"] = prev
+        else:
+            os.environ.pop("SUPABASE_JWT_SECRET", None)
+
+
 def test_revert_thread_deletes_later_running_run():
     prev = os.environ.get("SUPABASE_JWT_SECRET")
     os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
