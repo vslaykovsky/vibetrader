@@ -23,7 +23,7 @@ spec:
           resources:
             requests:
               cpu: "1000m"
-              memory: "2Gi"
+              memory: "4Gi"
           envFrom:
             - configMapRef:
                 name: vibetrader-config
