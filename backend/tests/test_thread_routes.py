@@ -120,7 +120,7 @@ def test_strategy_thread_routes_return_latest_shared_thread_run():
             thread_id=thread_id,
             created_by=owner,
             created_by_email="owner@example.com",
-            messages=[{"role": "user", "content": "owner prompt"}],
+            messages=[],
             canvas={"output": {"data.json": {"owner": True}}},
             code="",
             status="success",
@@ -128,6 +128,12 @@ def test_strategy_thread_routes_return_latest_shared_thread_run():
             strategy_name="Owner strategy",
             created_at=owner_created_at,
         )
+        session.add(owner_row)
+        session.flush()
+        owner_row.messages = [
+            {"role": "user", "content": "owner prompt"},
+            {"role": "assistant", "content": "owner reply", "run_id": owner_row.id},
+        ]
         other_row = Strategy(
             thread_id=thread_id,
             created_by=other,
@@ -140,9 +146,9 @@ def test_strategy_thread_routes_return_latest_shared_thread_run():
             strategy_name="Other strategy",
             created_at=other_created_at,
         )
-        session.add(owner_row)
         session.add(other_row)
         session.commit()
+        owner_run_id = owner_row.id
         other_run_id = other_row.id
     finally:
         session.close()
@@ -161,7 +167,11 @@ def test_strategy_thread_routes_return_latest_shared_thread_run():
         assert owner_response.get_json() == {
             "id": other_run_id,
             "thread_id": thread_id,
-            "messages": [{"role": "user", "content": "other prompt"}],
+            "messages": [
+                {"role": "user", "content": "owner prompt"},
+                {"role": "assistant", "content": "owner reply", "run_id": owner_run_id},
+                {"role": "user", "content": "other prompt"},
+            ],
             "status": "running",
             "status_text": "Thinking…",
             "langsmith_trace": "",
@@ -194,7 +204,11 @@ def test_strategy_thread_routes_return_latest_shared_thread_run():
         assert other_response.get_json() == {
             "id": other_run_id,
             "thread_id": thread_id,
-            "messages": [{"role": "user", "content": "other prompt"}],
+            "messages": [
+                {"role": "user", "content": "owner prompt"},
+                {"role": "assistant", "content": "owner reply", "run_id": owner_run_id},
+                {"role": "user", "content": "other prompt"},
+            ],
             "status": "running",
             "status_text": "Thinking…",
             "langsmith_trace": "",
@@ -273,6 +287,76 @@ def test_strategy_stream_returns_no_content_for_finished_latest_run():
         assert response.status_code == 204
         assert response.get_data() == b""
     finally:
+        if prev is not None:
+            os.environ["SUPABASE_JWT_SECRET"] = prev
+        else:
+            os.environ.pop("SUPABASE_JWT_SECRET", None)
+
+
+def test_post_strategy_blocks_on_other_users_running_thread_run():
+    prev = os.environ.get("SUPABASE_JWT_SECRET")
+    os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
+    owner = f"post-owner-{uuid.uuid4()}"
+    requester = f"post-requester-{uuid.uuid4()}"
+    thread_id = str(uuid.uuid4())
+    created_at = datetime(2097, 1, 1, 12, 0, 0)
+    session = SessionLocal()
+    try:
+        running = Strategy(
+            thread_id=thread_id,
+            created_by=owner,
+            created_by_email="owner@example.com",
+            messages=[
+                {"role": "user", "content": "owner prompt"},
+                {"role": "assistant", "content": "working reply"},
+            ],
+            canvas={"output": {"data.json": {"running": True}}},
+            code="",
+            status="running",
+            status_text="Working...",
+            strategy_name="Owner running strategy",
+            created_at=created_at,
+        )
+        session.add(running)
+        session.commit()
+        running_id = running.id
+    finally:
+        session.close()
+
+    app = create_app()
+    try:
+        response = app.test_client().post(
+            "/strategy",
+            headers=_auth_headers("requester@example.com", requester),
+            json={"thread_id": thread_id, "message": "requester prompt"},
+        )
+        assert response.status_code == 409
+        assert response.get_json() == {
+            "id": running_id,
+            "thread_id": thread_id,
+            "messages": [
+                {"role": "user", "content": "owner prompt"},
+                {"role": "assistant", "content": "working reply"},
+            ],
+            "status": "running",
+            "status_text": "Working...",
+            "langsmith_trace": "",
+            "strategy_name": "Owner running strategy",
+            "language": "",
+            "created_at": created_at.isoformat(),
+            "canvas": {"output": {"data.json": {"running": True}}},
+            "algorithm": "",
+            "error": "A strategy update is already in progress.",
+        }
+    finally:
+        session = SessionLocal()
+        try:
+            session.query(Strategy).filter_by(thread_id=thread_id).delete(
+                synchronize_session=False
+            )
+            session.commit()
+        finally:
+            session.close()
         if prev is not None:
             os.environ["SUPABASE_JWT_SECRET"] = prev
         else:

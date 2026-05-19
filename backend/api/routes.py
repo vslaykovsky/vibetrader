@@ -157,6 +157,25 @@ def _messages_without_admin_extras(messages: list) -> list:
     return out
 
 
+def _merged_thread_messages(session, thread_id: str) -> list:
+    rows = (
+        session.query(Strategy)
+        .options(defer(Strategy.canvas), defer(Strategy.code), defer(Strategy.algorithm))
+        .filter(Strategy.thread_id == thread_id)
+        .order_by(Strategy.created_at, Strategy.id)
+        .all()
+    )
+    merged: list = []
+    for row in rows:
+        messages = list(row.messages or [])
+        prefix_len = 0
+        max_prefix_len = min(len(merged), len(messages))
+        while prefix_len < max_prefix_len and merged[prefix_len] == messages[prefix_len]:
+            prefix_len += 1
+        merged.extend(messages[prefix_len:])
+    return merged
+
+
 def _current_user_id() -> str:
     return str(getattr(g, "user_id", "") or "").strip()
 
@@ -170,22 +189,6 @@ def _latest_thread_strategy_lightweight(session, thread_id: str) -> Strategy | N
         session.query(Strategy)
         .options(defer(Strategy.canvas), defer(Strategy.code), defer(Strategy.algorithm))
         .filter(Strategy.thread_id == thread_id)
-        .order_by(desc(Strategy.created_at), desc(Strategy.id))
-        .first()
-    )
-
-
-def _strategy_accessible_to_current_user(strategy: Strategy) -> bool:
-    if bool(getattr(g, "is_admin", False)):
-        return True
-    owner = str(getattr(strategy, "created_by", "") or "").strip()
-    return not owner or owner == _current_user_id()
-
-
-def _latest_thread_strategy_for_user(session, thread_id: str, uid: str) -> Strategy | None:
-    return (
-        session.query(Strategy)
-        .filter(Strategy.thread_id == thread_id, _owned_or_legacy_filter(uid))
         .order_by(desc(Strategy.created_at), desc(Strategy.id))
         .first()
     )
@@ -265,10 +268,12 @@ def serialize_strategy(
     include_canvas: bool = True,
     include_algorithm: bool = True,
     include_python_code: bool = True,
+    messages_override: list | None = None,
 ) -> dict:
     is_admin = bool(g.is_admin)
     status, status_text = _strategy_status_fields(strategy)
-    messages = redact_secret_json_values_for_user(list(strategy.messages or []))
+    raw_messages = strategy.messages if messages_override is None else messages_override
+    messages = redact_secret_json_values_for_user(list(raw_messages or []))
     if is_admin:
         messages = _messages_with_admin_extras(messages, strategy, langsmith_traces)
     else:
@@ -749,6 +754,7 @@ def get_strategy() -> tuple:
                 code=getattr(strategy, "code", "") or "",
                 canvas=dict(getattr(strategy, "canvas", {}) or {}),
             )
+        messages = _merged_thread_messages(session, thread_id)
         traces = _thread_langsmith_traces(session, thread_id) if bool(g.is_admin) else None
         return (
             jsonify(
@@ -758,6 +764,7 @@ def get_strategy() -> tuple:
                     include_canvas=include_heavy_fields,
                     include_algorithm=include_heavy_fields,
                     include_python_code=include_heavy_fields,
+                    messages_override=messages,
                 )
             ),
             200,
@@ -848,7 +855,6 @@ def post_strategy() -> tuple:
             session.query(Strategy)
             .filter(
                 Strategy.thread_id == thread_id,
-                _owned_or_legacy_filter(uid),
                 Strategy.status == "running",
                 or_(Strategy.created_at.is_(None), Strategy.created_at >= _running_cutoff()),
             )
@@ -857,12 +863,15 @@ def post_strategy() -> tuple:
         )
         if running is not None:
             session.commit()
-            out = serialize_strategy(running)
+            out = serialize_strategy(
+                running,
+                messages_override=_merged_thread_messages(session, thread_id),
+            )
             out["error"] = "A strategy update is already in progress."
             return jsonify(out), 409
 
-        latest = _latest_thread_strategy_for_user(session, thread_id, uid)
-        prev_messages = list(latest.messages or []) if latest else []
+        latest = latest_thread_strategy(session, thread_id)
+        prev_messages = _merged_thread_messages(session, thread_id) if latest else []
         prev_canvas = dict(latest.canvas or {}) if latest else {}
         prev_code = getattr(latest, "code", "") if latest else ""
         prev_codex_thread_id = getattr(latest, "codex_thread_id", "") if latest else ""
@@ -980,13 +989,18 @@ def strategy_stream():
                         if bool(g.is_admin)
                         else None
                     )
+                    messages = _merged_thread_messages(session, thread_id)
                     if run_id and run_id != subscribed_run_id:
                         if subscriber is not None:
                             subscriber.close()
                         subscriber = StrategyStreamSubscriber(run_id, after_seq if not subscribed_run_id else 0)
                         subscribed_run_id = run_id
                     snapshot = json.dumps(
-                        serialize_strategy(strategy, langsmith_traces=traces),
+                        serialize_strategy(
+                            strategy,
+                            langsmith_traces=traces,
+                            messages_override=messages,
+                        ),
                         sort_keys=True,
                     )
                     if snapshot != last_snapshot:
