@@ -424,7 +424,6 @@ def delete_thread(thread_id: str) -> tuple:
 @strategy_blueprint.post("/threads/<thread_id>/revert")
 @require_auth
 def revert_thread(thread_id: str) -> tuple:
-    uid = _current_user_id()
     thread_id = (thread_id or "").strip()
     if not thread_id:
         return _validation_error("thread_id is required")
@@ -441,8 +440,6 @@ def revert_thread(thread_id: str) -> tuple:
         target = session.get(Strategy, run_id)
         if target is None or target.thread_id != thread_id:
             return _validation_error("strategy not found")
-        if not _strategy_accessible_to_current_user(target):
-            return jsonify({"error": "forbidden", "status": None, "status_text": None}), 403
         if target.created_at is None:
             return _validation_error("strategy has no created_at")
 
@@ -450,7 +447,6 @@ def revert_thread(thread_id: str) -> tuple:
             session.query(Strategy)
             .filter(
                 Strategy.thread_id == thread_id,
-                _owned_or_legacy_filter(uid),
                 Strategy.created_at > target.created_at,
             )
             .delete(synchronize_session=False)

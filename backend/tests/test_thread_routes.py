@@ -279,10 +279,11 @@ def test_strategy_stream_returns_no_content_for_finished_latest_run():
             os.environ.pop("SUPABASE_JWT_SECRET", None)
 
 
-def test_revert_thread_deletes_later_running_run():
+def test_revert_thread_deletes_other_users_later_running_run():
     prev = os.environ.get("SUPABASE_JWT_SECRET")
     os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
     owner = f"revert-owner-{uuid.uuid4()}"
+    requester = f"revert-requester-{uuid.uuid4()}"
     thread_id = str(uuid.uuid4())
     created_at = datetime(2097, 1, 1, 12, 0, 0)
     first_code = "def run_strategy():\n    return {'first': True}\n"
@@ -330,7 +331,7 @@ def test_revert_thread_deletes_later_running_run():
     try:
         response = app.test_client().post(
             f"/threads/{thread_id}/revert",
-            headers=_auth_headers("owner@example.com", owner),
+            headers=_auth_headers("requester@example.com", requester),
             json={"run_id": first_id},
         )
         assert response.status_code == 200
