@@ -805,9 +805,6 @@ def get_strategy_canvas() -> tuple:
 
     session = SessionLocal()
     try:
-        cached_strategy = _latest_thread_strategy_lightweight(session, thread_id)
-        if cached_strategy is not None and _strategy_canvas_not_modified(cached_strategy):
-            return _strategy_canvas_not_modified_response(cached_strategy, immutable=False)
         _stamp_langsmith_thread_metadata(thread_id)
         workspace = Path(STRATEGIES_DIR) / thread_id
         needs_restore = not workspace.is_dir()

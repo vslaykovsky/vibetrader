@@ -230,11 +230,22 @@ def test_strategy_lightweight_response_splits_canvas_payload_for_admin():
             f"/strategy/canvas?thread_id={thread_id}",
             headers={**headers, "If-None-Match": f'W/"{run_id}"'},
         )
-        assert cached_canvas_res.status_code == 304
+        assert cached_canvas_res.status_code == 200
         assert cached_canvas_res.headers.get("ETag") == f'"{run_id}"'
         assert cached_canvas_res.headers.get("Cache-Control") == "private, no-cache"
         assert cached_canvas_res.headers.get("Vary") == "Authorization"
-        assert cached_canvas_res.get_data() == b""
+        assert cached_canvas_res.get_json() == {
+            "id": run_id,
+            "thread_id": thread_id,
+            "canvas": canvas,
+            "status": "success",
+            "status_text": "",
+            "strategy_name": "Split Load",
+            "algorithm": "",
+            "created_at": canvas_body["created_at"],
+            "python_code": code,
+            "codex_thread_id": "",
+        }
 
         run_canvas_res = client.get(
             f"/strategy/canvas?id={run_id}",
