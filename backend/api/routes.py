@@ -165,6 +165,16 @@ def _owned_or_legacy_filter(uid: str):
     return or_(Strategy.created_by == uid, Strategy.created_by.is_(None))
 
 
+def _latest_thread_strategy_lightweight(session, thread_id: str) -> Strategy | None:
+    return (
+        session.query(Strategy)
+        .options(defer(Strategy.canvas), defer(Strategy.code), defer(Strategy.algorithm))
+        .filter(Strategy.thread_id == thread_id)
+        .order_by(desc(Strategy.created_at), desc(Strategy.id))
+        .first()
+    )
+
+
 def _strategy_accessible_to_current_user(strategy: Strategy) -> bool:
     if bool(getattr(g, "is_admin", False)):
         return True
@@ -179,41 +189,6 @@ def _latest_thread_strategy_for_user(session, thread_id: str, uid: str) -> Strat
         .order_by(desc(Strategy.created_at), desc(Strategy.id))
         .first()
     )
-
-
-def _latest_thread_strategy_lightweight_for_user(
-    session,
-    thread_id: str,
-    uid: str,
-) -> Strategy | None:
-    return (
-        session.query(Strategy)
-        .options(defer(Strategy.canvas), defer(Strategy.code), defer(Strategy.algorithm))
-        .filter(Strategy.thread_id == thread_id, _owned_or_legacy_filter(uid))
-        .order_by(desc(Strategy.created_at), desc(Strategy.id))
-        .first()
-    )
-
-
-def _ensure_latest_thread_strategy_for_user(
-    session,
-    thread_id: str,
-    uid: str,
-    created_by_email: str | None,
-) -> Strategy:
-    strategy = _latest_thread_strategy_for_user(session, thread_id, uid)
-    if strategy is not None:
-        return strategy
-    strategy = Strategy(
-        thread_id=thread_id,
-        created_by=uid,
-        created_by_email=created_by_email,
-        messages=[],
-        canvas={},
-    )
-    session.add(strategy)
-    session.flush()
-    return strategy
 
 
 def _strategy_name_from_canvas(canvas: dict | None) -> str:
@@ -273,11 +248,12 @@ def _latest_threads_sql(where_clause: str = "", limit_clause: str = "") -> str:
     return f"""
 SELECT id, thread_id, created_at, messages_count, status, status_text, strategy_name, created_by, created_by_email
 FROM (
-    SELECT DISTINCT ON (thread_id)
-        id, thread_id, created_at, messages_count, status, status_text, strategy_name, created_by, created_by_email
+    SELECT
+        id, thread_id, created_at, messages_count, status, status_text, strategy_name, created_by, created_by_email,
+        ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY created_at DESC, id DESC) AS row_num
     FROM strategy{where}
-    ORDER BY thread_id, created_at DESC, id DESC
 ) latest
+WHERE row_num = 1
 ORDER BY created_at DESC, id DESC{limit}
 """
 
@@ -720,8 +696,6 @@ def get_strategy() -> tuple:
                 )
             if strategy is None:
                 return _validation_error("strategy not found")
-            if not _strategy_accessible_to_current_user(strategy):
-                return jsonify({"error": "forbidden", "status": None, "status_text": None}), 403
             _stamp_langsmith_thread_metadata(strategy.thread_id)
             traces = (
                 _thread_langsmith_traces(session, strategy.thread_id)
@@ -755,26 +729,22 @@ def get_strategy() -> tuple:
         workspace = Path(STRATEGIES_DIR) / thread_id
         needs_restore = not workspace.is_dir()
         created_strategy = False
-        if include_heavy_fields:
-            strategy = _ensure_latest_thread_strategy_for_user(
-                session,
-                thread_id,
-                uid,
-                getattr(g, "user_email", None),
+        strategy = (
+            latest_thread_strategy(session, thread_id)
+            if include_heavy_fields
+            else _latest_thread_strategy_lightweight(session, thread_id)
+        )
+        if strategy is None:
+            created_strategy = True
+            strategy = Strategy(
+                thread_id=thread_id,
+                created_by=uid,
+                created_by_email=getattr(g, "user_email", None),
+                messages=[],
+                canvas={},
             )
-        else:
-            strategy = _latest_thread_strategy_lightweight_for_user(session, thread_id, uid)
-            if strategy is None:
-                created_strategy = True
-                strategy = Strategy(
-                    thread_id=thread_id,
-                    created_by=uid,
-                    created_by_email=getattr(g, "user_email", None),
-                    messages=[],
-                    canvas={},
-                )
-                session.add(strategy)
-                session.flush()
+            session.add(strategy)
+            session.flush()
         if include_heavy_fields or created_strategy:
             session.commit()
         if include_heavy_fields and needs_restore:
@@ -816,8 +786,6 @@ def get_strategy_canvas() -> tuple:
             )
             if cached_strategy is None:
                 return _validation_error("strategy not found")
-            if not _strategy_accessible_to_current_user(cached_strategy):
-                return jsonify({"error": "forbidden", "status": None, "status_text": None}), 403
             if _strategy_canvas_not_modified(cached_strategy):
                 return _strategy_canvas_not_modified_response(cached_strategy, immutable=True)
             _stamp_langsmith_thread_metadata(cached_strategy.thread_id)
@@ -834,18 +802,23 @@ def get_strategy_canvas() -> tuple:
 
     session = SessionLocal()
     try:
-        cached_strategy = _latest_thread_strategy_lightweight_for_user(session, thread_id, uid)
+        cached_strategy = _latest_thread_strategy_lightweight(session, thread_id)
         if cached_strategy is not None and _strategy_canvas_not_modified(cached_strategy):
             return _strategy_canvas_not_modified_response(cached_strategy, immutable=False)
         _stamp_langsmith_thread_metadata(thread_id)
         workspace = Path(STRATEGIES_DIR) / thread_id
         needs_restore = not workspace.is_dir()
-        strategy = _ensure_latest_thread_strategy_for_user(
-            session,
-            thread_id,
-            uid,
-            getattr(g, "user_email", None),
-        )
+        strategy = latest_thread_strategy(session, thread_id)
+        if strategy is None:
+            strategy = Strategy(
+                thread_id=thread_id,
+                created_by=uid,
+                created_by_email=getattr(g, "user_email", None),
+                messages=[],
+                canvas={},
+            )
+            session.add(strategy)
+            session.flush()
         session.commit()
         if needs_restore:
             restore_strategy_workspace_from_snapshot(
@@ -977,14 +950,13 @@ def post_strategy_algorithm() -> tuple:
 @strategy_blueprint.get("/strategy/stream")
 @require_auth
 def strategy_stream():
-    uid = _current_user_id()
     thread_id = request.args.get("thread_id", "").strip()
     if not thread_id or not thread_id_allowed(thread_id):
         return _validation_error("invalid or missing thread_id")
 
     session = SessionLocal()
     try:
-        current_strategy = _latest_thread_strategy_for_user(session, thread_id, uid)
+        current_strategy = latest_thread_strategy(session, thread_id)
         if current_strategy is None:
             return Response(status=204)
         status, _ = _strategy_status_fields(current_strategy)
@@ -1003,7 +975,7 @@ def strategy_stream():
             while True:
                 session = SessionLocal()
                 try:
-                    strategy = _latest_thread_strategy_for_user(session, thread_id, uid)
+                    strategy = latest_thread_strategy(session, thread_id)
                     if strategy is None:
                         break
                     run_id = str(strategy.id or "")

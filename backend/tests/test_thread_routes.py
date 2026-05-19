@@ -106,7 +106,7 @@ def test_list_threads_returns_only_authenticated_user_threads():
             os.environ.pop("SUPABASE_JWT_SECRET", None)
 
 
-def test_strategy_thread_routes_use_authenticated_user_latest_run():
+def test_strategy_thread_routes_return_latest_shared_thread_run():
     prev = os.environ.get("SUPABASE_JWT_SECRET")
     os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
     owner = f"thread-owner-{uuid.uuid4()}"
@@ -143,7 +143,6 @@ def test_strategy_thread_routes_use_authenticated_user_latest_run():
         session.add(owner_row)
         session.add(other_row)
         session.commit()
-        owner_run_id = owner_row.id
         other_run_id = other_row.id
     finally:
         session.close()
@@ -160,15 +159,15 @@ def test_strategy_thread_routes_use_authenticated_user_latest_run():
         )
         assert owner_response.status_code == 200
         assert owner_response.get_json() == {
-            "id": owner_run_id,
+            "id": other_run_id,
             "thread_id": thread_id,
-            "messages": [{"role": "user", "content": "owner prompt"}],
-            "status": "success",
-            "status_text": "",
+            "messages": [{"role": "user", "content": "other prompt"}],
+            "status": "running",
+            "status_text": "Thinking…",
             "langsmith_trace": "",
-            "strategy_name": "Owner strategy",
+            "strategy_name": "Other strategy",
             "language": "",
-            "created_at": owner_created_at.isoformat(),
+            "created_at": other_created_at.isoformat(),
         }
 
         owner_canvas_response = client.get(
@@ -177,14 +176,14 @@ def test_strategy_thread_routes_use_authenticated_user_latest_run():
         )
         assert owner_canvas_response.status_code == 200
         assert owner_canvas_response.get_json() == {
-            "id": owner_run_id,
+            "id": other_run_id,
             "thread_id": thread_id,
-            "canvas": {"output": {"data.json": {"owner": True}}},
-            "status": "success",
-            "status_text": "",
-            "strategy_name": "Owner strategy",
+            "canvas": {"output": {"data.json": {"other": True}}},
+            "status": "running",
+            "status_text": "Thinking…",
+            "strategy_name": "Other strategy",
             "algorithm": "",
-            "created_at": owner_created_at.isoformat(),
+            "created_at": other_created_at.isoformat(),
         }
 
         other_response = client.get(
@@ -201,6 +200,39 @@ def test_strategy_thread_routes_use_authenticated_user_latest_run():
             "langsmith_trace": "",
             "strategy_name": "Other strategy",
             "language": "",
+            "created_at": other_created_at.isoformat(),
+        }
+
+        owner_run_response = client.get(
+            f"/strategy?id={other_run_id}&include_canvas=0",
+            headers=owner_headers,
+        )
+        assert owner_run_response.status_code == 200
+        assert owner_run_response.get_json() == {
+            "id": other_run_id,
+            "thread_id": thread_id,
+            "messages": [{"role": "user", "content": "other prompt"}],
+            "status": "running",
+            "status_text": "Thinking…",
+            "langsmith_trace": "",
+            "strategy_name": "Other strategy",
+            "language": "",
+            "created_at": other_created_at.isoformat(),
+        }
+
+        owner_run_canvas_response = client.get(
+            f"/strategy/canvas?id={other_run_id}",
+            headers=owner_headers,
+        )
+        assert owner_run_canvas_response.status_code == 200
+        assert owner_run_canvas_response.get_json() == {
+            "id": other_run_id,
+            "thread_id": thread_id,
+            "canvas": {"output": {"data.json": {"other": True}}},
+            "status": "running",
+            "status_text": "Thinking…",
+            "strategy_name": "Other strategy",
+            "algorithm": "",
             "created_at": other_created_at.isoformat(),
         }
     finally:

@@ -1562,7 +1562,10 @@ def _run_workspace_command(
     parts = shlex.split(command)
     if parts and parts[0] == "python":
         parts[0] = sys.executable
-    timeout_s = int(os.getenv("STRATEGY_BACKTEST_TIMEOUT_S", "1800"))
+    is_hyperopt = bool(parts and parts[-1] == "hyperopt.py")
+    timeout_env = "STRATEGY_HYPEROPT_TIMEOUT_S" if is_hyperopt else "STRATEGY_BACKTEST_TIMEOUT_S"
+    timeout_default = "7200" if is_hyperopt else "1800"
+    timeout_s = int(os.getenv(timeout_env, timeout_default))
     if on_stderr_line is not None:
         return _run_logged_subprocess_stream(
             "workspace command",

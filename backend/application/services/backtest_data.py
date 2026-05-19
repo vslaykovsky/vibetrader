@@ -166,11 +166,11 @@ class ParamsHyperopt(BaseModel):
     model_config = ConfigDict(extra="forbid")
     search_space: dict[str, HyperoptSearchSpec]
     n_trials: int = 30
-    timeout_seconds: int = 120
+    timeout_seconds: int = 1800
     direction: Literal["maximize", "minimize"] = "maximize"
     objective_metric: str = "total_return"
     seed: int | None = None
-    trial_timeout_seconds: int | None = None
+    trial_timeout_seconds: int | None = 1800
 
 
 @dataclass

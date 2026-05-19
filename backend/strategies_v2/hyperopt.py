@@ -184,7 +184,7 @@ def main() -> None:
     metric_key = str(cfg.objective_metric)
     seed = cfg.seed
     rng = random.Random(seed if isinstance(seed, int) else None)
-    trial_timeout = float(cfg.trial_timeout_seconds) if cfg.trial_timeout_seconds is not None else 600.0
+    trial_timeout = float(cfg.trial_timeout_seconds) if cfg.trial_timeout_seconds is not None else 1800.0
 
     t0 = time.perf_counter()
     best_value = float("-inf") if maximize else float("inf")
