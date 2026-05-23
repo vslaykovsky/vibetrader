@@ -7,6 +7,7 @@ import {
   useState,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { t } from './lib/i18n.js';
 
 export function ProfileMenu({ user, signOut, surface = 'strategy' }) {
   const [open, setOpen] = useState(false);
@@ -57,7 +58,7 @@ export function ProfileMenu({ user, signOut, surface = 'strategy' }) {
   }, [open, close]);
 
   const avatarUrl = user?.user_metadata?.avatar_url;
-  const label = String(user?.user_metadata?.full_name || user?.email || 'Account').trim() || 'Account';
+  const label = String(user?.user_metadata?.full_name || user?.email || t('nav.account_fallback')).trim() || t('nav.account_fallback');
 
   const dropdown =
     open && coords ? (
@@ -91,7 +92,7 @@ export function ProfileMenu({ user, signOut, surface = 'strategy' }) {
             signOut();
           }}
         >
-          Sign out
+          {t('nav.sign_out')}
         </button>
       </div>
     ) : null;
@@ -108,7 +109,7 @@ export function ProfileMenu({ user, signOut, surface = 'strategy' }) {
           aria-controls={open ? menuId : undefined}
           onClick={() => setOpen((o) => !o)}
           title={label}
-          aria-label="Account menu"
+          aria-label={t('nav.account_menu_aria')}
         >
           {avatarUrl ? (
             <img className="auth-avatar" src={avatarUrl} alt="" />

@@ -27,16 +27,16 @@ const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
 
 function ChatProcessingSpinner({ label }) {
   const text =
-    typeof label === 'string' && label.trim().length > 0 ? label.trim() : 'Working…';
+    typeof label === 'string' && label.trim().length > 0 ? label.trim() : t('chat.working');
   return (
     <div
       className="message message-assistant chat-processing"
       role="status"
       aria-live="polite"
-      aria-label="Agent is responding"
+      aria-label={t('chat.agent_responding_aria')}
     >
       <div className="message-header-row">
-        <span className="message-role">Agent</span>
+        <span className="message-role">{t('chat.role_agent')}</span>
       </div>
       <div className="chat-spinner-row">
         <span className="chat-spinner" aria-hidden />
@@ -168,7 +168,7 @@ const ChatComposer = memo(function ChatComposer({
     <>
       <form className="chat-input" onSubmit={handleSubmit}>
         {showSuggestedPrompts ? (
-          <section className="home-prompts chat-suggested-prompts" aria-label="Suggested prompts">
+          <section className="home-prompts chat-suggested-prompts" aria-label={t('chat.suggested_prompts_aria')}>
             <ul className="home-prompt-list">
               {prompts.map((p) => (
                 <li key={p} className="home-prompt-item">
@@ -188,7 +188,7 @@ const ChatComposer = memo(function ChatComposer({
           </section>
         ) : null}
         <label htmlFor="message" className="sr-only">
-          Message
+          {t('chat.message_label')}
         </label>
         <div className="chat-compose">
           <button
@@ -196,9 +196,9 @@ const ChatComposer = memo(function ChatComposer({
             className="chat-compose-expand"
             onClick={() => setComposerExpanded(true)}
             disabled={disabled}
-            aria-label="Expand message editor"
+            aria-label={t('chat.expand_editor_aria')}
             aria-expanded={composerExpanded}
-            title="Expand editor"
+            title={t('chat.expand_editor_title')}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -216,8 +216,8 @@ const ChatComposer = memo(function ChatComposer({
           <textarea
             ref={messageTextareaRef}
             id="message"
-            placeholder="Describe your strategy in your own words..."
-            title="Ctrl+Enter or ⌘+Enter to send"
+            placeholder={t('chat.message_placeholder')}
+            title={t('chat.send_shortcut_title')}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={handleComposerKeyDown}
@@ -227,8 +227,8 @@ const ChatComposer = memo(function ChatComposer({
             type="submit"
             className="chat-send-button"
             disabled={disabled}
-            aria-label="Send message"
-            title="Send"
+            aria-label={t('chat.send_aria')}
+            title={t('chat.send')}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -251,12 +251,12 @@ const ChatComposer = memo(function ChatComposer({
               className="chat-compose-fullscreen"
               role="dialog"
               aria-modal="true"
-              aria-label="Message editor"
+              aria-label={t('chat.message_editor_aria')}
             >
               <button
                 type="button"
                 className="chat-compose-fullscreen-scrim"
-                aria-label="Close expanded editor"
+                aria-label={t('chat.close_expanded_editor_aria')}
                 onClick={() => setComposerExpanded(false)}
               />
               <div className="chat-compose-fullscreen-panel">
@@ -265,7 +265,7 @@ const ChatComposer = memo(function ChatComposer({
                     type="button"
                     className="chat-compose-fullscreen-close"
                     onClick={() => setComposerExpanded(false)}
-                    aria-label="Close"
+                    aria-label={t('chat.close')}
                   >
                     ×
                   </button>
@@ -273,8 +273,8 @@ const ChatComposer = memo(function ChatComposer({
                 <textarea
                   ref={composerExpandedTextareaRef}
                   className="chat-compose-fullscreen-textarea"
-                  placeholder="Describe your strategy in your own words..."
-                  title="Ctrl+Enter or ⌘+Enter to send"
+                  placeholder={t('chat.message_placeholder')}
+                  title={t('chat.send_shortcut_title')}
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={(event) => {
@@ -295,7 +295,7 @@ const ChatComposer = memo(function ChatComposer({
                     className="chat-compose-fullscreen-done"
                     onClick={() => setComposerExpanded(false)}
                   >
-                    Done
+                    {t('chat.done')}
                   </button>
                   <button
                     type="button"
@@ -310,7 +310,7 @@ const ChatComposer = memo(function ChatComposer({
                       });
                     }}
                   >
-                    Send
+                    {t('chat.send')}
                   </button>
                 </div>
               </div>
@@ -423,17 +423,18 @@ const LAYOUT_SPLIT = {
   minChatPx: 320,
   minCanvasPx: 440,
 };
+const UNKNOWN_DATE_KEY = '__unknown_date__';
 
 function formatThreadLabel(threadId) {
-  const t = String(threadId || '').trim();
-  if (!t) return 'Unknown thread';
-  return t.length > 12 ? `${t.slice(0, 8)}…${t.slice(-4)}` : t;
+  const value = String(threadId || '').trim();
+  if (!value) return t('chat.unknown_thread');
+  return value.length > 12 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value;
 }
 
 function threadDisplayName(thread) {
   const n = typeof thread?.strategy_name === 'string' ? thread.strategy_name.trim() : '';
   if (n) return n;
-  return 'Untitled strategy';
+  return t('chat.untitled_strategy');
 }
 
 function parseIsoTime(value) {
@@ -506,7 +507,7 @@ const MessageBubble = memo(function MessageBubble({
     <div
       id={answerDomId}
       className={`message message-${message.role}${hasRunId ? ' message-clickable' : ''}${isActive ? ' message-active-run' : ''}`}
-      title={hasRunId ? (showViewStrategy ? 'Tap to view strategy' : 'Click to view strategy output') : undefined}
+      title={hasRunId ? (showViewStrategy ? t('chat.tap_view_strategy') : t('chat.click_view_strategy_output')) : undefined}
       onClick={handleClick}
       role={hasRunId ? 'button' : undefined}
       tabIndex={hasRunId ? 0 : undefined}
@@ -522,7 +523,7 @@ const MessageBubble = memo(function MessageBubble({
       }
     >
       <div className="message-header-row">
-        <span className="message-role">{isAssistant ? 'Agent' : 'You'}</span>
+        <span className="message-role">{isAssistant ? t('chat.role_agent') : t('chat.role_you')}</span>
         {replyMs != null || hasRunId || langsmithTrace ? (
           <div className="message-header-end">
             {langsmithTrace ? (
@@ -534,8 +535,8 @@ const MessageBubble = memo(function MessageBubble({
                 onClick={(e) => {
                   e.stopPropagation();
                 }}
-                title="Open LangSmith trace"
-                aria-label="Open LangSmith trace"
+                title={t('chat.langsmith_trace_aria')}
+                aria-label={t('chat.langsmith_trace_aria')}
               >
                 LangSmith
               </a>
@@ -544,7 +545,7 @@ const MessageBubble = memo(function MessageBubble({
               <span
                 className="message-role-reply-time"
                 title={`${replyMs} ms`}
-                aria-label={`Reply took ${formatReplyDurationMs(replyMs)}`}
+                aria-label={t('chat.reply_took_aria', { duration: formatReplyDurationMs(replyMs) })}
               >
                 {formatReplyDurationMs(replyMs)}
               </span>
@@ -559,8 +560,8 @@ const MessageBubble = memo(function MessageBubble({
                   e.stopPropagation();
                   onRevertRun?.(message.run_id);
                 }}
-                title="Revert thread to this point"
-                aria-label="Revert thread to this point"
+                title={t('chat.revert_to_here_aria')}
+                aria-label={t('chat.revert_to_here_aria')}
               >
                 <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <path
@@ -597,7 +598,7 @@ const MessageBubble = memo(function MessageBubble({
               onViewStrategy?.(message.run_id);
             }}
           >
-            View strategy
+            {t('chat.view_strategy')}
           </button>
         </div>
       ) : null}
@@ -612,8 +613,8 @@ const MessageBubble = memo(function MessageBubble({
               e.stopPropagation();
               onBranchRun?.(message.run_id);
             }}
-            title="Branch in new chat..."
-            aria-label="Branch in new chat"
+            title={t('chat.branch_new_title')}
+            aria-label={t('chat.branch_new_aria')}
           >
             <svg
   width="24"
@@ -880,9 +881,9 @@ export function StrategyPage() {
   locationRef.current = location;
   const emptyThreadPrompts = useMemo(
     () => [
-      'What can you do?',
-      "Let's create a SMA-based strategy for SPY",
-      'What are ways to account for volatility changes?',
+      t('chat.prompt_what_can_you_do'),
+      t('chat.prompt_sma_spy'),
+      t('chat.prompt_volatility'),
     ],
     [],
   );
@@ -2298,10 +2299,10 @@ export function StrategyPage() {
     (!streamingAssistantRunId || streamingAssistantRunId !== liveStrategyRunId);
   const processingLabel =
     serverJob.status === 'running'
-      ? serverJob.statusText?.trim() || 'Working…'
+      ? serverJob.statusText?.trim() || t('chat.working')
       : submitting
-        ? 'Sending…'
-        : 'Working…';
+        ? t('chat.sending')
+        : t('chat.working');
 
   const sortedThreads = useMemo(
     () =>
@@ -2317,7 +2318,7 @@ export function StrategyPage() {
   const groupedThreads = useMemo(
     () =>
       sortedThreads.reduce((acc, t) => {
-        const key = dateKeyFromIso(t?.latest_created_at, timeZone) || 'Unknown date';
+        const key = dateKeyFromIso(t?.latest_created_at, timeZone) || UNKNOWN_DATE_KEY;
         if (!acc[key]) {
           acc[key] = [];
         }
@@ -2329,8 +2330,8 @@ export function StrategyPage() {
   const groupKeys = useMemo(
     () =>
       Object.keys(groupedThreads).sort((a, b) => {
-        if (a === 'Unknown date') return 1;
-        if (b === 'Unknown date') return -1;
+        if (a === UNKNOWN_DATE_KEY) return 1;
+        if (b === UNKNOWN_DATE_KEY) return -1;
         return b.localeCompare(a);
       }),
     [groupedThreads],
@@ -2495,24 +2496,24 @@ export function StrategyPage() {
     <div className="dashboard-page strategy-shell">
       <header className="dashboard-topbar">
         <div className="dashboard-topbar-left">
-          <Link to="/" className="app-home-link" aria-label="Go to home page">
+          <Link to="/" className="app-home-link" aria-label={t('nav.home_aria')}>
             <span className="app-logo">TraderChat</span>
           </Link>
           <span className="dashboard-topbar-sep" aria-hidden>
             /
           </span>
-          <span className="dashboard-topbar-crumb">Strategy</span>
+          <span className="dashboard-topbar-crumb">{t('nav.strategy_crumb')}</span>
         </div>
         <div className="dashboard-topbar-right">
           <Link className="dashboard-topbar-crumb dashboard-topbar-link" to="/dashboard">
-            Dashboard
+            {t('nav.dashboard')}
           </Link>
           <button
             type="button"
             className="theme-toggle"
             onClick={toggleTheme}
-            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-            title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
+            aria-label={theme === 'dark' ? t('nav.theme_light_aria') : t('nav.theme_dark_aria')}
+            title={theme === 'dark' ? t('nav.theme_light_title') : t('nav.theme_dark_title')}
           >
             <span className="home-ms" aria-hidden>
               {theme === 'light' ? 'dark_mode' : 'light_mode'}
@@ -2534,7 +2535,7 @@ export function StrategyPage() {
               type="button"
               className="sidebar-toggle"
               onClick={() => setSidebarOpen(true)}
-              aria-label="Open sidebar"
+              aria-label={t('chat.open_sidebar_aria')}
             >
               ☰
             </button>
@@ -2542,8 +2543,8 @@ export function StrategyPage() {
               type="button"
               className="button-new-thread"
               onClick={() => navigate({ pathname: `/strategy/${randomUUID()}`, hash: '' })}
-              aria-label="New strategy"
-              title="New strategy"
+              aria-label={t('chat.new_strategy')}
+              title={t('chat.new_strategy')}
             >
               <svg viewBox="0 0 24 24" fill="none" aria-hidden>
                 <path
@@ -2553,16 +2554,16 @@ export function StrategyPage() {
                   strokeLinecap="round"
                 />
               </svg>
-              <span className="sr-only">New strategy</span>
+              <span className="sr-only">{t('chat.new_strategy')}</span>
             </button>
           </div>
         </header>
 
         <div className="chat-stream" ref={chatStreamRef}>
           {loading ? (
-            <div className="chat-spinner-row" role="status" aria-live="polite" aria-label="Loading thread">
+            <div className="chat-spinner-row" role="status" aria-live="polite" aria-label={t('chat.loading_thread_aria')}>
               <span className="chat-spinner" aria-hidden />
-              <span className="chat-processing-label">Loading thread…</span>
+              <span className="chat-processing-label">{t('chat.loading_thread')}</span>
             </div>
           ) : null}
           {messages.map((message, index) => (
@@ -2602,7 +2603,7 @@ export function StrategyPage() {
         <div
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize chat and strategy panels"
+          aria-label={t('chat.resize_panels_aria')}
           className="layout-splitter"
           onPointerDown={handleLayoutSplitterPointerDown}
         />
@@ -2875,32 +2876,32 @@ export function StrategyPage() {
           onClick={() => setSidebarOpen(false)}
         />
       ) : null}
-      <aside className={`sidebar-drawer${sidebarOpen ? ' is-open' : ''}`} aria-label="Strategies">
+      <aside className={`sidebar-drawer${sidebarOpen ? ' is-open' : ''}`} aria-label={t('chat.sidebar_title')}>
         <div className="sidebar-header">
-          <div className="sidebar-title">Strategies</div>
+          <div className="sidebar-title">{t('chat.sidebar_title')}</div>
           <button
             type="button"
             className="sidebar-close"
             onClick={() => setSidebarOpen(false)}
-            aria-label="Close sidebar"
+            aria-label={t('chat.close_sidebar_aria')}
           >
             ×
           </button>
         </div>
-        <nav className="sidebar-list" aria-label="Thread list">
+        <nav className="sidebar-list" aria-label={t('chat.thread_list_aria')}>
           {threadsError ? <div className="sidebar-empty muted">{threadsError}</div> : null}
           {!threadsError && sortedThreads.length === 0 ? (
-            <div className="sidebar-empty muted">No threads yet.</div>
+            <div className="sidebar-empty muted">{t('chat.no_threads')}</div>
           ) : null}
           {!threadsError && sortedThreads.length > 0 ? (
             groupKeys.map((key) => {
-              const label = key === todayKey ? 'Today' : key;
+              const label = key === todayKey ? t('chat.today') : key === UNKNOWN_DATE_KEY ? t('chat.unknown_date') : key;
               return (
                 <div key={key} className="sidebar-group">
                   <div className="sidebar-group-title">{label}</div>
                   <div className="sidebar-group-items">
-                    {groupedThreads[key].map((t) => {
-                      const tid = t?.thread_id;
+                    {groupedThreads[key].map((thread) => {
+                      const tid = thread?.thread_id;
                       const active = typeof tid === 'string' && tid === threadId;
                       return (
                         <button
@@ -2915,7 +2916,7 @@ export function StrategyPage() {
                           }}
                           title={typeof tid === 'string' ? tid : undefined}
                         >
-                          <div className="sidebar-item-badge" aria-label="Message count">
+                          <div className="sidebar-item-badge" aria-label={t('chat.message_count_aria')}>
                             <span className="sidebar-item-badge-icon" aria-hidden>
                               <svg viewBox="0 0 24 24" fill="none">
                                 <path
@@ -2927,13 +2928,13 @@ export function StrategyPage() {
                               </svg>
                             </span>
                             <span className="sidebar-item-badge-count">
-                              {Number.isFinite(Number(t?.message_count)) ? Number(t?.message_count) : 0}
+                              {Number.isFinite(Number(thread?.message_count)) ? Number(thread?.message_count) : 0}
                             </span>
                           </div>
-                          <div className="sidebar-item-title">{threadDisplayName(t)}</div>
+                          <div className="sidebar-item-title">{threadDisplayName(thread)}</div>
                           <div className="sidebar-item-subtitle">
-                            {t?.status === 'running'
-                              ? (t?.status_text?.trim() || 'Running…')
+                            {thread?.status === 'running'
+                              ? (thread?.status_text?.trim() || t('chat.running'))
                               : ''}
                           </div>
                         </button>
@@ -2950,9 +2951,9 @@ export function StrategyPage() {
     </div>
     <ConfirmDialog
       open={Boolean(revertRunRequest)}
-      title="Revert thread?"
-      message="Revert this thread to this agent message? This will delete all later strategy runs for this thread."
-      confirmLabel={reverting ? 'Reverting…' : 'Revert'}
+      title={t('chat.revert_dialog_title')}
+      message={t('chat.revert_dialog_message')}
+      confirmLabel={reverting ? t('chat.reverting') : t('chat.revert_confirm')}
       icon="history"
       busy={reverting}
       danger
@@ -2963,9 +2964,9 @@ export function StrategyPage() {
     />
     <ConfirmDialog
       open={deleteThreadDialogOpen}
-      title="Delete strategy thread?"
-      message={`Delete "${threadDisplayName(currentThreadMeta)}"? This cannot be undone.`}
-      confirmLabel={deletingThread ? 'Deleting…' : 'Delete'}
+      title={t('chat.delete_thread_title')}
+      message={t('chat.delete_thread_message', { name: threadDisplayName(currentThreadMeta) })}
+      confirmLabel={deletingThread ? t('chat.deleting') : t('chat.delete_confirm')}
       busy={deletingThread}
       danger
       onCancel={() => {
