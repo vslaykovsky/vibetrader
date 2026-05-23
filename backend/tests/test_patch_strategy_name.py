@@ -8,6 +8,9 @@ from pathlib import Path
 
 import jwt
 
+from db.models import Strategy
+from db.session import SessionLocal
+
 _ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("vibetrader_flask_app", _ROOT / "app.py")
 assert _spec and _spec.loader
@@ -58,6 +61,13 @@ def test_patch_strategy_name():
         assert g1.status_code == 200
         b1 = g1.get_json()
         assert (b1.get("strategy_name") or "") == "Custom title"
+        session = SessionLocal()
+        try:
+            row = session.get(Strategy, run_id)
+            assert row is not None
+            assert row.strategy_name_source == "manual"
+        finally:
+            session.close()
     finally:
         if prev is not None:
             os.environ["SUPABASE_JWT_SECRET"] = prev

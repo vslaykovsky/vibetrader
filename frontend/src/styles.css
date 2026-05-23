@@ -1740,6 +1740,46 @@ li {
   outline-offset: 3px;
 }
 
+.message-footer-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+  min-height: 22px;
+}
+
+.message-branch-button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 2px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.message-branch-button svg {
+  width: 19px;
+  height: 19px;
+  display: block;
+}
+
+.message-branch-button:hover {
+  color: var(--text);
+}
+
+.message-branch-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.message-branch-button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
 .message-markdown {
   margin-top: 8px;
   color: var(--text);

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import uuid
 
 from datetime import datetime, timedelta, timezone
 from flask import Blueprint, Response, current_app, g, jsonify, request, stream_with_context
@@ -210,6 +211,16 @@ def _strategy_name_from_canvas(canvas: dict | None) -> str:
         return ""
     name = data.get("strategy_name")
     return name.strip() if isinstance(name, str) else ""
+
+
+def _apply_generated_strategy_name(strategy: Strategy, name: str) -> None:
+    sn = (name or "").strip()
+    if not sn:
+        return
+    if (strategy.strategy_name_source or "generated") == "manual":
+        return
+    strategy.strategy_name = sn[:512]
+    strategy.strategy_name_source = "generated"
 
 
 def _thread_row_created_at(value) -> str | None:
@@ -426,6 +437,75 @@ def delete_thread(thread_id: str) -> tuple:
         session.close()
 
 
+@strategy_blueprint.post("/threads/<thread_id>/branch")
+@require_auth
+def branch_thread(thread_id: str) -> tuple:
+    uid = _current_user_id()
+    thread_id = (thread_id or "").strip()
+    if not thread_id:
+        return _validation_error("thread_id is required")
+    if not thread_id_allowed(thread_id):
+        return _validation_error("invalid thread_id")
+
+    payload = request.get_json(silent=True) or {}
+    run_id = str(payload.get("run_id", "")).strip()
+    if not run_id:
+        return _validation_error("run_id is required")
+
+    new_thread_id = str(uuid.uuid4())
+    session = SessionLocal()
+    try:
+        source = get_strategy_by_id(session, run_id)
+        if source is None or source.thread_id != thread_id:
+            return _validation_error("strategy not found")
+
+        source_messages = list(source.messages or [])
+        source_reply = None
+        for message in source_messages:
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") == "assistant" and str(message.get("run_id") or "").strip() == run_id:
+                source_reply = dict(message)
+                break
+        if source_reply is None:
+            return _validation_error("assistant reply not found")
+
+        new_strategy = Strategy(
+            thread_id=new_thread_id,
+            created_by=uid,
+            created_by_email=getattr(g, "user_email", None),
+            messages=[],
+            canvas=dict(source.canvas or {}),
+            code=str(source.code or ""),
+            status=str(source.status or "success"),
+            status_text=str(source.status_text or ""),
+            strategy_name=str(source.strategy_name or ""),
+            strategy_name_source=str(source.strategy_name_source or "generated"),
+            algorithm=str(source.algorithm or ""),
+            language=str(source.language or ""),
+        )
+        session.add(new_strategy)
+        session.flush()
+        source_reply["run_id"] = new_strategy.id
+        source_reply.pop("langsmith_trace", None)
+        new_strategy.messages = [source_reply]
+        session.add(new_strategy)
+        session.commit()
+        session.refresh(new_strategy)
+        restore_strategy_workspace_from_snapshot(
+            new_thread_id,
+            code=getattr(new_strategy, "code", "") or "",
+            canvas=dict(getattr(new_strategy, "canvas", {}) or {}),
+        )
+        out = serialize_strategy(new_strategy)
+        out["ok"] = True
+        out["source_thread_id"] = thread_id
+        out["source_run_id"] = run_id
+        return jsonify(out), 200
+    finally:
+        session.close()
+
+
 @strategy_blueprint.post("/threads/<thread_id>/revert")
 @require_auth
 def revert_thread(thread_id: str) -> tuple:
@@ -606,8 +686,7 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str, user_timezone: str 
                 str(agent_result.get("strategy_name") or "").strip()
                 or _strategy_name_from_canvas(strategy.canvas)
             )
-            if sn:
-                strategy.strategy_name = sn[:512]
+            _apply_generated_strategy_name(strategy, sn)
             strategy.status = "success"
             strategy.status_text = ""
         except Exception as exc:
@@ -670,6 +749,7 @@ def patch_strategy() -> tuple:
         if owner and owner != str(uid or "").strip():
             return jsonify({"error": "forbidden", "status": None, "status_text": None}), 403
         strategy.strategy_name = name.strip()
+        strategy.strategy_name_source = "manual"
         session.add(strategy)
         session.commit()
         return jsonify(serialize_strategy(strategy)), 200
@@ -872,6 +952,8 @@ def post_strategy() -> tuple:
         prev_canvas = dict(latest.canvas or {}) if latest else {}
         prev_code = getattr(latest, "code", "") if latest else ""
         prev_codex_thread_id = getattr(latest, "codex_thread_id", "") if latest else ""
+        prev_strategy_name = getattr(latest, "strategy_name", "") if latest else ""
+        prev_strategy_name_source = getattr(latest, "strategy_name_source", "") if latest else ""
         messages = prev_messages + [{"role": "user", "content": content}]
         lang = detect_conversation_language_iso(messages)
 
@@ -886,6 +968,8 @@ def post_strategy() -> tuple:
             status_text="Starting…",
             language=lang,
             codex_thread_id=prev_codex_thread_id or "",
+            strategy_name=prev_strategy_name or "",
+            strategy_name_source=prev_strategy_name_source or "generated",
         )
         session.add(new_strategy)
         session.commit()

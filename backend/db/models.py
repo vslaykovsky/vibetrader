@@ -50,6 +50,7 @@ class Strategy(Base):
     langsmith_trace: Mapped[str] = mapped_column(Text, nullable=False, default="")
     codex_thread_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     strategy_name: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    strategy_name_source: Mapped[str] = mapped_column(String(32), nullable=False, default="generated")
     algorithm: Mapped[str] = mapped_column(Text, nullable=False, default="")
     language: Mapped[str] = mapped_column(String(8), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)

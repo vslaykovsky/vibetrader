@@ -206,6 +206,24 @@ def ensure_strategy_strategy_name_column(eng: Engine) -> None:
         conn.execute(text("ALTER TABLE strategy ADD COLUMN strategy_name VARCHAR(512) NOT NULL DEFAULT ''"))
 
 
+def ensure_strategy_strategy_name_source_column(eng: Engine) -> None:
+    from sqlalchemy import inspect
+
+    insp = inspect(eng)
+    if not insp.has_table("strategy"):
+        return
+    cols = {c["name"] for c in insp.get_columns("strategy")}
+    if "strategy_name_source" in cols:
+        return
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE strategy ADD COLUMN "
+                "strategy_name_source VARCHAR(32) NOT NULL DEFAULT 'generated'"
+            )
+        )
+
+
 def ensure_strategy_algorithm_column(eng: Engine) -> None:
     from sqlalchemy import inspect
 
@@ -575,6 +593,7 @@ def init_database(eng: Engine) -> None:
     ensure_strategy_langsmith_trace_column(eng)
     ensure_strategy_codex_thread_id_column(eng)
     ensure_strategy_strategy_name_column(eng)
+    ensure_strategy_strategy_name_source_column(eng)
     ensure_strategy_algorithm_column(eng)
     ensure_strategy_language_column(eng)
     ensure_strategy_messages_count_column(eng)

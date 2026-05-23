@@ -473,7 +473,9 @@ const MessageBubble = memo(function MessageBubble({
   isActive,
   onViewRun,
   onRevertRun,
+  onBranchRun,
   revertDisabled,
+  branchDisabled,
   showViewStrategy,
   onViewStrategy,
 }) {
@@ -596,6 +598,80 @@ const MessageBubble = memo(function MessageBubble({
             }}
           >
             View strategy
+          </button>
+        </div>
+      ) : null}
+      {hasRunId ? (
+        <div className="message-footer-actions">
+          <button
+            type="button"
+            className="message-branch-button"
+            disabled={Boolean(branchDisabled)}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onBranchRun?.(message.run_id);
+            }}
+            title="Branch in new chat..."
+            aria-label="Branch in new chat"
+          >
+            <svg
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  xmlns="http://www.w3.org/2000/svg"
+>
+  <path
+    d="M5 12h6"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  />
+  <path
+    d="M11 12c2.75 0 4-1.25 5.5-4"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  />
+  <path
+    d="M11 12c2.75 0 4 1.25 5.5 4"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  />
+  <path
+    d="M16.5 8H20"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  />
+  <path
+    d="M16.5 16H20"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  />
+  <path
+    d="M18 6l2 2-2 2"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  />
+  <path
+    d="M18 14l2 2-2 2"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  />
+</svg>
           </button>
         </div>
       ) : null}
@@ -833,6 +909,7 @@ export function StrategyPage() {
   const [algorithmLoading, setAlgorithmLoading] = useState(false);
   const [reverting, setReverting] = useState(false);
   const [revertRunRequest, setRevertRunRequest] = useState('');
+  const [branchingRunId, setBranchingRunId] = useState('');
   const [isNarrow, setIsNarrow] = useState(false);
   const [mobileCanvasOpen, setMobileCanvasOpen] = useState(false);
   const [chatPanelWidthPx, setChatPanelWidthPx] = useState(null);
@@ -1498,6 +1575,60 @@ export function StrategyPage() {
     await handleViewRun(runId);
     setMobileCanvasOpen(true);
   }, [handleViewRun]);
+
+  const handleBranchRun = useCallback(async (runId) => {
+    const rid = String(runId || '').trim();
+    if (!threadId || !rid || branchingRunId) {
+      return;
+    }
+
+    let newTab = null;
+    if (typeof window !== 'undefined' && typeof window.open === 'function') {
+      newTab = window.open('about:blank', '_blank');
+    }
+
+    setBranchingRunId(rid);
+    setError('');
+    try {
+      const response = await authFetch(
+        `${API_BASE_URL}/threads/${encodeURIComponent(threadId)}/branch`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ run_id: rid }),
+        },
+      );
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to branch message');
+      }
+      const nextThreadId = String(payload.thread_id || '').trim();
+      if (!nextThreadId) {
+        throw new Error('Branch created without a thread id');
+      }
+      const nextUrl =
+        typeof window !== 'undefined'
+          ? new URL(`/strategy/${encodeURIComponent(nextThreadId)}`, window.location.origin).href
+          : `/strategy/${encodeURIComponent(nextThreadId)}`;
+
+      if (newTab && !newTab.closed) {
+        newTab.opener = null;
+        newTab.location.href = nextUrl;
+      } else if (typeof window !== 'undefined' && typeof window.open === 'function') {
+        const opened = window.open(nextUrl, '_blank', 'noopener,noreferrer');
+        if (!opened) {
+          throw new Error('Branch created, but the browser blocked opening the new tab.');
+        }
+      }
+    } catch (err) {
+      if (newTab && !newTab.closed) {
+        newTab.close();
+      }
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBranchingRunId('');
+    }
+  }, [authFetch, branchingRunId, threadId]);
 
   useEffect(() => {
     setViewingRunId(null);
@@ -2447,7 +2578,9 @@ export function StrategyPage() {
               onViewRun={handleViewRun}
               onViewStrategy={handleViewStrategy}
               onRevertRun={handleRequestRevertRun}
+              onBranchRun={handleBranchRun}
               revertDisabled={reverting}
+              branchDisabled={Boolean(branchingRunId)}
               showViewStrategy={isNarrow && !mobileCanvasOpen && hasAnyCanvasData}
             />
           ))}

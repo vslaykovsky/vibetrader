@@ -106,6 +106,127 @@ def test_list_threads_returns_only_authenticated_user_threads():
             os.environ.pop("SUPABASE_JWT_SECRET", None)
 
 
+def test_branch_thread_copies_agent_reply_snapshot_to_new_thread():
+    prev = os.environ.get("SUPABASE_JWT_SECRET")
+    os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
+    owner = f"branch-owner-{uuid.uuid4()}"
+    source_thread_id = str(uuid.uuid4())
+    created_at = datetime(2096, 6, 1, 12, 0, 0)
+    code = "def run_strategy():\n    return {'branch': True}\n"
+    canvas = {"output": {"data.json": {"branch": True}, "notes.md": "branch notes"}}
+    session = SessionLocal()
+    try:
+        source = Strategy(
+            thread_id=source_thread_id,
+            created_by=owner,
+            created_by_email="owner@example.com",
+            messages=[],
+            canvas=canvas,
+            code=code,
+            status="success",
+            status_text="",
+            strategy_name="Branch source",
+            strategy_name_source="manual",
+            algorithm="Branch algorithm",
+            language="en",
+            created_at=created_at,
+        )
+        session.add(source)
+        session.flush()
+        source.messages = [
+            {"role": "user", "content": "build source"},
+            {
+                "role": "assistant",
+                "content": "source reply",
+                "run_id": source.id,
+                "reply_duration_ms": 123,
+            },
+        ]
+        session.commit()
+        source_run_id = source.id
+    finally:
+        session.close()
+
+    new_thread_id = ""
+    app = create_app()
+    try:
+        response = app.test_client().post(
+            f"/threads/{source_thread_id}/branch",
+            headers=_auth_headers("owner@example.com", owner),
+            json={"run_id": source_run_id},
+        )
+        assert response.status_code == 200
+        payload = response.get_json()
+        new_thread_id = payload["thread_id"]
+        new_run_id = payload["id"]
+        new_created_at = payload["created_at"]
+        assert payload == {
+            "id": new_run_id,
+            "thread_id": new_thread_id,
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "source reply",
+                    "run_id": new_run_id,
+                    "reply_duration_ms": 123,
+                }
+            ],
+            "status": "success",
+            "status_text": "",
+            "langsmith_trace": "",
+            "strategy_name": "Branch source",
+            "language": "en",
+            "created_at": new_created_at,
+            "canvas": canvas,
+            "algorithm": "Branch algorithm",
+            "ok": True,
+            "source_thread_id": source_thread_id,
+            "source_run_id": source_run_id,
+        }
+
+        session = SessionLocal()
+        try:
+            branched = session.get(Strategy, new_run_id)
+            assert branched is not None
+            assert branched.created_by == owner
+            assert branched.messages == [
+                {
+                    "role": "assistant",
+                    "content": "source reply",
+                    "run_id": new_run_id,
+                    "reply_duration_ms": 123,
+                }
+            ]
+            assert branched.messages_count == 1
+            assert branched.canvas == canvas
+            assert branched.code == code
+            assert branched.codex_thread_id == ""
+        finally:
+            session.close()
+
+        workspace = _ROOT / "strategies_v2" / new_thread_id
+        assert (workspace / "strategy.py").read_text(encoding="utf-8") == code
+    finally:
+        session = SessionLocal()
+        try:
+            if new_thread_id:
+                session.query(Strategy).filter_by(thread_id=new_thread_id).delete(
+                    synchronize_session=False
+                )
+            session.query(Strategy).filter_by(thread_id=source_thread_id).delete(
+                synchronize_session=False
+            )
+            session.commit()
+        finally:
+            session.close()
+        if new_thread_id:
+            shutil.rmtree(_ROOT / "strategies_v2" / new_thread_id, ignore_errors=True)
+        if prev is not None:
+            os.environ["SUPABASE_JWT_SECRET"] = prev
+        else:
+            os.environ.pop("SUPABASE_JWT_SECRET", None)
+
+
 def test_strategy_thread_routes_return_latest_shared_thread_run():
     prev = os.environ.get("SUPABASE_JWT_SECRET")
     os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
