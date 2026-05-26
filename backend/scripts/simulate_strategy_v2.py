@@ -65,6 +65,7 @@ from strategies_v2.utils import (
 )
 
 logger = logging.getLogger(__name__)
+STRATEGY_DEADLOCK_EXIT_CODE = 86
 
 _DAILY_SCALES = {"1d", "1w"}
 _MARKET_SESSIONS = {"regular", "extended", "all"}
@@ -1325,16 +1326,20 @@ def main(argv: list[str]) -> int:
         max_leverage,
     )
 
-    doc, indicator_catalog, trained_model_params = simulate(
-        workspace=workspace,
-        start_d=start_d,
-        end_d=end_d,
-        initial_deposit=deposit,
-        provider=provider,
-        entry_script=entry_script,
-        simulation_scale=simulation_scale,
-        max_leverage=max_leverage,
-    )
+    try:
+        doc, indicator_catalog, trained_model_params = simulate(
+            workspace=workspace,
+            start_d=start_d,
+            end_d=end_d,
+            initial_deposit=deposit,
+            provider=provider,
+            entry_script=entry_script,
+            simulation_scale=simulation_scale,
+            max_leverage=max_leverage,
+        )
+    except StrategyRuntimeError as exc:
+        print(f"strategy deadlock: {exc}", file=sys.stderr)
+        return STRATEGY_DEADLOCK_EXIT_CODE
     backtest_path, metrics_path = _write_workspace_outputs(
         doc,
         workspace,

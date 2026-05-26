@@ -24,6 +24,7 @@ WORKSPACE = Path(__file__).resolve().parent
 PARAMS_PATH = WORKSPACE / "params.json"
 PARAMS_HYPEROPT_PATH = WORKSPACE / "params-hyperopt.json"
 METRICS_PATH = WORKSPACE / "metrics.json"
+STRATEGY_DEADLOCK_EXIT_CODE = 86
 
 
 def _locate_simulate_script(start: Path) -> Path:
@@ -160,6 +161,26 @@ def _run_simulation(trial_timeout: float) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _strategy_deadlock_message(
+    *,
+    returncode: int | None,
+    stdout: str | None,
+    stderr: str | None,
+    timeout_seconds: float | None = None,
+) -> str | None:
+    if timeout_seconds is not None:
+        return (
+            "strategy deadlock suspected: simulation did not finish within "
+            f"{timeout_seconds:g}s"
+        )
+    if returncode == STRATEGY_DEADLOCK_EXIT_CODE:
+        detail = (stderr or stdout or "").strip()
+        if detail:
+            return f"strategy deadlock detected: {detail[-500:]}"
+        return "strategy deadlock detected"
+    return None
+
+
 def main() -> None:
     configure_logging()
     try:
@@ -231,21 +252,66 @@ def main() -> None:
         try:
             proc = _run_simulation(trial_timeout)
         except subprocess.TimeoutExpired:
-            logger.info("trial %s/%s sampled=%s outcome=timeout", i + 1, n_trials, sampled)
+            msg = _strategy_deadlock_message(
+                returncode=None,
+                stdout=None,
+                stderr=None,
+                timeout_seconds=trial_timeout,
+            )
+            logger.error(
+                "trial %s/%s sampled=%s outcome=strategy_deadlock message=%s",
+                i + 1,
+                n_trials,
+                sampled,
+                msg,
+            )
             _emit_ui(
                 {
-                    "event": "trial",
+                    "event": "stopped",
+                    "reason": "strategy_deadlock",
                     "trial": i + 1,
                     "n_trials": n_trials,
                     "objective_metric": metric_key,
-                    "outcome": "timeout",
+                    "message": msg,
                     "best_value": _best_value_for_ui(best_params, best_value),
                     "completed_trials": completed,
                     **_timing_payload(t0, attempted, n_trials, wall),
                 }
             )
-            continue
+            _save_json(PARAMS_PATH, base)
+            print(f"{msg}; restored params.json to pre-study values", file=sys.stderr)
+            sys.exit(1)
         if proc.returncode != 0:
+            deadlock_msg = _strategy_deadlock_message(
+                returncode=proc.returncode,
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+            )
+            if deadlock_msg is not None:
+                logger.error(
+                    "trial %s/%s sampled=%s outcome=strategy_deadlock returncode=%s stderr_tail=%r",
+                    i + 1,
+                    n_trials,
+                    sampled,
+                    proc.returncode,
+                    (proc.stderr or "")[-500:],
+                )
+                _emit_ui(
+                    {
+                        "event": "stopped",
+                        "reason": "strategy_deadlock",
+                        "trial": i + 1,
+                        "n_trials": n_trials,
+                        "objective_metric": metric_key,
+                        "message": deadlock_msg,
+                        "best_value": _best_value_for_ui(best_params, best_value),
+                        "completed_trials": completed,
+                        **_timing_payload(t0, attempted, n_trials, wall),
+                    }
+                )
+                _save_json(PARAMS_PATH, base)
+                print(f"{deadlock_msg}; restored params.json to pre-study values", file=sys.stderr)
+                sys.exit(1)
             logger.info(
                 "trial %s/%s sampled=%s outcome=sim_failed returncode=%s stderr_tail=%r",
                 i + 1,
@@ -374,9 +440,25 @@ def main() -> None:
     try:
         proc = _run_simulation(trial_timeout)
     except subprocess.TimeoutExpired:
-        print("final simulation timed out", file=sys.stderr)
+        msg = _strategy_deadlock_message(
+            returncode=None,
+            stdout=None,
+            stderr=None,
+            timeout_seconds=trial_timeout,
+        )
+        _save_json(PARAMS_PATH, base)
+        print(f"{msg}; restored params.json to pre-study values", file=sys.stderr)
         sys.exit(1)
     if proc.returncode != 0:
+        deadlock_msg = _strategy_deadlock_message(
+            returncode=proc.returncode,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+        )
+        if deadlock_msg is not None:
+            _save_json(PARAMS_PATH, base)
+            print(f"{deadlock_msg}; restored params.json to pre-study values", file=sys.stderr)
+            sys.exit(1)
         print(
             f"final simulation failed (returncode={proc.returncode}) stderr_tail={proc.stderr!r}",
             file=sys.stderr,

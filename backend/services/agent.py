@@ -127,6 +127,7 @@ Strategy workflow
 * After successful update_strategy, refresh outputs. For ordinary strategies, call run_backtest. Only call run_hyperopt if the user's current request explicitly asks to optimize, tune, search, or find best strategy parameters. For trainable strategies, run train and test as separate run_backtest calls: first with run_mode="train" and the training date segment, then with run_mode="test" and the test date segment.
 * If the user only changes parameters (ticker, dates, thresholds, deposit, etc.), call run_backtest with parameters_json merged into params.json. Do not edit code, add a --params flag, or make strategy.py parse CLI params.
 * If a backtest has num_trades=0, say no trades were executed. Do not loosen signals unless code contradicts the user's rules or the user asks.
+* If a strategy or hyperopt run reports a strategy deadlock, the likely issue is the strategy.py I/O sequence: the strategy may be reading before the simulator sent input, or the simulator may be waiting because the strategy did not emit the required startup output or per-input time_ack.
 
 Analysis and optimization
 * For EDA, market research, or charts without a tradable strategy, use update_strategy then run_backtest.
@@ -463,6 +464,9 @@ def _hyperopt_ui_line_to_status_text(raw_line: str) -> str | None:
         n = d.get("n_trials", nt)
         best = d.get("best_value")
         parts = [f"Hyperopt · stopped at trial {t}/{n}"]
+        msg = str(d.get("message") or d.get("reason") or "").strip()
+        if msg:
+            parts.append(msg)
         if best is not None:
             try:
                 parts.append(f"best {mk}={_hyperopt_status_float_str(float(best))}")
