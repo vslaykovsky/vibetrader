@@ -113,7 +113,7 @@ Principles
 * Be brief after tool runs: summarize only observed results; never invent metrics. The user sees charts and metrics.
 * Backtesting is supported; live trading is not.
 * Do not reveal generated Python implementation details.
-* Today's date is {(datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")}.
+* Today's date is {(datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")}.{{user_timezone_line}}
 
 Strategy workflow
 * Before the first update_strategy, ASK the user only for missing build/run/visualization details: ticker, scale, start/end dates, indicators, entry/exit, sizing, parameters, charts/visualizations. If the user wants defaults, choose sensible defaults. If they supplied a complete spec, implement it.
@@ -131,7 +131,7 @@ Strategy workflow
 
 Analysis and optimization
 * For EDA, market research, or charts without a tradable strategy, use update_strategy then run_backtest.
-* For explicit parameter optimization requests, use run_hyperopt. Use parameters_hyperopt_json for study-only overrides and parameters_json for base simulation inputs. Do not run hyperopt for ordinary strategy creation, strategy edits, parameter changes, EDA, or backtest refreshes.
+* For explicit parameter optimization requests, use run_hyperopt. Use parameters_hyperopt_json for study-only overrides and parameters_json for base simulation inputs; follow the run_hyperopt tool schema for allowed study fields. Do not run hyperopt for ordinary strategy creation, strategy edits, parameter changes, EDA, or backtest refreshes.
 * If params.json contains run_mode, treat the strategy as trainable and run separate train and out-of-sample test backtests with run_mode/date overrides rather than one combined run.
 * For questions about how the latest strategy run performed on historical data, use analyse_run. This includes questions about specific trades, orders, fills, entries/exits, PnL, metrics, dates, bars, or why something happened in the latest backtest. Do not use analyse_code for these.
 
@@ -757,8 +757,16 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                     "parameters_hyperopt_json": {
                         "type": "string",
                         "description": (
-                            "Optional valid JSON merged into params-hyperopt.json. Use for search space, ranges, regimes, "
-                            "trial budgets, timeouts, and other study-only settings; use parameters_json for ticker, dates, deposit, etc."
+                            "Optional valid JSON merged into params-hyperopt.json. Allowed top-level ParamsHyperopt fields: "
+                            "search_space, n_trials, timeout_seconds, direction, objective_metric, seed, trial_timeout_seconds. "
+                            "search_space maps top-level tunables already present in params.json to one of these specs: "
+                            "{\"type\":\"int\",\"low\":4,\"high\":30}, "
+                            "{\"type\":\"float\",\"low\":0.1,\"high\":1.0}, or "
+                            "{\"type\":\"categorical\",\"choices\":[...]}. "
+                            "Use for search space, ranges, trial budgets, timeouts, direction, seed, and objective metric. "
+                            "Use parameters_json instead for ticker, dates, deposit, provider, scale, simulation_scale, "
+                            "metadata, run_mode, or other base simulation inputs. Do not pass unsupported fields such as "
+                            "all_trials_file, formula expressions, nested dotted objects, or learned artifacts."
                         ),
                     },
                 },
@@ -2291,13 +2299,13 @@ def build_agent_reply(
 
     workspace = strategy_root_for_thread(thread_id)
     strategy_help = _strategy_help_for_workspace(workspace)
-    tz_hint = (
+    user_timezone_line = (
         f"\n* The user's local timezone is {user_timezone}. When the user mentions a clock time (e.g. '9:30am'), interpret it in this timezone and convert to UTC for strategy code unless the user explicitly specifies a different timezone. Strategy unixtime values are UTC-based POSIX seconds."
         if user_timezone
         else ""
     )
     chat_messages: list[BaseMessage] = [
-        SystemMessage(content=SYSTEM_PROMPT.format(strategy_help=strategy_help) + tz_hint),
+        SystemMessage(content=SYSTEM_PROMPT.format(strategy_help=strategy_help, user_timezone_line=user_timezone_line)),
         *_stored_messages_to_lc(messages),
     ]
 
@@ -2312,7 +2320,10 @@ def build_agent_reply(
 
     for _ in range(max_iterations):
         chat_messages[0] = SystemMessage(
-            content=SYSTEM_PROMPT.format(strategy_help=_strategy_help_for_workspace(workspace)) + tz_hint
+            content=SYSTEM_PROMPT.format(
+                strategy_help=_strategy_help_for_workspace(workspace),
+                user_timezone_line=user_timezone_line,
+            )
         )
         if on_progress:
             on_progress("Thinking…")

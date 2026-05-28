@@ -19,6 +19,7 @@ from db.strategy_queries import (
     latest_thread_strategy,
 )
 from services.agent import (
+    CANVAS_OUTPUT_FILES,
     STRATEGIES_DIR,
     CHAT_MODEL,
     _TRACE_INPUTS,
@@ -622,6 +623,86 @@ def _restore_thread_workspace_if_no_newer_run(
     restore_strategy_workspace_from_snapshot(thread_id, code=code, canvas=canvas)
 
 
+def _stored_canvas_output(canvas: dict | None) -> dict[str, object]:
+    if not isinstance(canvas, dict):
+        return {}
+    output = canvas.get("output")
+    if not isinstance(output, dict):
+        return {}
+    out: dict[str, object] = {}
+    for name in CANVAS_OUTPUT_FILES:
+        if name not in output:
+            continue
+        value = output[name]
+        if isinstance(value, str) and not value.strip():
+            continue
+        if isinstance(value, (dict, list)) and not value:
+            continue
+        if value is None:
+            continue
+        out[name] = value
+    return out
+
+
+def _thread_workspace_restore_snapshot(
+    session,
+    thread_id: str,
+    latest: Strategy | None = None,
+) -> tuple[str, dict] | None:
+    rows: list[Strategy] = []
+    seen: set[str] = set()
+    if latest is not None:
+        rows.append(latest)
+        seen.add(str(latest.id))
+
+    code = ""
+    output: dict[str, object] = {}
+
+    def consume(row: Strategy) -> None:
+        nonlocal code
+        if not code and (row.code or "").strip():
+            code = row.code or ""
+        canvas = row.canvas if isinstance(row.canvas, dict) else {}
+        for name, value in _stored_canvas_output(canvas).items():
+            if name not in output:
+                output[name] = value
+
+    for row in rows:
+        consume(row)
+
+    core_files = {"params.json", "params-hyperopt.json"}
+    if not code or not core_files.issubset(output):
+        query = (
+            session.query(Strategy)
+            .filter_by(thread_id=thread_id)
+            .order_by(desc(Strategy.created_at))
+        )
+        for row in query:
+            rid = str(row.id)
+            if rid in seen:
+                continue
+            consume(row)
+            if code and core_files.issubset(output):
+                break
+
+    if not code and not output:
+        return None
+    return code, {"output": output}
+
+
+def _restore_thread_workspace_from_latest_snapshot(
+    session,
+    thread_id: str,
+    latest: Strategy | None = None,
+) -> tuple[str, dict] | None:
+    snapshot = _thread_workspace_restore_snapshot(session, thread_id, latest)
+    if snapshot is None:
+        return None
+    code, canvas = snapshot
+    restore_strategy_workspace_from_snapshot(thread_id, code=code, canvas=canvas)
+    return snapshot
+
+
 @traceable(name="post_strategy", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def _execute_strategy_agent_job(run_id: str, thread_id: str, user_timezone: str = "") -> None:
     stream = StrategyStreamPublisher(run_id)
@@ -956,6 +1037,18 @@ def post_strategy() -> tuple:
         prev_strategy_name_source = getattr(latest, "strategy_name_source", "") if latest else ""
         messages = prev_messages + [{"role": "user", "content": content}]
         lang = detect_conversation_language_iso(messages)
+        if latest is not None:
+            restore_snapshot = _restore_thread_workspace_from_latest_snapshot(session, thread_id, latest)
+            if restore_snapshot is not None:
+                restored_code, restored_canvas = restore_snapshot
+                if not (prev_code or "").strip():
+                    prev_code = restored_code
+                restored_output = (
+                    restored_canvas.get("output") if isinstance(restored_canvas, dict) else None
+                )
+                if isinstance(restored_output, dict) and restored_output:
+                    prev_canvas = dict(prev_canvas)
+                    prev_canvas["output"] = restored_output
 
         new_strategy = Strategy(
             thread_id=thread_id,

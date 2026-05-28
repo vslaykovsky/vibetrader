@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import time
@@ -19,6 +20,7 @@ assert _spec and _spec.loader
 _flask = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_flask)
 create_app = _flask.create_app
+from api.routes import _restore_thread_workspace_from_latest_snapshot
 
 
 def _auth_headers(email: str, sub: str) -> dict[str, str]:
@@ -568,6 +570,59 @@ def test_revert_thread_deletes_other_users_later_running_run():
             os.environ["SUPABASE_JWT_SECRET"] = prev
         else:
             os.environ.pop("SUPABASE_JWT_SECRET", None)
+
+
+def test_restore_thread_workspace_from_latest_snapshot_uses_newest_stored_artifacts():
+    thread_id = str(uuid.uuid4())
+    workspace = _ROOT / "strategies_v2" / thread_id
+    created_at = datetime(2097, 2, 1, 12, 0, 0)
+    old_code = "print('old strategy')\n"
+    session = SessionLocal()
+    try:
+        old = Strategy(
+            thread_id=thread_id,
+            messages=[],
+            canvas={
+                "output": {
+                    "params.json": {"ticker": "OLD", "start_date": "2021-01-01"},
+                    "params-hyperopt.json": {"n_trials": 7},
+                }
+            },
+            code=old_code,
+            status="success",
+            status_text="",
+            created_at=created_at,
+        )
+        session.add(old)
+        latest = Strategy(
+            thread_id=thread_id,
+            messages=[],
+            canvas={"output": {"params.json": {"ticker": "NEW", "start_date": "2022-01-01"}}},
+            code="",
+            status="success",
+            status_text="",
+            created_at=created_at + timedelta(minutes=1),
+        )
+        session.add(latest)
+        session.commit()
+        session.refresh(latest)
+
+        shutil.rmtree(workspace, ignore_errors=True)
+        _restore_thread_workspace_from_latest_snapshot(session, thread_id, latest)
+
+        assert (workspace / "strategy.py").read_text(encoding="utf-8") == old_code
+        assert json.loads((workspace / "params.json").read_text(encoding="utf-8")) == {
+            "start_date": "2022-01-01",
+            "ticker": "NEW",
+        }
+        assert json.loads((workspace / "params-hyperopt.json").read_text(encoding="utf-8")) == {
+            "n_trials": 7,
+        }
+    finally:
+        session.query(Strategy).filter_by(thread_id=thread_id).delete(synchronize_session=False)
+        session.commit()
+        session.close()
+        shutil.rmtree(workspace, ignore_errors=True)
 
 
 def test_list_recent_threads_is_admin_only_and_returns_latest_ten_threads():

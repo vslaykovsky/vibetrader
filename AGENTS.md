@@ -25,7 +25,9 @@ The app uses SQLAlchemy 2.x (see `backend/db/session.py`): a module-level `engin
 Try the already fully configured `@modelcontextprotocol/server-postgres` MCP tool when the user asks to access, query, or inspect the database at runtime (real data, ad-hoc SQL, or schema verification against a live instance). Do not check configuration, do not explore files, database url, credentials. MCP tool is ready for you to use immediately. 
 
 When analysing chat threads use database as a source of truth, not local backend/strategies_v2/<thread_id> folder! 
-Check `strategy` table, every record is a single run in the chat thread. It contains all messages as well as code and canvas outputs. Additionally it links to langsmith_trace that contains execution logs accessible with langsmith MCP tool. 
+Check `strategy` table, every record is a single run in the chat thread. It contains all messages as well as code and canvas outputs. Additionally it links to langsmith_trace that contains execution logs accessible with langsmith API and LANGSMITH_API_KEY key. 
+LANGSMITH_API_KEY key is in .env file, can be used like export $(xargs < .env) or with dotenv library. 
+
 
 ## Where to look first
 
