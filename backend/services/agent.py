@@ -759,6 +759,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                         "description": (
                             "Optional valid JSON merged into params-hyperopt.json. Allowed top-level ParamsHyperopt fields: "
                             "search_space, n_trials, timeout_seconds, direction, objective_metric, seed, trial_timeout_seconds. "
+                            "Default timeout_seconds is 21600 (6 hours). "
                             "search_space maps top-level tunables already present in params.json to one of these specs: "
                             "{\"type\":\"int\",\"low\":4,\"high\":30}, "
                             "{\"type\":\"float\",\"low\":0.1,\"high\":1.0}, or "
@@ -1576,7 +1577,7 @@ def _run_workspace_command(
         parts[0] = sys.executable
     is_hyperopt = bool(parts and parts[-1] == "hyperopt.py")
     timeout_env = "STRATEGY_HYPEROPT_TIMEOUT_S" if is_hyperopt else "STRATEGY_BACKTEST_TIMEOUT_S"
-    timeout_default = "7200" if is_hyperopt else "1800"
+    timeout_default = "25200" if is_hyperopt else "1800"
     timeout_s = int(os.getenv(timeout_env, timeout_default))
     if on_stderr_line is not None:
         return _run_logged_subprocess_stream(
