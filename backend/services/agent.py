@@ -28,6 +28,13 @@ from langchain_core.messages import (
 )
 
 from langchain_openrouter import ChatOpenRouter
+from pydantic import ValidationError
+
+from application.schemas.hyperopt import (
+    ParamsHyperopt,
+    ParamsHyperoptOverrides,
+    RunHyperoptToolParameters,
+)
 
 
 CHAT_MODEL = os.getenv("CHAT_MODEL", "openai/gpt-5.4")
@@ -165,6 +172,8 @@ LIST_TICKERS_TOOL_NAME = "list_tickers"
 TICKER_LIST_DEFAULT_LIMIT = 25
 TICKER_LIST_MAX_LIMIT = 100
 INTERNAL_LIMITS_MESSAGE = "Internal limits were hit. Please try again later."
+
+RUN_HYPEROPT_TOOL_PARAMETERS_SCHEMA = RunHyperoptToolParameters.model_json_schema()
 
 ProgressCallback = Callable[[str], None] | None
 TokenCallback = Callable[[str], None] | None
@@ -745,33 +754,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                 "trials, writes best params to params.json, then performs a final run. parameters_json changes base inputs; "
                 "parameters_hyperopt_json changes the study definition."
             ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "parameters_json": {
-                        "type": "string",
-                        "description": (
-                            "Optional valid JSON merged into params.json before hyperopt, using run_backtest merge rules."
-                        ),
-                    },
-                    "parameters_hyperopt_json": {
-                        "type": "string",
-                        "description": (
-                            "Optional valid JSON merged into params-hyperopt.json. Allowed top-level ParamsHyperopt fields: "
-                            "search_space, n_trials, timeout_seconds, direction, objective_metric, seed, trial_timeout_seconds. "
-                            "Default timeout_seconds is 21600 (6 hours). "
-                            "search_space maps top-level tunables already present in params.json to one of these specs: "
-                            "{\"type\":\"int\",\"low\":4,\"high\":30}, "
-                            "{\"type\":\"float\",\"low\":0.1,\"high\":1.0}, or "
-                            "{\"type\":\"categorical\",\"choices\":[...]}. "
-                            "Use for search space, ranges, trial budgets, timeouts, direction, seed, and objective metric. "
-                            "Use parameters_json instead for ticker, dates, deposit, provider, scale, simulation_scale, "
-                            "metadata, run_mode, or other base simulation inputs. Do not pass unsupported fields such as "
-                            "all_trials_file, formula expressions, nested dotted objects, or learned artifacts."
-                        ),
-                    },
-                },
-            },
+            "parameters": RUN_HYPEROPT_TOOL_PARAMETERS_SCHEMA,
         },
     },
     {
@@ -1772,13 +1755,26 @@ def _merge_parameters_hyperopt_json_into_params_hyperopt_file(
     else:
         parsed = parameters_hyperopt_json
 
+    if not isinstance(parsed, dict):
+        raise ValueError("parameters_hyperopt_json must be a JSON object")
+
+    try:
+        overlay = ParamsHyperoptOverrides.model_validate(parsed).model_dump(
+            mode="json", exclude_none=True
+        )
+    except ValidationError as e:
+        raise ValueError(f"parameters_hyperopt_json does not match ParamsHyperopt: {e}") from e
+    if not overlay:
+        return
+
     root.mkdir(parents=True, exist_ok=True)
     path = root / "params-hyperopt.json"
-    if isinstance(parsed, dict):
-        existing = _read_params_json_object(path)
-        to_write = _deep_merge_json_values(existing, parsed)
-    else:
-        to_write = parsed
+    existing = _read_params_json_object(path)
+    to_write = _deep_merge_json_values(existing, overlay)
+    try:
+        ParamsHyperopt.model_validate(to_write)
+    except ValidationError as e:
+        raise ValueError(f"merged params-hyperopt.json does not match ParamsHyperopt: {e}") from e
     path.write_text(
         json.dumps(to_write, indent=2, sort_keys=True),
         encoding="utf-8",

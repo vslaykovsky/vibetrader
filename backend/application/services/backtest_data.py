@@ -20,6 +20,8 @@ from alpaca.data.models import BarSet
 from alpaca.data.requests import CryptoBarsRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
+from application.schemas.hyperopt import ParamsHyperopt
+
 from moexalgo import session as moex_session
 from moexalgo import Ticker
 
@@ -134,43 +136,6 @@ class DataJson(BaseModel):
     strategy_name: str
     charts: list[Chart] = Field(default_factory=list)
     metrics: Metrics | None = None
-
-
-class HyperoptIntSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    type: Literal["int"] = "int"
-    low: int
-    high: int
-
-
-class HyperoptFloatSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    type: Literal["float"] = "float"
-    low: float
-    high: float
-
-
-class HyperoptCategoricalSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    type: Literal["categorical"] = "categorical"
-    choices: list[Any]
-
-
-HyperoptSearchSpec = Annotated[
-    HyperoptIntSpec | HyperoptFloatSpec | HyperoptCategoricalSpec,
-    Field(discriminator="type"),
-]
-
-
-class ParamsHyperopt(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    search_space: dict[str, HyperoptSearchSpec]
-    n_trials: int = 30
-    timeout_seconds: int = 21600
-    direction: Literal["maximize", "minimize"] = "maximize"
-    objective_metric: str = "total_return"
-    seed: int | None = None
-    trial_timeout_seconds: int | None = 1800
 
 
 @dataclass

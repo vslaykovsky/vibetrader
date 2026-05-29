@@ -17,6 +17,14 @@ FibonacciOutputKey = Literal[
 ]
 Scale = Literal["1m", "15m", "1h", "4h", "1d", "1w"]
 Session = Literal["regular", "extended", "all"]
+HyperoptObjectiveMetric = Literal[
+    "total_return",
+    "sharpe_ratio",
+    "max_drawdown",
+    "win_rate",
+    "num_trades",
+    "final_equity",
+]
 
 
 def fibonacci_output_retracement_ratio(key: FibonacciOutputKey) -> float:
@@ -497,6 +505,6 @@ class ParamsHyperopt(BaseModel):
     n_trials: int = 30
     timeout_seconds: int = 21600
     direction: Literal["maximize", "minimize"] = "maximize"
-    objective_metric: str = "total_return"
+    objective_metric: HyperoptObjectiveMetric = "total_return"
     seed: int | None = None
     trial_timeout_seconds: int | None = 1800
