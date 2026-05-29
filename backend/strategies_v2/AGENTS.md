@@ -25,7 +25,7 @@ These instructions apply inside each strategy workspace copied from `backend/str
 `params.json` is the single source of truth for strategy configuration. Include:
 
 - Strategy metadata: `ticker`, native bar `scale`, `strategy_name` without ticker text, and short UI `description`.
-- Host inputs: `start_date`, `end_date`, positive `initial_deposit`, optional `provider` (`alpaca`, `moex`, `auto`), optional `simulation_scale` (`1m`, `15m`, `1h`, `4h`, `1d`, `1w`; defaults to `scale`), and optional `max_leverage` (defaults to `1.0`, no margin).
+- Host inputs: `start_date`, `end_date`, positive `initial_deposit`, optional `provider` (`alpaca`, `moex`, `auto`), optional `simulation_scale` (`1m`, `15m`, `1h`, `4h`, `1d`, `1w`; must be the same as scale `scale`, unless explicitly asked by user for lower value), and optional `max_leverage` (defaults to `1.0`, no margin).
 - Strategy tunables: periods, thresholds, lookbacks, sizing, Renko brick settings, model hyperparameters chosen before fitting, and similar knobs.
 - `run_mode: "train" | "test"` only for real trainable model strategies like boosted trees and ANNs, not simple indicator or rule strategies. Each process must use exactly one exclusive `run_mode` selected at startup.
 
@@ -76,7 +76,7 @@ Each `ohlc` and `indicator` input has `closed`:
 
 `partial=False` is the default and emits only closed base-scale points. `partial=True` emits additional running points at `update_scale`, defaulting to `simulation_scale`. `update_scale` must divide `scale` and be no finer than `simulation_scale`.
 
-`params.json.simulation_scale` controls the host fetch/driver resolution. It must be the same as or finer than `scale`, and must divide it. When finer than `scale`, the host aggregates driver bars into base bars, emits partial updates where requested, and fills orders at the running close that triggered them.
+`params.json.simulation_scale` controls the host fetch/driver resolution. It must be the same as or finer than `scale`, and must divide it. When finer than `scale`, the host aggregates driver bars into base bars, emits partial updates where requested, and fills orders at the running close that triggered them. Make it always THE SAME as scale, unless asked explicitly by the user for a finer value. 
 
 ## Renko
 
