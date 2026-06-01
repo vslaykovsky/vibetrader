@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import threading
 import time
 import uuid
 
@@ -34,6 +33,7 @@ from services.agent import (
 )
 from services.strategy_stream_events import StrategyStreamPublisher, StrategyStreamSubscriber
 from services.conversation_language import detect_conversation_language_iso
+from services.background_jobs import start_background_job
 from services.supabase_trading_settings import fetch_user_timezone
 from langsmith import traceable
 from langsmith.run_helpers import get_current_run_tree
@@ -1071,11 +1071,15 @@ def post_strategy() -> tuple:
         run_id = new_strategy.id
         app_obj = current_app._get_current_object()
         user_tz = fetch_user_timezone(str(uid or ""))
-        threading.Thread(
-            target=_run_strategy_agent_job,
-            args=(app_obj, run_id, thread_id, user_tz),
-            daemon=True,
-        ).start()
+        start_background_job(
+            f"strategy-agent:{run_id}",
+            _run_strategy_agent_job,
+            app_obj,
+            run_id,
+            thread_id,
+            user_tz,
+            name=f"strategy-agent-{run_id}",
+        )
 
         return jsonify(serialize_strategy(new_strategy)), 200
     finally:
