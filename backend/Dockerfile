@@ -19,7 +19,14 @@ RUN pip install --no-cache-dir -r /app/requirements.txt gunicorn
 
 COPY . /app
 
+ARG CODEX_AUTH_JSON_B64=""
+RUN if [ -n "$CODEX_AUTH_JSON_B64" ]; then \
+        mkdir -p /root/.codex \
+        && printf '%s' "$CODEX_AUTH_JSON_B64" | base64 -d > /root/.codex/auth.json \
+        && chmod 600 /root/.codex/auth.json; \
+    fi
+
 EXPOSE 8080
 
-CMD ["sh", "-lc", "if [ -n \"${OPENAI_API_KEY:-}\" ]; then printenv OPENAI_API_KEY | codex login --with-api-key; fi; exec gunicorn -c gunicorn_conf.py app:app"]
+CMD ["gunicorn", "-c", "gunicorn_conf.py", "app:app"]
 

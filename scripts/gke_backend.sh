@@ -6,7 +6,16 @@ cd "${ROOT}"
 
 gcloud auth configure-docker us-central1-docker.pkg.dev
 
-docker buildx build --platform linux/amd64 -t us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-backend:latest ./backend --push
+CODEX_AUTH_JSON_B64=""
+if [ -f "${HOME}/.codex/auth.json" ]; then
+  CODEX_AUTH_JSON_B64="$(base64 < "${HOME}/.codex/auth.json" | tr -d '\n')"
+else
+  echo "WARNING: ${HOME}/.codex/auth.json not found; building without baked-in Codex OAuth credentials" >&2
+fi
+
+docker buildx build --platform linux/amd64 \
+  --build-arg CODEX_AUTH_JSON_B64="${CODEX_AUTH_JSON_B64}" \
+  -t us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-backend:latest ./backend --push
 
 gcloud container clusters get-credentials autopilot-cluster-1 --region us-central1 --project traderchat
 
