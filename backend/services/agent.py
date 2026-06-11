@@ -42,6 +42,7 @@ CHAT_REASONING_EFFORT = os.getenv("CHAT_REASONING_EFFORT", "medium")
 OPENROUTER_PROVIDER = {"only": ["OpenAI", "Anthropic"], "allow_fallbacks": False}
 CHAT_OPENROUTER_AINVOKE_TIMEOUT_SECONDS = 120
 CHAT_OPENROUTER_AINVOKE_TIMEOUT_RETRIES = 3
+AGENT_MAX_TOOL_ITERATIONS = 30
 
 CODEX_MODEL = os.getenv("CODEX_MODEL", "gpt-5.4")
 CODEX_REASONING_EFFORT = os.getenv("CODEX_REASONING_EFFORT", "high")
@@ -2306,7 +2307,6 @@ def build_agent_reply(
         *_stored_messages_to_lc(messages),
     ]
 
-    max_iterations = 10
     last_strategy_name = ""
     codex_thread_ref = {"value": _clean_codex_thread_id(codex_thread_id)}
     tool_handlers = _tool_handlers_for_thread(
@@ -2315,7 +2315,7 @@ def build_agent_reply(
         codex_thread_ref=codex_thread_ref,
     )
 
-    for _ in range(max_iterations):
+    for _ in range(AGENT_MAX_TOOL_ITERATIONS):
         chat_messages[0] = SystemMessage(
             content=SYSTEM_PROMPT.format(
                 strategy_help=_strategy_help_for_workspace(workspace),
