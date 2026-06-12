@@ -5,8 +5,9 @@ Flask-Cors==5.0.0
 SQLAlchemy==2.0.36
 psycopg[binary]>=3.2.0
 langchain-openai>=0.2.0
-langchain-openrouter>=0.1.0
+langchain-openrouter>=0.2.3
 langchain-core>=0.3.0
+openrouter>=0.9.2
 python-dotenv>=1.0.0
 alpaca-py>=0.39.0
 moexalgo>=2.5.9

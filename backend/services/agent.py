@@ -28,6 +28,7 @@ from langchain_core.messages import (
 )
 
 from langchain_openrouter import ChatOpenRouter
+from openrouter.errors import TooManyRequestsResponseError
 from pydantic import ValidationError
 
 from application.schemas.hyperopt import (
@@ -42,6 +43,9 @@ CHAT_REASONING_EFFORT = os.getenv("CHAT_REASONING_EFFORT", "medium")
 OPENROUTER_PROVIDER = {"only": ["OpenAI", "Anthropic"], "allow_fallbacks": False}
 CHAT_OPENROUTER_AINVOKE_TIMEOUT_SECONDS = 120
 CHAT_OPENROUTER_AINVOKE_TIMEOUT_RETRIES = 3
+# openrouter SDK >=0.9 only auto-retries 5XX; 429s raise immediately, so we retry here.
+CHAT_OPENROUTER_RATE_LIMIT_RETRIES = 5
+CHAT_OPENROUTER_RATE_LIMIT_MAX_DELAY_SECONDS = 30.0
 AGENT_MAX_TOOL_ITERATIONS = 30
 
 CODEX_MODEL = os.getenv("CODEX_MODEL", "gpt-5.4")
@@ -2174,6 +2178,24 @@ def _aimessage_plain_text(msg: AIMessage) -> str:
     return str(c)
 
 
+def _openrouter_rate_limit_delay_seconds(e: Exception, attempt: int) -> float:
+    retry_after: float | None = None
+    headers = getattr(e, "headers", None)
+    if headers is not None:
+        try:
+            retry_after = float(headers.get("retry-after"))
+        except (TypeError, ValueError):
+            retry_after = None
+    if retry_after is None:
+        try:
+            metadata = e.data.error.metadata  # type: ignore[attr-defined]
+            retry_after = float(metadata["retry_after_seconds"])
+        except (AttributeError, KeyError, TypeError, ValueError):
+            retry_after = None
+    base = max(retry_after if retry_after is not None else 1.0, 1.0)
+    return min(base * (2 ** (attempt - 1)), CHAT_OPENROUTER_RATE_LIMIT_MAX_DELAY_SECONDS)
+
+
 async def _chat_openrouter_ainvoke_with_timeout_retries(
     llm: Any,
     chat_messages: list[BaseMessage],
@@ -2181,26 +2203,40 @@ async def _chat_openrouter_ainvoke_with_timeout_retries(
     timeout_seconds: float = CHAT_OPENROUTER_AINVOKE_TIMEOUT_SECONDS,
     retries: int = CHAT_OPENROUTER_AINVOKE_TIMEOUT_RETRIES,
 ) -> AIMessage:
-    last_timeout: TimeoutError | None = None
-    for retry in range(retries + 1):
+    timeout_attempts = 0
+    rate_limit_attempts = 0
+    while True:
         try:
             msg = await asyncio.wait_for(llm.ainvoke(chat_messages), timeout=timeout_seconds)
             if isinstance(msg, AIMessage):
                 return msg
             return AIMessage(content=getattr(msg, "content", ""))
-        except asyncio.TimeoutError as e:
-            last_timeout = e
-            if retry >= retries:
+        except asyncio.TimeoutError:
+            timeout_attempts += 1
+            if timeout_attempts > retries:
                 raise
             logger.warning(
                 "ChatOpenRouter ainvoke timed out; retrying",
                 extra={
-                    "attempt": retry + 1,
+                    "attempt": timeout_attempts,
                     "max_retries": retries,
                     "timeout_seconds": timeout_seconds,
                 },
             )
-    raise last_timeout or TimeoutError("ChatOpenRouter ainvoke timed out")
+        except TooManyRequestsResponseError as e:
+            rate_limit_attempts += 1
+            if rate_limit_attempts > CHAT_OPENROUTER_RATE_LIMIT_RETRIES:
+                raise
+            delay = _openrouter_rate_limit_delay_seconds(e, rate_limit_attempts)
+            logger.warning(
+                "ChatOpenRouter rate-limited (429); retrying",
+                extra={
+                    "attempt": rate_limit_attempts,
+                    "max_retries": CHAT_OPENROUTER_RATE_LIMIT_RETRIES,
+                    "delay_seconds": delay,
+                },
+            )
+            await asyncio.sleep(delay)
 
 
 def _run_chat_openrouter_ainvoke(
