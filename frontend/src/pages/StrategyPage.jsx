@@ -61,6 +61,7 @@ const ChatComposer = memo(function ChatComposer({
   const [localSubmitting, setLocalSubmitting] = useState(false);
   const messageTextareaRef = useRef(null);
   const composerExpandedTextareaRef = useRef(null);
+  const lastSubmittedDraftRef = useRef('');
   const processing = showProcessing || localSubmitting;
   const disabled = processing;
   const showStopButton = processing && typeof onStop === 'function';
@@ -133,6 +134,7 @@ const ChatComposer = memo(function ChatComposer({
         return { accepted: false };
       }
       setLocalSubmitting(true);
+      lastSubmittedDraftRef.current = message;
       setDraft('');
       let result;
       try {
@@ -142,6 +144,9 @@ const ChatComposer = memo(function ChatComposer({
       }
       if (!result?.accepted || result?.ok === false || result?.restoreDraft) {
         setDraft((current) => (current.trim() ? current : message));
+        lastSubmittedDraftRef.current = '';
+      } else if (result?.cancelled) {
+        lastSubmittedDraftRef.current = '';
       }
       setLocalSubmitting(false);
       return result;
@@ -150,6 +155,14 @@ const ChatComposer = memo(function ChatComposer({
   );
 
   const handleStop = useCallback(() => {
+    const submitted = lastSubmittedDraftRef.current;
+    if (submitted) {
+      setDraft((current) => (current.trim() ? current : submitted));
+      lastSubmittedDraftRef.current = '';
+      window.setTimeout(() => {
+        messageTextareaRef.current?.focus();
+      }, 0);
+    }
     setLocalSubmitting(false);
     onStop?.();
   }, [onStop]);
