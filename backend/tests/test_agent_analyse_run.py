@@ -7,6 +7,7 @@ from openrouter.components.toomanyrequestsresponseerrordata import (
     TooManyRequestsResponseErrorData as TooManyRequestsErrorComponent,
 )
 from openrouter.errors import (
+    ResponseValidationError,
     TooManyRequestsResponseError,
     TooManyRequestsResponseErrorData,
 )
@@ -80,7 +81,22 @@ def _make_429_error(retry_after: str = "1") -> TooManyRequestsResponseError:
     return TooManyRequestsResponseError(data=data, raw_response=raw_response)
 
 
-def test_run_chat_openrouter_ainvoke_retries_rate_limits(monkeypatch):
+def _make_503_validation_error() -> ResponseValidationError:
+    body = '{"error":{"message":"Overloaded","code":503}}'
+    raw_response = httpx.Response(
+        200,
+        content=body.encode(),
+        request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+    )
+    return ResponseValidationError(
+        message="Response validation failed",
+        raw_response=raw_response,
+        cause=ValueError("invalid response"),
+        body=body,
+    )
+
+
+def test_run_chat_openrouter_ainvoke_retries_transient_api_errors(monkeypatch):
     monkeypatch.setattr(
         agent_module, "_openrouter_rate_limit_delay_seconds", lambda e, attempt: 0.0
     )
@@ -96,6 +112,23 @@ def test_run_chat_openrouter_ainvoke_retries_rate_limits(monkeypatch):
             return AIMessage(content="ok")
 
     llm = RateLimitedThenOk()
+
+    msg = _run_chat_openrouter_ainvoke(llm, [])
+
+    assert msg.content == "ok"
+    assert llm.attempts == 3
+
+    class OverloadedThenOk:
+        def __init__(self):
+            self.attempts = 0
+
+        async def ainvoke(self, messages):
+            self.attempts += 1
+            if self.attempts <= 2:
+                raise _make_503_validation_error()
+            return AIMessage(content="ok")
+
+    llm = OverloadedThenOk()
 
     msg = _run_chat_openrouter_ainvoke(llm, [])
 

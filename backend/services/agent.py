@@ -27,7 +27,7 @@ from langchain_core.messages import (
 )
 
 from langchain_openrouter import ChatOpenRouter
-from openrouter.errors import TooManyRequestsResponseError
+from openrouter.errors import ResponseValidationError, TooManyRequestsResponseError
 from pydantic import ValidationError
 
 from application.schemas.hyperopt import (
@@ -46,6 +46,7 @@ CHAT_OPENROUTER_AINVOKE_TIMEOUT_RETRIES = 3
 # openrouter SDK >=0.9 only auto-retries 5XX; 429s raise immediately, so we retry here.
 CHAT_OPENROUTER_RATE_LIMIT_RETRIES = 5
 CHAT_OPENROUTER_RATE_LIMIT_MAX_DELAY_SECONDS = 30.0
+CHAT_OPENROUTER_TRANSIENT_VALIDATION_RETRIES = 5
 AGENT_MAX_TOOL_ITERATIONS = 30
 
 CODEX_MODEL = os.getenv("CODEX_MODEL", "gpt-5.4")
@@ -2260,6 +2261,41 @@ def _openrouter_rate_limit_delay_seconds(e: Exception, attempt: int) -> float:
     return min(base * (2 ** (attempt - 1)), CHAT_OPENROUTER_RATE_LIMIT_MAX_DELAY_SECONDS)
 
 
+def _openrouter_validation_error_code(e: ResponseValidationError) -> int | None:
+    body = getattr(e, "body", None)
+    if not isinstance(body, str) or not body.strip():
+        raw_response = getattr(e, "raw_response", None)
+        try:
+            body = raw_response.text if raw_response is not None else None
+        except Exception:
+            body = None
+    if not isinstance(body, str) or not body.strip():
+        return None
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    error = data.get("error")
+    if not isinstance(error, dict):
+        return None
+    code = error.get("code")
+    if isinstance(code, int):
+        return code
+    if isinstance(code, str):
+        try:
+            return int(code)
+        except ValueError:
+            return None
+    return None
+
+
+def _is_openrouter_transient_validation_error(e: ResponseValidationError) -> bool:
+    code = _openrouter_validation_error_code(e)
+    return code is not None and 500 <= code <= 599
+
+
 async def _chat_openrouter_ainvoke_with_timeout_retries(
     llm: Any,
     chat_messages: list[BaseMessage],
@@ -2270,6 +2306,7 @@ async def _chat_openrouter_ainvoke_with_timeout_retries(
 ) -> AIMessage:
     timeout_attempts = 0
     rate_limit_attempts = 0
+    transient_validation_attempts = 0
     while True:
         if cancel_control is not None:
             cancel_control.raise_if_cancelled()
@@ -2325,6 +2362,31 @@ async def _chat_openrouter_ainvoke_with_timeout_retries(
                     "attempt": rate_limit_attempts,
                     "max_retries": CHAT_OPENROUTER_RATE_LIMIT_RETRIES,
                     "delay_seconds": delay,
+                },
+            )
+            sleep_deadline = time.monotonic() + delay
+            while True:
+                if cancel_control is not None and cancel_control.cancelled:
+                    raise AgentRunCancelled("Strategy run stopped")
+                remaining = sleep_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(0.25, remaining))
+        except ResponseValidationError as e:
+            if not _is_openrouter_transient_validation_error(e):
+                raise
+            transient_validation_attempts += 1
+            if transient_validation_attempts > CHAT_OPENROUTER_TRANSIENT_VALIDATION_RETRIES:
+                raise
+            delay = _openrouter_rate_limit_delay_seconds(e, transient_validation_attempts)
+            logger.warning(
+                "ChatOpenRouter transient validation error; retrying",
+                extra={
+                    "attempt": transient_validation_attempts,
+                    "max_retries": CHAT_OPENROUTER_TRANSIENT_VALIDATION_RETRIES,
+                    "delay_seconds": delay,
+                    "status_code": getattr(e, "status_code", None),
+                    "error_code": _openrouter_validation_error_code(e),
                 },
             )
             sleep_deadline = time.monotonic() + delay
