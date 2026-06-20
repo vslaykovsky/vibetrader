@@ -11,3 +11,6 @@ __pycache__
 # Exclude legacy per-thread strategy workspaces from Docker build context
 strategies/
 
+# Exclude generated per-thread strategy_v2 workspaces while keeping templates
+strategies_v2/*-*-*-*-*/
+
