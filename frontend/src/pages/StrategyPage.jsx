@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import hljs from 'highlight.js/lib/core';
@@ -469,6 +469,83 @@ function formatReplyDurationMs(ms) {
   return `${m}m ${rs}s`;
 }
 
+function BranchThreadDialog({
+  open,
+  busy,
+  onCancel,
+  onOnlyCurrent,
+  onIncludeFollowing,
+}) {
+  const titleId = useId();
+  const cancelRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const timer = window.setTimeout(() => cancelRef.current?.focus(), 0);
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape' && !busy) {
+        onCancel?.();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open, busy, onCancel]);
+
+  if (!open) return null;
+
+  return createPortal(
+    <div className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <button
+        type="button"
+        className="confirm-dialog-scrim"
+        aria-label="Close"
+        disabled={busy}
+        onClick={onCancel}
+      />
+      <div className="confirm-dialog-panel branch-thread-dialog-panel">
+        <div className="confirm-dialog-icon branch-thread-dialog-icon" aria-hidden>
+          <span className="home-ms">alt_route</span>
+        </div>
+        <h2 id={titleId} className="confirm-dialog-title">
+          {t('chat.branch_dialog_title')}
+        </h2>
+        <p className="confirm-dialog-message">{t('chat.branch_dialog_message')}</p>
+        <div className="confirm-dialog-actions branch-thread-dialog-actions">
+          <button
+            ref={cancelRef}
+            type="button"
+            className="dashboard-btn-ghost"
+            disabled={busy}
+            onClick={onCancel}
+          >
+            {t('chat.close')}
+          </button>
+          <button
+            type="button"
+            className="dashboard-btn-ghost"
+            disabled={busy}
+            onClick={onOnlyCurrent}
+          >
+            {t('chat.branch_only_current')}
+          </button>
+          <button
+            type="button"
+            className="dashboard-btn-primary"
+            disabled={busy}
+            onClick={onIncludeFollowing}
+          >
+            {busy ? t('chat.branching') : t('chat.branch_include_following')}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 const MessageBubble = memo(function MessageBubble({
   message,
   isActive,
@@ -910,6 +987,7 @@ export function StrategyPage() {
   const [algorithmLoading, setAlgorithmLoading] = useState(false);
   const [reverting, setReverting] = useState(false);
   const [revertRunRequest, setRevertRunRequest] = useState('');
+  const [branchRunRequest, setBranchRunRequest] = useState('');
   const [branchingRunId, setBranchingRunId] = useState('');
   const [isNarrow, setIsNarrow] = useState(false);
   const [mobileCanvasOpen, setMobileCanvasOpen] = useState(false);
@@ -1577,7 +1655,15 @@ export function StrategyPage() {
     setMobileCanvasOpen(true);
   }, [handleViewRun]);
 
-  const handleBranchRun = useCallback(async (runId) => {
+  const handleRequestBranchRun = useCallback((runId) => {
+    const rid = String(runId || '').trim();
+    if (!threadId || !rid || branchingRunId || branchRunRequest) {
+      return;
+    }
+    setBranchRunRequest(rid);
+  }, [branchRunRequest, branchingRunId, threadId]);
+
+  const handleBranchRun = useCallback(async (runId, includeFollowingMessages = false) => {
     const rid = String(runId || '').trim();
     if (!threadId || !rid || branchingRunId) {
       return;
@@ -1596,7 +1682,10 @@ export function StrategyPage() {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ run_id: rid }),
+          body: JSON.stringify({
+            run_id: rid,
+            include_following_messages: Boolean(includeFollowingMessages),
+          }),
         },
       );
       const payload = await response.json().catch(() => ({}));
@@ -1628,6 +1717,7 @@ export function StrategyPage() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBranchingRunId('');
+      setBranchRunRequest('');
     }
   }, [authFetch, branchingRunId, threadId]);
 
@@ -2579,9 +2669,9 @@ export function StrategyPage() {
               onViewRun={handleViewRun}
               onViewStrategy={handleViewStrategy}
               onRevertRun={handleRequestRevertRun}
-              onBranchRun={handleBranchRun}
+              onBranchRun={handleRequestBranchRun}
               revertDisabled={reverting}
-              branchDisabled={Boolean(branchingRunId)}
+              branchDisabled={Boolean(branchingRunId || branchRunRequest)}
               showViewStrategy={isNarrow && !mobileCanvasOpen && hasAnyCanvasData}
             />
           ))}
@@ -2961,6 +3051,15 @@ export function StrategyPage() {
         if (!reverting) setRevertRunRequest('');
       }}
       onConfirm={() => void handleRevertRun(revertRunRequest)}
+    />
+    <BranchThreadDialog
+      open={Boolean(branchRunRequest)}
+      busy={Boolean(branchingRunId)}
+      onCancel={() => {
+        if (!branchingRunId) setBranchRunRequest('');
+      }}
+      onOnlyCurrent={() => void handleBranchRun(branchRunRequest, false)}
+      onIncludeFollowing={() => void handleBranchRun(branchRunRequest, true)}
     />
     <ConfirmDialog
       open={deleteThreadDialogOpen}

@@ -20,7 +20,7 @@ Install if needed:
 ```
 sudo apt-get install kubectl
 sudo apt-get install google-cloud-cli-gke-gcloud-auth-plugin
-gcloud container clusters get-credentials autopilot-cluster-1 --zone us-central1 --project traderchat
+gcloud container clusters get-credentials cluster-standard --region us-central1 --project traderchat
 ```
 
 Authenticate docker to Artifact Registry (only for GKE builds/push):
@@ -146,7 +146,7 @@ Operational tips:
 
 ## Deploy (GKE)
 
-Images are fixed to `us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-frontend:latest`, `…/vibetrader-backend:latest`, `…/vibetrader-live-runner:latest`, and `…/vibetrader-alpaca-listener:latest`. Cluster: `autopilot-cluster-1` in `us-central1`, project `traderchat`, namespace `vibetrader`.
+Images are fixed to `us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-frontend:latest`, `…/vibetrader-backend:latest`, `…/vibetrader-live-runner:latest`, and `…/vibetrader-alpaca-listener:latest`. Cluster: `cluster-standard` in `us-central1`, project `traderchat`, namespace `vibetrader`.
 
 - **Frontend**: `./scripts/gke_frontend.sh`
 - **Backend**: `./scripts/gke_backend.sh`

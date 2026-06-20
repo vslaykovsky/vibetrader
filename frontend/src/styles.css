@@ -5260,6 +5260,18 @@ html[data-theme='dark'] .confirm-dialog-icon {
   color: #fecaca;
 }
 
+.branch-thread-dialog-panel {
+  max-width: 480px;
+}
+
+.branch-thread-dialog-icon {
+  color: var(--accent-strong);
+}
+
+html[data-theme='dark'] .branch-thread-dialog-icon {
+  color: var(--accent);
+}
+
 .confirm-dialog-title {
   margin: 0 0 8px;
   font-size: 1.1rem;
@@ -5279,6 +5291,14 @@ html[data-theme='dark'] .confirm-dialog-icon {
   justify-content: flex-end;
   gap: 10px;
   margin-top: 20px;
+}
+
+.branch-thread-dialog-actions {
+  flex-wrap: wrap;
+}
+
+.branch-thread-dialog-actions .dashboard-btn-primary {
+  margin-left: auto;
 }
 
 .confirm-dialog-confirm--danger {

@@ -17,7 +17,7 @@ docker buildx build --platform linux/amd64 \
   --build-arg CODEX_AUTH_JSON_B64="${CODEX_AUTH_JSON_B64}" \
   -t us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-backend:latest ./backend --push
 
-gcloud container clusters get-credentials autopilot-cluster-1 --region us-central1 --project traderchat
+gcloud container clusters get-credentials cluster-standard --region us-central1 --project traderchat
 
 kubectl apply -f deploy/gke/namespace.yaml
 kubectl apply -f deploy/gke/live-runner-rbac.yaml

@@ -116,6 +116,8 @@ def test_branch_thread_copies_agent_reply_snapshot_to_new_thread():
     created_at = datetime(2096, 6, 1, 12, 0, 0)
     code = "def run_strategy():\n    return {'branch': True}\n"
     canvas = {"output": {"data.json": {"branch": True}, "notes.md": "branch notes"}}
+    followup_code = "def run_strategy():\n    return {'branch': 'followup'}\n"
+    followup_canvas = {"output": {"data.json": {"branch": "followup"}}}
     session = SessionLocal()
     try:
         source = Strategy(
@@ -135,21 +137,55 @@ def test_branch_thread_copies_agent_reply_snapshot_to_new_thread():
         )
         session.add(source)
         session.flush()
+        source_run_id = source.id
         source.messages = [
             {"role": "user", "content": "build source"},
             {
                 "role": "assistant",
                 "content": "source reply",
-                "run_id": source.id,
+                "run_id": source_run_id,
                 "reply_duration_ms": 123,
             },
         ]
+        followup = Strategy(
+            thread_id=source_thread_id,
+            created_by=owner,
+            created_by_email="owner@example.com",
+            messages=[],
+            canvas=followup_canvas,
+            code=followup_code,
+            status="success",
+            status_text="",
+            strategy_name="Branch followup",
+            strategy_name_source="manual",
+            algorithm="Followup algorithm",
+            language="en",
+            created_at=created_at + timedelta(minutes=1),
+        )
+        session.add(followup)
+        session.flush()
+        followup_run_id = followup.id
+        followup.messages = [
+            {"role": "user", "content": "build source"},
+            {
+                "role": "assistant",
+                "content": "source reply",
+                "run_id": source_run_id,
+                "reply_duration_ms": 123,
+            },
+            {"role": "user", "content": "refine source"},
+            {
+                "role": "assistant",
+                "content": "followup reply",
+                "run_id": followup_run_id,
+                "reply_duration_ms": 456,
+            },
+        ]
         session.commit()
-        source_run_id = source.id
     finally:
         session.close()
 
-    new_thread_id = ""
+    new_thread_ids = []
     app = create_app()
     try:
         response = app.test_client().post(
@@ -160,6 +196,7 @@ def test_branch_thread_copies_agent_reply_snapshot_to_new_thread():
         assert response.status_code == 200
         payload = response.get_json()
         new_thread_id = payload["thread_id"]
+        new_thread_ids.append(new_thread_id)
         new_run_id = payload["id"]
         new_created_at = payload["created_at"]
         assert payload == {
@@ -208,10 +245,93 @@ def test_branch_thread_copies_agent_reply_snapshot_to_new_thread():
 
         workspace = _ROOT / "strategies_v2" / new_thread_id
         assert (workspace / "strategy.py").read_text(encoding="utf-8") == code
+
+        response = app.test_client().post(
+            f"/threads/{source_thread_id}/branch",
+            headers=_auth_headers("owner@example.com", owner),
+            json={"run_id": source_run_id, "include_following_messages": True},
+        )
+        assert response.status_code == 200
+        payload = response.get_json()
+        tail_thread_id = payload["thread_id"]
+        new_thread_ids.append(tail_thread_id)
+        tail_run_id = payload["id"]
+        first_tail_run_id = payload["messages"][0]["run_id"]
+        tail_created_at = payload["created_at"]
+        assert payload == {
+            "id": tail_run_id,
+            "thread_id": tail_thread_id,
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "source reply",
+                    "run_id": first_tail_run_id,
+                    "reply_duration_ms": 123,
+                },
+                {"role": "user", "content": "refine source"},
+                {
+                    "role": "assistant",
+                    "content": "followup reply",
+                    "run_id": tail_run_id,
+                    "reply_duration_ms": 456,
+                },
+            ],
+            "status": "success",
+            "status_text": "",
+            "langsmith_trace": "",
+            "strategy_name": "Branch followup",
+            "language": "en",
+            "created_at": tail_created_at,
+            "canvas": followup_canvas,
+            "algorithm": "Followup algorithm",
+            "ok": True,
+            "source_thread_id": source_thread_id,
+            "source_run_id": source_run_id,
+        }
+
+        session = SessionLocal()
+        try:
+            first_tail = session.get(Strategy, first_tail_run_id)
+            branched_tail = session.get(Strategy, tail_run_id)
+            assert first_tail is not None
+            assert branched_tail is not None
+            assert first_tail.thread_id == tail_thread_id
+            assert first_tail.messages == [
+                {
+                    "role": "assistant",
+                    "content": "source reply",
+                    "run_id": first_tail_run_id,
+                    "reply_duration_ms": 123,
+                }
+            ]
+            assert branched_tail.messages == [
+                {
+                    "role": "assistant",
+                    "content": "source reply",
+                    "run_id": first_tail_run_id,
+                    "reply_duration_ms": 123,
+                },
+                {"role": "user", "content": "refine source"},
+                {
+                    "role": "assistant",
+                    "content": "followup reply",
+                    "run_id": tail_run_id,
+                    "reply_duration_ms": 456,
+                },
+            ]
+            assert branched_tail.messages_count == 3
+            assert branched_tail.canvas == followup_canvas
+            assert branched_tail.code == followup_code
+            assert branched_tail.codex_thread_id == ""
+        finally:
+            session.close()
+
+        workspace = _ROOT / "strategies_v2" / tail_thread_id
+        assert (workspace / "strategy.py").read_text(encoding="utf-8") == followup_code
     finally:
         session = SessionLocal()
         try:
-            if new_thread_id:
+            for new_thread_id in new_thread_ids:
                 session.query(Strategy).filter_by(thread_id=new_thread_id).delete(
                     synchronize_session=False
                 )
@@ -221,7 +341,7 @@ def test_branch_thread_copies_agent_reply_snapshot_to_new_thread():
             session.commit()
         finally:
             session.close()
-        if new_thread_id:
+        for new_thread_id in new_thread_ids:
             shutil.rmtree(_ROOT / "strategies_v2" / new_thread_id, ignore_errors=True)
         if prev is not None:
             os.environ["SUPABASE_JWT_SECRET"] = prev

@@ -2,7 +2,7 @@
 
 ### Build, push, and deploy (Artifact Registry + GKE)
 
-Images and cluster are hardcoded in `scripts/gke_*.sh` to `us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-frontend:latest`, `…/vibetrader-backend:latest`, `…/vibetrader-live-runner:latest`, `…/vibetrader-alpaca-listener:latest`, cluster `autopilot-cluster-1` (`us-central1`), project `traderchat`.
+Images and cluster are hardcoded in `scripts/gke_*.sh` to `us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-frontend:latest`, `…/vibetrader-backend:latest`, `…/vibetrader-live-runner:latest`, `…/vibetrader-alpaca-listener:latest`, cluster `cluster-standard` (`us-central1`), project `traderchat`.
 
 From the repo root:
 

@@ -452,6 +452,7 @@ def branch_thread(thread_id: str) -> tuple:
     run_id = str(payload.get("run_id", "")).strip()
     if not run_id:
         return _validation_error("run_id is required")
+    include_following_messages = bool(payload.get("include_following_messages"))
 
     new_thread_id = str(uuid.uuid4())
     session = SessionLocal()
@@ -471,26 +472,104 @@ def branch_thread(thread_id: str) -> tuple:
         if source_reply is None:
             return _validation_error("assistant reply not found")
 
-        new_strategy = Strategy(
-            thread_id=new_thread_id,
-            created_by=uid,
-            created_by_email=getattr(g, "user_email", None),
-            messages=[],
-            canvas=dict(source.canvas or {}),
-            code=str(source.code or ""),
-            status=str(source.status or "success"),
-            status_text=str(source.status_text or ""),
-            strategy_name=str(source.strategy_name or ""),
-            strategy_name_source=str(source.strategy_name_source or "generated"),
-            algorithm=str(source.algorithm or ""),
-            language=str(source.language or ""),
-        )
-        session.add(new_strategy)
-        session.flush()
-        source_reply["run_id"] = new_strategy.id
-        source_reply.pop("langsmith_trace", None)
-        new_strategy.messages = [source_reply]
-        session.add(new_strategy)
+        if include_following_messages:
+            source_thread_messages = _merged_thread_messages(session, thread_id)
+            source_index = None
+            for idx, message in enumerate(source_thread_messages):
+                if not isinstance(message, dict):
+                    continue
+                if message.get("role") == "assistant" and str(message.get("run_id") or "").strip() == run_id:
+                    source_index = idx
+                    break
+            if source_index is None:
+                return _validation_error("assistant reply not found")
+
+            tail_messages = source_thread_messages[source_index:]
+            source_run_ids: list[str] = []
+            for message in tail_messages:
+                if not isinstance(message, dict):
+                    continue
+                if message.get("role") != "assistant":
+                    continue
+                source_run_id = str(message.get("run_id") or "").strip()
+                if source_run_id and source_run_id not in source_run_ids:
+                    source_run_ids.append(source_run_id)
+
+            source_rows = (
+                session.query(Strategy)
+                .filter(Strategy.thread_id == thread_id, Strategy.id.in_(source_run_ids))
+                .all()
+                if source_run_ids
+                else []
+            )
+            source_row_by_id = {str(row.id): row for row in source_rows}
+            missing_run_ids = [source_run_id for source_run_id in source_run_ids if source_run_id not in source_row_by_id]
+            if missing_run_ids:
+                return _validation_error("strategy not found")
+
+            copied_messages: list = []
+            latest_new_strategy = None
+            for message in tail_messages:
+                item = dict(message) if isinstance(message, dict) else message
+                if isinstance(item, dict):
+                    item.pop("langsmith_trace", None)
+                source_run_id = (
+                    str(item.get("run_id") or "").strip()
+                    if isinstance(item, dict) and item.get("role") == "assistant"
+                    else ""
+                )
+                if source_run_id:
+                    source_row = source_row_by_id[source_run_id]
+                    new_strategy = Strategy(
+                        thread_id=new_thread_id,
+                        created_by=uid,
+                        created_by_email=getattr(g, "user_email", None),
+                        messages=[],
+                        canvas=dict(source_row.canvas or {}),
+                        code=str(source_row.code or ""),
+                        status=str(source_row.status or "success"),
+                        status_text=str(source_row.status_text or ""),
+                        strategy_name=str(source_row.strategy_name or ""),
+                        strategy_name_source=str(source_row.strategy_name_source or "generated"),
+                        algorithm=str(source_row.algorithm or ""),
+                        language=str(source_row.language or ""),
+                    )
+                    session.add(new_strategy)
+                    session.flush()
+                    item["run_id"] = new_strategy.id
+                    copied_messages.append(item)
+                    new_strategy.messages = list(copied_messages)
+                    session.add(new_strategy)
+                    latest_new_strategy = new_strategy
+                else:
+                    copied_messages.append(item)
+
+            if latest_new_strategy is None:
+                return _validation_error("assistant reply not found")
+            latest_new_strategy.messages = copied_messages
+            new_strategy = latest_new_strategy
+        else:
+            new_strategy = Strategy(
+                thread_id=new_thread_id,
+                created_by=uid,
+                created_by_email=getattr(g, "user_email", None),
+                messages=[],
+                canvas=dict(source.canvas or {}),
+                code=str(source.code or ""),
+                status=str(source.status or "success"),
+                status_text=str(source.status_text or ""),
+                strategy_name=str(source.strategy_name or ""),
+                strategy_name_source=str(source.strategy_name_source or "generated"),
+                algorithm=str(source.algorithm or ""),
+                language=str(source.language or ""),
+            )
+            session.add(new_strategy)
+            session.flush()
+            source_reply["run_id"] = new_strategy.id
+            source_reply.pop("langsmith_trace", None)
+            new_strategy.messages = [source_reply]
+            session.add(new_strategy)
+
         session.commit()
         session.refresh(new_strategy)
         restore_strategy_workspace_from_snapshot(
