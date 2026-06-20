@@ -230,25 +230,6 @@ describe('applyLiveStreamEvent', () => {
         },
         {
           type: 'lightweight-charts',
-          title: 'Current position value',
-          series: [
-            {
-              type: 'Line',
-              label: 'SPY position value',
-              data: [{ time: 1000, value: 3000 }, { time: 1050 }],
-            },
-          ],
-          verticalMarkers: [
-            {
-              time: 1050,
-              label: 'Live trading starts',
-              kind: 'live_start',
-              color: '#f59e0b',
-            },
-          ],
-        },
-        {
-          type: 'lightweight-charts',
           title: 'Live Output Indicators',
           series: [
             {

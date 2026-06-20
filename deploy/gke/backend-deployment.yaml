@@ -25,7 +25,7 @@ spec:
             - containerPort: 8080
           resources:
             requests:
-              cpu: "500m"
+              cpu: "100m"
               memory: "2Gi"
           env:
             - name: BACKGROUND_JOB_SHUTDOWN_TIMEOUT_SECONDS

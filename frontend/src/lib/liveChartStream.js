@@ -376,7 +376,7 @@ function buildPositionCharts(state) {
       data: withAnnotationTimes(data, annotations),
     }))
     .filter((row) => row.data.length > 0);
-  if (series.length === 0) return [];
+  if (series.length <= 1) return [];
   return [
     {
       type: 'lightweight-charts',

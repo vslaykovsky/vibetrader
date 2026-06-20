@@ -143,6 +143,40 @@ def _sample_from_space(rng: random.Random, space: dict) -> dict[str, object]:
     return out
 
 
+def _active_search_space(cfg: ParamsHyperopt) -> dict:
+    if not cfg.search_space:
+        raise ValueError("params-hyperopt.json needs a non-empty search_space object")
+
+    search_keys = set(cfg.search_space)
+    if cfg.included_parameters is not None:
+        unknown_included = sorted(set(cfg.included_parameters) - search_keys)
+        if unknown_included:
+            raise ValueError(
+                "included_parameters contains keys not in search_space: "
+                + ", ".join(unknown_included)
+            )
+        active = {key: cfg.search_space[key] for key in cfg.included_parameters}
+    else:
+        active = dict(cfg.search_space)
+
+    if cfg.excluded_parameters is not None:
+        unknown_excluded = sorted(set(cfg.excluded_parameters) - search_keys)
+        if unknown_excluded:
+            raise ValueError(
+                "excluded_parameters contains keys not in search_space: "
+                + ", ".join(unknown_excluded)
+            )
+        excluded = set(cfg.excluded_parameters)
+        active = {key: spec for key, spec in active.items() if key not in excluded}
+
+    if not active:
+        raise ValueError(
+            "params-hyperopt.json active search space is empty after applying "
+            "included_parameters/excluded_parameters"
+        )
+    return active
+
+
 def _merge_flat(base: dict, overlay: dict) -> dict:
     merged = deepcopy(base)
     merged.update(overlay)
@@ -195,8 +229,10 @@ def main() -> None:
     if not base:
         print("missing or empty params.json", file=sys.stderr)
         sys.exit(1)
-    if not cfg.search_space:
-        print("params-hyperopt.json needs a non-empty search_space object", file=sys.stderr)
+    try:
+        active_space = _active_search_space(cfg)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
         sys.exit(1)
 
     n_trials = int(cfg.n_trials)
@@ -246,7 +282,7 @@ def main() -> None:
             )
             break
         attempted = i + 1
-        sampled = _sample_from_space(rng, cfg.search_space)
+        sampled = _sample_from_space(rng, active_space)
         trial_params = _merge_flat(base, sampled)
         _save_json(PARAMS_PATH, trial_params)
         try:

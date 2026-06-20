@@ -44,6 +44,8 @@ HyperoptSearchSpec = Annotated[
 class ParamsHyperopt(BaseModel):
     model_config = ConfigDict(extra="forbid")
     search_space: dict[str, HyperoptSearchSpec]
+    included_parameters: list[str] | None = None
+    excluded_parameters: list[str] | None = None
     n_trials: int = 30
     timeout_seconds: int = 21600
     direction: Literal["maximize", "minimize"] = "maximize"
@@ -56,7 +58,15 @@ class ParamsHyperoptOverrides(BaseModel):
     model_config = ConfigDict(extra="forbid")
     search_space: dict[str, HyperoptSearchSpec] | None = Field(
         default=None,
-        description="Top-level params.json tunables to sample; keys must already exist in params.json.",
+        description="Top-level params.json tunables to sample; keys must already exist in params.json and use stable semantic names.",
+    )
+    included_parameters: list[str] | None = Field(
+        default=None,
+        description="Optional whitelist of search_space keys to optimize.",
+    )
+    excluded_parameters: list[str] | None = Field(
+        default=None,
+        description="Optional blacklist of search_space keys to skip.",
     )
     n_trials: int | None = None
     timeout_seconds: int | None = None
@@ -79,9 +89,9 @@ class RunHyperoptToolParameters(BaseModel):
         default=None,
         description=(
             "Optional structured object merged into params-hyperopt.json. Use for search space, ranges, "
-            "trial budgets, timeouts, direction, seed, and objective metric. Use parameters_json instead "
-            "for ticker, dates, deposit, provider, scale, simulation_scale, metadata, run_mode, or other "
-            "base simulation inputs. For lower drawdown, maximize max_drawdown because drawdowns are "
-            "stored as negative percentages."
+            "included/excluded parameter filters, trial budgets, timeouts, direction, seed, and objective metric. "
+            "Use parameters_json instead for ticker, dates, deposit, provider, scale, simulation_scale, metadata, "
+            "run_mode, or other base simulation inputs. For lower drawdown, maximize max_drawdown because "
+            "drawdowns are stored as negative percentages."
         ),
     )

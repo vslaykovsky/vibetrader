@@ -15,7 +15,6 @@ import shutil
 import subprocess
 import sys
 import time
-import signal
 import selectors
 from pathlib import Path
 from typing import Any, Callable
@@ -36,6 +35,7 @@ from application.schemas.hyperopt import (
     ParamsHyperoptOverrides,
     RunHyperoptToolParameters,
 )
+from services.agent_cancellation import AgentRunCancelled, AgentRunControl, kill_subprocess_tree
 
 
 CHAT_MODEL = os.getenv("CHAT_MODEL", "openai/gpt-5.4")
@@ -135,6 +135,7 @@ Strategy workflow
 * update_strategy delegates implementation to the coding agent in the strategy workspace.
 * First update_strategy task: write English instructions with the full user spec because the coding agent may have no prior context. Resumed Codex thread: send a concise delta plus every new or changed requirement; omitted new details are lost.
 * For update_strategy tasks, ask for direct implementation of the requested behavior. Do not ask the coding agent to add alternatives, fallback behavior, broad catch-and-continue handlers, fabricated data, mocked results, or hidden invariant recovery; 
+* For update_strategy tasks that create or change params.json tunables, require names based on stable semantics, not current literal values. If a value-specific name's value changes, or the parameter's meaning changes significantly, ask the coding agent to rename the key across params.json, strategy.py, and params-hyperopt.json.
 * For trainable update_strategy tasks, ask update_strategy to implement support for both exclusive params.json run_mode values, selected at process start: train or test. Do not ask the coding agent to create two active training/testing segments inside one strategy run. Train mode fits and emits trained_model_params, and must not trade. Test mode loads trained_model_params, trades or infers only after loading them, and must not train.
 * After successful update_strategy, refresh outputs. For ordinary strategies, call run_backtest. Only call run_hyperopt if the user's current request explicitly asks to optimize, tune, search, or find best strategy parameters. For trainable strategies, run train and test as separate run_backtest calls: first with run_mode="train" and the training date segment, then with run_mode="test" and the test date segment.
 * If the user only changes parameters (ticker, dates, thresholds, deposit, etc.), call run_backtest with parameters_json merged into params.json. Do not edit code, add a --params flag, or make strategy.py parse CLI params.
@@ -143,7 +144,7 @@ Strategy workflow
 
 Analysis and optimization
 * For EDA, market research, or charts without a tradable strategy, use update_strategy then run_backtest.
-* For explicit parameter optimization requests, use run_hyperopt. Use parameters_hyperopt_json for study-only overrides and parameters_json for base simulation inputs; follow the run_hyperopt tool schema for allowed study fields. Do not run hyperopt for ordinary strategy creation, strategy edits, parameter changes, EDA, or backtest refreshes.
+* For explicit parameter optimization requests, use run_hyperopt. Use parameters_hyperopt_json for study-only overrides, including included_parameters/excluded_parameters filters, and parameters_json for base simulation inputs; follow the run_hyperopt tool schema for allowed study fields. Do not run hyperopt for ordinary strategy creation, strategy edits, parameter changes, EDA, or backtest refreshes.
 * If params.json contains run_mode, treat the strategy as trainable and run separate train and out-of-sample test backtests with run_mode/date overrides rather than one combined run.
 * For questions about how the latest strategy run performed on historical data, use analyse_run. This includes questions about specific trades, orders, fills, entries/exits, PnL, metrics, dates, bars, or why something happened in the latest backtest. Do not use analyse_code for these.
 
@@ -239,57 +240,63 @@ def _run_logged_subprocess(
     cwd: str,
     *,
     timeout: int,
+    cancel_control: AgentRunControl | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    if cancel_control is not None:
+        cancel_control.raise_if_cancelled()
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             cwd=cwd,
             stdin=subprocess.DEVNULL,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired as e:
-        logger.error("%s timed out after %s seconds", label, e.timeout)
-        raise
     except OSError as e:
         logger.error("%s failed to start: %s", label, e)
         raise
-    if proc.returncode != 0:
+
+    if cancel_control is not None:
+        cancel_control.register_process(proc)
+    t0 = time.monotonic()
+    try:
+        while True:
+            try:
+                stdout, stderr = proc.communicate(timeout=0.25)
+                break
+            except subprocess.TimeoutExpired:
+                if cancel_control is not None and cancel_control.cancelled:
+                    kill_subprocess_tree(proc)
+                    raise AgentRunCancelled("Strategy run stopped")
+                if timeout > 0 and (time.monotonic() - t0) > timeout:
+                    kill_subprocess_tree(proc)
+                    logger.error("%s timed out after %s seconds", label, timeout)
+                    raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+    finally:
+        if cancel_control is not None:
+            cancel_control.unregister_process(proc)
+
+    completed = subprocess.CompletedProcess(
+        args=cmd,
+        returncode=proc.returncode or 0,
+        stdout=stdout or "",
+        stderr=stderr or "",
+    )
+    if completed.returncode != 0:
         logger.error(
             "%s failed: returncode=%s\nstdout:\n%s\nstderr:\n%s",
             label,
-            proc.returncode,
-            _tail(proc.stdout or ""),
-            _tail(proc.stderr or ""),
+            completed.returncode,
+            _tail(completed.stdout or ""),
+            _tail(completed.stderr or ""),
         )
-    return proc
+    return completed
 
 
 def _kill_subprocess_tree(proc: subprocess.Popen[str]) -> None:
-    try:
-        pgid = os.getpgid(proc.pid)
-    except Exception:
-        pgid = None
-    try:
-        if pgid is not None:
-            os.killpg(pgid, signal.SIGTERM)
-        else:
-            proc.terminate()
-    except Exception:
-        pass
-    deadline = time.monotonic() + 3.0
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            return
-        time.sleep(0.05)
-    try:
-        if pgid is not None:
-            os.killpg(pgid, signal.SIGKILL)
-        else:
-            proc.kill()
-    except Exception:
-        pass
+    kill_subprocess_tree(proc)
 
 
 @traceable(name="run_logged_subprocess_stream", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
@@ -300,7 +307,10 @@ def _run_logged_subprocess_stream(
     *,
     timeout: int,
     on_stderr_line: Callable[[str], None] | None = None,
+    cancel_control: AgentRunControl | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    if cancel_control is not None:
+        cancel_control.raise_if_cancelled()
     out_chunks: list[str] = []
     err_chunks: list[str] = []
     max_capture_chars = 200_000
@@ -330,6 +340,8 @@ def _run_logged_subprocess_stream(
         logger.error("%s failed to start: %s", label, e)
         raise
 
+    if cancel_control is not None:
+        cancel_control.register_process(proc)
     sel = selectors.DefaultSelector()
     assert proc.stdout is not None
     assert proc.stderr is not None
@@ -353,6 +365,9 @@ def _run_logged_subprocess_stream(
                 break
 
             now = time.monotonic()
+            if cancel_control is not None and cancel_control.cancelled:
+                _kill_subprocess_tree(proc)
+                raise AgentRunCancelled("Strategy run stopped")
             if timeout > 0 and (now - t0) > timeout:
                 _kill_subprocess_tree(proc)
                 raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
@@ -380,6 +395,8 @@ def _run_logged_subprocess_stream(
             sel.close()
         except Exception:
             pass
+        if cancel_control is not None:
+            cancel_control.unregister_process(proc)
 
     stdout = "".join(out_chunks)
     stderr = "".join(err_chunks)
@@ -714,6 +731,8 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                             "On a resumed Codex thread, a delta is enough, but include every new or changed requirement. "
                             "Request a direct implementation; do not request alternatives, fallback behavior, broad "
                             "catch-and-continue handlers, fabricated data, mocked results, or hidden invariant recovery. "
+                            "For params.json tunables, require stable semantic names rather than names with literal values; "
+                            "rename keys everywhere when the encoded value or meaning changes. "
                             "For trainable strategies, ask for support for both exclusive params.json run_mode values, "
                             "selected at process start: train or test. Do not ask the coding agent to create two active "
                             "training/testing segments inside one strategy run; train and test date windows are applied "
@@ -757,7 +776,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                 "Run hyperparameter optimization with no code edits only when the current user request explicitly asks "
                 "to optimize, tune, search, or find best strategy parameters. Requires params-hyperopt.json, runs simulator "
                 "trials, writes best params to params.json, then performs a final run. parameters_json changes base inputs; "
-                "parameters_hyperopt_json changes the study definition."
+                "parameters_hyperopt_json changes the study definition and included/excluded parameter filters."
             ),
             "parameters": RUN_HYPEROPT_TOOL_PARAMETERS_SCHEMA,
         },
@@ -842,6 +861,7 @@ def run_analyse_code(
     *,
     thread_id: str,
     question: str,
+    cancel_control: AgentRunControl | None = None,
 ) -> dict[str, Any]:
     q = (question or "").strip()
     if not q:
@@ -883,6 +903,7 @@ def run_analyse_code(
             HumanMessage(content=q),
         ],
         timeout_seconds=120,
+        cancel_control=cancel_control,
     )
     answer = _aimessage_plain_text(msg).strip()
     return {"ok": True, "answer": answer}
@@ -985,6 +1006,7 @@ def run_analyse_run(
     question: str,
     on_progress: ProgressCallback = None,
     codex_thread_id: str | None = None,
+    cancel_control: AgentRunControl | None = None,
 ) -> dict[str, Any]:
     q = (question or "").strip()
     if not q:
@@ -999,6 +1021,7 @@ def run_analyse_run(
         _codex_analyse_run_task(q),
         root,
         codex_thread_id=existing_codex_thread_id,
+        cancel_control=cancel_control,
     )
     next_codex_thread_id = _codex_thread_id_from_stdout(proc.stdout or "") or existing_codex_thread_id
     answer = _codex_stdout_final_answer(proc.stdout or "")
@@ -1152,7 +1175,12 @@ def _ticker_sql_prompt_vocabulary() -> tuple[list[str], list[str]]:
 
 
 @traceable(name="generate_ticker_listing_sql", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
-def _generate_ticker_listing_sql(*, query: str, limit: int) -> str:
+def _generate_ticker_listing_sql(
+    *,
+    query: str,
+    limit: int,
+    cancel_control: AgentRunControl | None = None,
+) -> str:
     try:
         from db.session import engine
 
@@ -1188,6 +1216,7 @@ def _generate_ticker_listing_sql(*, query: str, limit: int) -> str:
             HumanMessage(content=(query or "").strip()),
         ],
         timeout_seconds=60,
+        cancel_control=cancel_control,
     )
     return _normalize_ticker_listing_sql(_aimessage_plain_text(msg))
 
@@ -1228,7 +1257,12 @@ def _execute_ticker_listing_sql(
 
 
 @traceable(name="run_list_tickers", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
-def run_list_tickers(*, query: str, limit: Any = None) -> dict[str, Any]:
+def run_list_tickers(
+    *,
+    query: str,
+    limit: Any = None,
+    cancel_control: AgentRunControl | None = None,
+) -> dict[str, Any]:
     q = (query or "").strip()
     if not q:
         return {"ok": False, "error": "query is empty"}
@@ -1236,7 +1270,7 @@ def run_list_tickers(*, query: str, limit: Any = None) -> dict[str, Any]:
         return {"ok": False, "error": "OPENROUTER_API_KEY is not configured"}
     max_rows = _coerce_ticker_limit(limit)
     try:
-        sql = _generate_ticker_listing_sql(query=q, limit=max_rows)
+        sql = _generate_ticker_listing_sql(query=q, limit=max_rows, cancel_control=cancel_control)
         payload = _execute_ticker_listing_sql(sql, limit=max_rows)
     except ValueError as e:
         return {"ok": False, "error": str(e)}
@@ -1353,6 +1387,7 @@ def _run_codex_exec(
     task: str,
     cwd: Path,
     codex_thread_id: str | None = None,
+    cancel_control: AgentRunControl | None = None,
 ) -> subprocess.CompletedProcess[str]:
     root = str(cwd.resolve())
     resume_thread_id = _clean_codex_thread_id(codex_thread_id)
@@ -1362,7 +1397,7 @@ def _run_codex_exec(
         else "--full-auto"
     )
     cmd = _codex_exec_command(task, root, resume_thread_id, sandbox_flag)
-    proc = _run_logged_subprocess("codex exec", cmd, root, timeout=600)
+    proc = _run_logged_subprocess("codex exec", cmd, root, timeout=600, cancel_control=cancel_control)
     if (
         resume_thread_id
         and proc.returncode != 0
@@ -1373,30 +1408,45 @@ def _run_codex_exec(
             extra={"codex_thread_id": resume_thread_id},
         )
         retry_cmd = _codex_exec_command(task, root, "", sandbox_flag)
-        return _run_logged_subprocess("codex exec retry without resume", retry_cmd, root, timeout=600)
+        return _run_logged_subprocess(
+            "codex exec retry without resume",
+            retry_cmd,
+            root,
+            timeout=600,
+            cancel_control=cancel_control,
+        )
     return proc
 
 
 @traceable(name="run_claude_exec", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
-def _run_claude_exec(task: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run_claude_exec(
+    task: str,
+    cwd: Path,
+    cancel_control: AgentRunControl | None = None,
+) -> subprocess.CompletedProcess[str]:
     cmd: list[str] = ['claude', '--output-format', 'json', '--permission-mode', 'bypassPermissions']
     cmd.extend(["-p", task ])
-    return _run_logged_subprocess("claude", cmd, str(cwd), timeout=600)
+    return _run_logged_subprocess("claude", cmd, str(cwd), timeout=600, cancel_control=cancel_control)
 
 
 def _run_coding_agent_exec(
     task: str,
     cwd: Path,
     codex_thread_id: str | None = None,
+    cancel_control: AgentRunControl | None = None,
 ) -> tuple[str, subprocess.CompletedProcess[str]]:
     tool = CODING_TOOL    
     if tool == "claude":
-        return tool, _run_claude_exec(task, cwd)
-    return tool, _run_codex_exec(task, cwd, codex_thread_id=codex_thread_id)
+        return tool, _run_claude_exec(task, cwd, cancel_control=cancel_control)
+    return tool, _run_codex_exec(task, cwd, codex_thread_id=codex_thread_id, cancel_control=cancel_control)
 
 
 @traceable(name="run_simulation", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
-def _run_simulation(*, workspace: Path) -> subprocess.CompletedProcess[str]:
+def _run_simulation(
+    *,
+    workspace: Path,
+    cancel_control: AgentRunControl | None = None,
+) -> subprocess.CompletedProcess[str]:
     cmd: list[str] = [
         sys.executable,
         str(SIMULATE_SCRIPT_PATH),
@@ -1412,6 +1462,7 @@ def _run_simulation(*, workspace: Path) -> subprocess.CompletedProcess[str]:
         timeout=timeout_s,
         freeze_timeout=freeze_timeout_s,
         on_stderr_line=None,
+        cancel_control=cancel_control,
     )
 
 
@@ -1424,9 +1475,12 @@ def _run_logged_subprocess_with_freeze_watchdog(
     timeout: int,
     freeze_timeout: int,
     on_stderr_line: Callable[[str], None] | None = None,
+    cancel_control: AgentRunControl | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if freeze_timeout <= 0:
-        return _run_logged_subprocess(label, cmd, cwd, timeout=timeout)
+        return _run_logged_subprocess(label, cmd, cwd, timeout=timeout, cancel_control=cancel_control)
+    if cancel_control is not None:
+        cancel_control.raise_if_cancelled()
 
     t0 = time.monotonic()
     last_progress = t0
@@ -1444,29 +1498,7 @@ def _run_logged_subprocess_with_freeze_watchdog(
             total -= len(dropped)
 
     def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
-        try:
-            pgid = os.getpgid(proc.pid)
-        except Exception:
-            pgid = None
-        try:
-            if pgid is not None:
-                os.killpg(pgid, signal.SIGTERM)
-            else:
-                proc.terminate()
-        except Exception:
-            pass
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                return
-            time.sleep(0.05)
-        try:
-            if pgid is not None:
-                os.killpg(pgid, signal.SIGKILL)
-            else:
-                proc.kill()
-        except Exception:
-            pass
+        kill_subprocess_tree(proc)
 
     try:
         proc = subprocess.Popen(
@@ -1484,6 +1516,8 @@ def _run_logged_subprocess_with_freeze_watchdog(
         logger.error("%s failed to start: %s", label, e)
         raise
 
+    if cancel_control is not None:
+        cancel_control.register_process(proc)
     sel = selectors.DefaultSelector()
     assert proc.stdout is not None
     assert proc.stderr is not None
@@ -1503,6 +1537,9 @@ def _run_logged_subprocess_with_freeze_watchdog(
                 break
 
             now = time.monotonic()
+            if cancel_control is not None and cancel_control.cancelled:
+                _kill_process_tree(proc)
+                raise AgentRunCancelled("Strategy run stopped")
             if timeout > 0 and (now - t0) > timeout:
                 _kill_process_tree(proc)
                 raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
@@ -1538,6 +1575,8 @@ def _run_logged_subprocess_with_freeze_watchdog(
             sel.close()
         except Exception:
             pass
+        if cancel_control is not None:
+            cancel_control.unregister_process(proc)
 
     stdout = "".join(out_chunks)
     stderr = "".join(err_chunks)
@@ -1559,6 +1598,7 @@ def _run_workspace_command(
     cwd: Path,
     *,
     on_stderr_line: Callable[[str], None] | None = None,
+    cancel_control: AgentRunControl | None = None,
 ) -> subprocess.CompletedProcess[str]:
     parts = shlex.split(command)
     if parts and parts[0] == "python":
@@ -1574,8 +1614,15 @@ def _run_workspace_command(
             str(cwd),
             timeout=timeout_s,
             on_stderr_line=on_stderr_line,
+            cancel_control=cancel_control,
         )
-    return _run_logged_subprocess("workspace command", parts, str(cwd), timeout=timeout_s)
+    return _run_logged_subprocess(
+        "workspace command",
+        parts,
+        str(cwd),
+        timeout=timeout_s,
+        cancel_control=cancel_control,
+    )
 
 
 def read_strategy_name_from_workspace(root: Path) -> str:
@@ -1620,6 +1667,7 @@ def run_update_strategy(
     task: str,
     on_progress: ProgressCallback = None,
     codex_thread_id: str | None = None,
+    cancel_control: AgentRunControl | None = None,
 ) -> dict[str, Any]:
     task = (task or "").strip()
     if not task:
@@ -1636,6 +1684,7 @@ def run_update_strategy(
         task,
         root,
         codex_thread_id=existing_codex_thread_id,
+        cancel_control=cancel_control,
     )
     logger.info(f"Coding agent exec result: {runner}, {codegen.returncode}, {codegen.stdout[:100]}, {codegen.stderr[:100]}")
     next_codex_thread_id = existing_codex_thread_id
@@ -1776,6 +1825,9 @@ def _merge_parameters_hyperopt_json_into_params_hyperopt_file(
     path = root / "params-hyperopt.json"
     existing = _read_params_json_object(path)
     to_write = _deep_merge_json_values(existing, overlay)
+    for key in ("included_parameters", "excluded_parameters"):
+        if key in overlay:
+            to_write[key] = overlay[key]
     try:
         ParamsHyperopt.model_validate(to_write)
     except ValidationError as e:
@@ -1875,6 +1927,7 @@ def run_backtest(
     parameters_json: Any = None,
     parameters_hyperopt_json: Any = None,
     codex_thread_id: str | None = None,
+    cancel_control: AgentRunControl | None = None,
 ) -> dict[str, Any]:
     if not thread_id_allowed(thread_id):
         return {"ok": False, "error": "invalid thread_id"}
@@ -1923,6 +1976,7 @@ def run_backtest(
                 timeout=int(os.getenv("STRATEGY_BACKTEST_TIMEOUT_S", "1800")),
                 freeze_timeout=int(os.getenv("STRATEGY_BACKTEST_FREEZE_TIMEOUT_S", "120")),
                 on_stderr_line=_on_sim_stderr_line if on_progress else None,
+                cancel_control=cancel_control,
             )
         except subprocess.TimeoutExpired as e:
             freeze_timeout_s = int(os.getenv("STRATEGY_BACKTEST_FREEZE_TIMEOUT_S", "120"))
@@ -1939,6 +1993,7 @@ def run_backtest(
                 ),
                 on_progress=on_progress,
                 codex_thread_id=codex_thread_id,
+                cancel_control=cancel_control,
             )
             fixed_codex_thread_id = _clean_codex_thread_id(str(fix_attempt.get("codex_thread_id") or ""))
             if fix_attempt.get("ok"):
@@ -1956,6 +2011,7 @@ def run_backtest(
                     timeout=int(os.getenv("STRATEGY_BACKTEST_TIMEOUT_S", "1800")),
                     freeze_timeout=int(os.getenv("STRATEGY_BACKTEST_FREEZE_TIMEOUT_S", "180")),
                     on_stderr_line=_on_sim_stderr_line if on_progress else None,
+                    cancel_control=cancel_control,
                 )
             else:
                 return {
@@ -1989,6 +2045,7 @@ def run_backtest(
             command,
             root,
             on_stderr_line=_on_hyperopt_stderr_line if on_progress else None,
+            cancel_control=cancel_control,
         )
         extras = {}
         failure_message = "hyperopt failed"
@@ -2013,6 +2070,7 @@ def _tool_handlers_for_thread(
     *,
     on_progress: ProgressCallback = None,
     codex_thread_ref: dict[str, str] | None = None,
+    cancel_control: AgentRunControl | None = None,
 ) -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
     def _remember_codex_thread_id(payload: dict[str, Any]) -> None:
         if codex_thread_ref is None:
@@ -2027,6 +2085,7 @@ def _tool_handlers_for_thread(
             str(args.get("task", "")),
             on_progress=on_progress,
             codex_thread_id=(codex_thread_ref or {}).get("value", ""),
+            cancel_control=cancel_control,
         )
         _remember_codex_thread_id(payload)
         return payload
@@ -2039,6 +2098,7 @@ def _tool_handlers_for_thread(
             parameters_json=args.get("parameters_json"),
             parameters_hyperopt_json=None,
             codex_thread_id=(codex_thread_ref or {}).get("value", ""),
+            cancel_control=cancel_control,
         )
         _remember_codex_thread_id(payload)
         return payload
@@ -2051,6 +2111,7 @@ def _tool_handlers_for_thread(
             parameters_json=args.get("parameters_json"),
             parameters_hyperopt_json=args.get("parameters_hyperopt_json"),
             codex_thread_id=(codex_thread_ref or {}).get("value", ""),
+            cancel_control=cancel_control,
         )
         _remember_codex_thread_id(payload)
         return payload
@@ -2059,6 +2120,7 @@ def _tool_handlers_for_thread(
         return run_analyse_code(
             thread_id=thread_id,
             question=str(args.get("question", "")),
+            cancel_control=cancel_control,
         )
 
     def _analyse_run(args: dict[str, Any]) -> dict[str, Any]:
@@ -2067,6 +2129,7 @@ def _tool_handlers_for_thread(
             question=str(args.get("question", "")),
             on_progress=on_progress,
             codex_thread_id=(codex_thread_ref or {}).get("value", ""),
+            cancel_control=cancel_control,
         )
         _remember_codex_thread_id(payload)
         return payload
@@ -2075,6 +2138,7 @@ def _tool_handlers_for_thread(
         return run_list_tickers(
             query=str(args.get("query", "")),
             limit=args.get("limit"),
+            cancel_control=cancel_control,
         )
 
     return {
@@ -2150,14 +2214,14 @@ def _strategy_help_for_workspace(workspace: Path) -> str:
         else ""
     )
     if params_path.is_file():
-        return f"""Strategy inputs are read from params.json (overrides: pass parameters_json on run_backtest, or on run_hyperopt only when the current user explicitly asks to optimize parameters). On run_hyperopt, optional parameters_hyperopt_json merges into params-hyperopt.json (which params are optimised, ranges, regimes, study budget—not ticker/dates from params.json).
+        return f"""Strategy inputs are read from params.json (overrides: pass parameters_json on run_backtest, or on run_hyperopt only when the current user explicitly asks to optimize parameters). On run_hyperopt, optional parameters_hyperopt_json merges into params-hyperopt.json (which params are optimised, included/excluded parameter filters, ranges, regimes, study budget—not ticker/dates from params.json).
 {strategy_parameters}
 {hyperopt_section}{trained_section}{metrics_section}"""
     return f"""Note: params.json hasn't been created yet. Need to run update_strategy first.
 
 Current params.json (may be empty or missing):
 {strategy_parameters}
-On run_hyperopt, only when the current user explicitly asks to optimize parameters, optional parameters_hyperopt_json merges into params-hyperopt.json (study definition: optimised params, ranges, regimes—not params.json backtest inputs).
+On run_hyperopt, only when the current user explicitly asks to optimize parameters, optional parameters_hyperopt_json merges into params-hyperopt.json (study definition: optimised params, included/excluded parameter filters, ranges, regimes—not params.json backtest inputs).
 {hyperopt_section}{trained_section}{metrics_section}"""
 
 
@@ -2202,12 +2266,39 @@ async def _chat_openrouter_ainvoke_with_timeout_retries(
     *,
     timeout_seconds: float = CHAT_OPENROUTER_AINVOKE_TIMEOUT_SECONDS,
     retries: int = CHAT_OPENROUTER_AINVOKE_TIMEOUT_RETRIES,
+    cancel_control: AgentRunControl | None = None,
 ) -> AIMessage:
     timeout_attempts = 0
     rate_limit_attempts = 0
     while True:
+        if cancel_control is not None:
+            cancel_control.raise_if_cancelled()
         try:
-            msg = await asyncio.wait_for(llm.ainvoke(chat_messages), timeout=timeout_seconds)
+            task = asyncio.create_task(llm.ainvoke(chat_messages))
+            started = time.monotonic()
+            while True:
+                wait_timeout = 0.25
+                if timeout_seconds > 0:
+                    remaining = timeout_seconds - (time.monotonic() - started)
+                    if remaining <= 0:
+                        task.cancel()
+                        try:
+                            await task
+                        except BaseException:
+                            pass
+                        raise asyncio.TimeoutError()
+                    wait_timeout = min(wait_timeout, remaining)
+                done, _ = await asyncio.wait({task}, timeout=wait_timeout)
+                if done:
+                    msg = task.result()
+                    break
+                if cancel_control is not None and cancel_control.cancelled:
+                    task.cancel()
+                    try:
+                        await task
+                    except BaseException:
+                        pass
+                    raise AgentRunCancelled("Strategy run stopped")
             if isinstance(msg, AIMessage):
                 return msg
             return AIMessage(content=getattr(msg, "content", ""))
@@ -2236,7 +2327,14 @@ async def _chat_openrouter_ainvoke_with_timeout_retries(
                     "delay_seconds": delay,
                 },
             )
-            await asyncio.sleep(delay)
+            sleep_deadline = time.monotonic() + delay
+            while True:
+                if cancel_control is not None and cancel_control.cancelled:
+                    raise AgentRunCancelled("Strategy run stopped")
+                remaining = sleep_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(0.25, remaining))
 
 
 def _run_chat_openrouter_ainvoke(
@@ -2245,6 +2343,7 @@ def _run_chat_openrouter_ainvoke(
     *,
     timeout_seconds: float = CHAT_OPENROUTER_AINVOKE_TIMEOUT_SECONDS,
     retries: int = CHAT_OPENROUTER_AINVOKE_TIMEOUT_RETRIES,
+    cancel_control: AgentRunControl | None = None,
 ) -> AIMessage:
     return asyncio.run(
         _chat_openrouter_ainvoke_with_timeout_retries(
@@ -2252,6 +2351,7 @@ def _run_chat_openrouter_ainvoke(
             chat_messages,
             timeout_seconds=timeout_seconds,
             retries=retries,
+            cancel_control=cancel_control,
         )
     )
 
@@ -2295,8 +2395,13 @@ def _strip_reasoning_details(msg: AIMessage) -> AIMessage:
     )
 
 
-def _invoke_agent_model(llm_tools: Any, chat_messages: list[BaseMessage], on_token: TokenCallback) -> AIMessage:
-    msg = _run_chat_openrouter_ainvoke(llm_tools, chat_messages)
+def _invoke_agent_model(
+    llm_tools: Any,
+    chat_messages: list[BaseMessage],
+    on_token: TokenCallback,
+    cancel_control: AgentRunControl | None = None,
+) -> AIMessage:
+    msg = _run_chat_openrouter_ainvoke(llm_tools, chat_messages, cancel_control=cancel_control)
     if on_token is not None and not msg.tool_calls:
         content = _aimessage_plain_text(msg)
         if content:
@@ -2313,12 +2418,15 @@ def build_agent_reply(
     on_token: TokenCallback = None,
     codex_thread_id: str | None = None,
     user_timezone: str = "",
+    cancel_control: AgentRunControl | None = None,
 ) -> dict[str, Any]:
     t0 = time.perf_counter()
 
     def _reply_duration_ms() -> int:
         return int(round((time.perf_counter() - t0) * 1000))
 
+    if cancel_control is not None:
+        cancel_control.raise_if_cancelled()
     if not os.getenv("OPENROUTER_API_KEY", "").strip():
         return {
             "message": (
@@ -2349,9 +2457,12 @@ def build_agent_reply(
         thread_id,
         on_progress=on_progress,
         codex_thread_ref=codex_thread_ref,
+        cancel_control=cancel_control,
     )
 
     for _ in range(AGENT_MAX_TOOL_ITERATIONS):
+        if cancel_control is not None:
+            cancel_control.raise_if_cancelled()
         chat_messages[0] = SystemMessage(
             content=SYSTEM_PROMPT.format(
                 strategy_help=_strategy_help_for_workspace(workspace),
@@ -2367,7 +2478,9 @@ def build_agent_reply(
             openrouter_provider=OPENROUTER_PROVIDER,
         )
         llm_tools = llm.bind_tools(AGENT_TOOLS)
-        assistant_msg = _invoke_agent_model(llm_tools, chat_messages, on_token)
+        assistant_msg = _invoke_agent_model(llm_tools, chat_messages, on_token, cancel_control=cancel_control)
+        if cancel_control is not None:
+            cancel_control.raise_if_cancelled()
         chat_messages.append(_strip_reasoning_details(assistant_msg))
         tool_calls = assistant_msg.tool_calls or []
         if not tool_calls:
@@ -2385,6 +2498,8 @@ def build_agent_reply(
                 "codex_thread_id": codex_thread_ref["value"],
             }
         for tc in tool_calls:
+            if cancel_control is not None:
+                cancel_control.raise_if_cancelled()
             name, parsed_args, tid = _tool_call_parts(tc)
             handler = tool_handlers.get(name)
             if handler is None:
@@ -2392,6 +2507,8 @@ def build_agent_reply(
             else:
                 try:
                     tool_payload = handler(parsed_args)
+                except AgentRunCancelled:
+                    raise
                 except Exception as e:
                     logger.exception(
                         "tool execution failed",
@@ -2403,6 +2520,8 @@ def build_agent_reply(
                         },
                     )
                     tool_payload = {"ok": False, "error": f"tool execution failed: {type(e).__name__}: {e}"}
+            if cancel_control is not None:
+                cancel_control.raise_if_cancelled()
             if isinstance(tool_payload, dict) and tool_payload.get("terminal"):
                 return {
                     "message": str(tool_payload.get("error") or INTERNAL_LIMITS_MESSAGE),

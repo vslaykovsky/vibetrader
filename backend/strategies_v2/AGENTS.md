@@ -31,6 +31,8 @@ These instructions apply inside each strategy workspace copied from `backend/str
 
 Do not hardcode tunables in `strategy.py`. Load `params.json` once at startup, bind values from it, and use those variables for subscriptions, thresholds, lookbacks, sizing, and signal logic. Fixed structural literals are fine when they are not knobs.
 
+Name tunables by stable semantics, not current literal values. Avoid names like `ema_7_period`, `spy_threshold`, or `threshold_0_03`; prefer `ema_period`, `fast_ema_period`, or `entry_threshold`. If a value-specific name exists and the value changes, rename it everywhere. If the parameter's meaning changes significantly, rename the key in `params.json`, `strategy.py`, and `params-hyperopt.json`.
+
 All tunables that may be optimized must be top-level keys in `params.json`. `hyperopt.py` shallow-merges sampled values into the root object, so nested tunables are not updated. Nested objects are acceptable only for fixed blobs read as a whole.
 
 The host may merge runtime overrides into `params.json` before process start. Do not add a `--params` flag.
@@ -152,5 +154,7 @@ If `strategy.py` can emit `market_order`, ship a static `params-hyperopt.json` n
 The file must match `ParamsHyperopt` in `utils.py`; treat that model as the source of truth for field names and search-space spec shapes.
 
 `search_space` keys must be top-level keys already present in `params.json`, with compatible defaults, and `strategy.py` must read those same root keys. Dotted names are just flat JSON property names, not nested paths.
+
+To keep reusable ranges while optimizing only some fields, use optional `included_parameters` as a whitelist and optional `excluded_parameters` as a blacklist. When both are present, `hyperopt.py` applies the whitelist first and then removes excluded keys. Every included or excluded name must exist in `search_space`.
 
 Tune only parameters that affect trading behavior, such as indicator periods, thresholds, buy fractions, and model hyperparameters chosen before fitting. Do not tune `ticker`, `scale`, `simulation_scale`, dates, `initial_deposit`, `provider`, metadata, `run_mode`, or learned model artifacts. Do not write or update params files from `strategy.py`; `hyperopt.py` owns that after a study.

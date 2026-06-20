@@ -246,7 +246,7 @@ def _build_position_value_chart(
                 data=points,
             )
         )
-    if not series:
+    if len(series) <= 1:
         return None
     return backtest_utils.LightweightChartsChart(
         title="Current position value",

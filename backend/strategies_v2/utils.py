@@ -502,6 +502,8 @@ HyperoptSearchSpec = Annotated[
 class ParamsHyperopt(BaseModel):
     model_config = ConfigDict(extra="forbid")
     search_space: dict[str, HyperoptSearchSpec]
+    included_parameters: list[str] | None = None
+    excluded_parameters: list[str] | None = None
     n_trials: int = 30
     timeout_seconds: int = 21600
     direction: Literal["maximize", "minimize"] = "maximize"

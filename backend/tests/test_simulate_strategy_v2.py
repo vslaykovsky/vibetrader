@@ -86,4 +86,15 @@ def test_build_position_value_chart_uses_one_line_per_ticker():
     ]
     assert [point.value for point in chart.series[0].data] == [1000.0, 1200.0]
     assert [point.value for point in chart.series[1].data] == [0.0, -2500.0]
+    assert (
+        _build_position_value_chart(
+            {
+                "AAPL": [
+                    backtest_utils.LwcTimeValuePoint(time="2024-01-01", value=1000.0),
+                    backtest_utils.LwcTimeValuePoint(time="2024-01-02", value=1200.0),
+                ]
+            }
+        )
+        is None
+    )
     assert _build_position_value_chart({}) is None

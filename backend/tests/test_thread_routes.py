@@ -108,6 +108,89 @@ def test_list_threads_returns_only_authenticated_user_threads():
             os.environ.pop("SUPABASE_JWT_SECRET", None)
 
 
+def test_cancel_strategy_deletes_running_thread_row():
+    prev = os.environ.get("SUPABASE_JWT_SECRET")
+    os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"
+    owner = f"cancel-owner-{uuid.uuid4()}"
+    thread_id = str(uuid.uuid4())
+    session = SessionLocal()
+    try:
+        previous = Strategy(
+            thread_id=thread_id,
+            created_by=owner,
+            created_by_email="owner@example.com",
+            messages=[
+                {"role": "user", "content": "previous"},
+                {"role": "assistant", "content": "previous reply"},
+            ],
+            canvas={"output": {"notes.md": "previous"}},
+            code="print('previous')\n",
+            status="success",
+            status_text="",
+            strategy_name="Previous strategy",
+            language="en",
+            created_at=datetime(2095, 1, 1, 12, 0, 0),
+        )
+        row = Strategy(
+            thread_id=thread_id,
+            created_by=owner,
+            created_by_email="owner@example.com",
+            messages=[{"role": "user", "content": "stop me"}],
+            canvas={},
+            code="print('running')\n",
+            status="running",
+            status_text="Working",
+            created_at=datetime(2095, 1, 1, 12, 1, 0),
+        )
+        session.add(previous)
+        session.add(row)
+        session.commit()
+        previous_run_id = previous.id
+        previous_created_at = previous.created_at.isoformat()
+        run_id = row.id
+    finally:
+        session.close()
+
+    app = create_app()
+    try:
+        response = app.test_client().post(
+            "/strategy/cancel",
+            headers=_auth_headers("owner@example.com", owner),
+            json={"thread_id": thread_id, "id": run_id},
+        )
+        assert response.status_code == 200
+        assert response.get_json() == {
+            "id": previous_run_id,
+            "thread_id": thread_id,
+            "messages": [
+                {"role": "user", "content": "previous"},
+                {"role": "assistant", "content": "previous reply"},
+            ],
+            "status": "success",
+            "status_text": "",
+            "langsmith_trace": "",
+            "strategy_name": "Previous strategy",
+            "language": "en",
+            "created_at": previous_created_at,
+            "canvas": {"output": {"notes.md": "previous"}},
+            "algorithm": "",
+            "cancelled": True,
+            "cancelled_run_id": run_id,
+        }
+
+        session = SessionLocal()
+        try:
+            assert session.get(Strategy, run_id) is None
+            assert session.get(Strategy, previous_run_id) is not None
+        finally:
+            session.close()
+    finally:
+        if prev is not None:
+            os.environ["SUPABASE_JWT_SECRET"] = prev
+        else:
+            os.environ.pop("SUPABASE_JWT_SECRET", None)
+
+
 def test_branch_thread_copies_agent_reply_snapshot_to_new_thread():
     prev = os.environ.get("SUPABASE_JWT_SECRET")
     os.environ["SUPABASE_JWT_SECRET"] = "pytest-live-secret-32-chars-minimum!!"

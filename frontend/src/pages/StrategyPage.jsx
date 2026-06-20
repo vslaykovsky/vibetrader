@@ -53,13 +53,17 @@ const ChatComposer = memo(function ChatComposer({
   showProcessing,
   showSuggestedPrompts,
   onSubmit,
+  onStop,
+  stopping,
 }) {
   const [draft, setDraft] = useState('');
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [localSubmitting, setLocalSubmitting] = useState(false);
   const messageTextareaRef = useRef(null);
   const composerExpandedTextareaRef = useRef(null);
-  const disabled = showProcessing || localSubmitting;
+  const processing = showProcessing || localSubmitting;
+  const disabled = processing;
+  const showStopButton = processing && typeof onStop === 'function';
 
   const fitMessageTextarea = useCallback(() => {
     const ta = messageTextareaRef.current;
@@ -145,6 +149,11 @@ const ChatComposer = memo(function ChatComposer({
     [disabled, onSubmit],
   );
 
+  const handleStop = useCallback(() => {
+    setLocalSubmitting(false);
+    onStop?.();
+  }, [onStop]);
+
   const handleSubmit = useCallback(
     (event) => {
       event.preventDefault();
@@ -224,21 +233,33 @@ const ChatComposer = memo(function ChatComposer({
             rows={4}
           />
           <button
-            type="submit"
-            className="chat-send-button"
-            disabled={disabled}
-            aria-label={t('chat.send_aria')}
-            title={t('chat.send')}
+            type={showStopButton ? 'button' : 'submit'}
+            className={`chat-send-button${showStopButton ? ' chat-stop-button' : ''}`}
+            disabled={showStopButton ? Boolean(stopping) : disabled}
+            aria-label={showStopButton ? t('chat.stop_aria') : t('chat.send_aria')}
+            title={showStopButton ? t('chat.stop') : t('chat.send')}
+            onClick={showStopButton ? handleStop : undefined}
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-              style={{ transform: 'rotate(90deg)' }}
-              aria-hidden
-            >
-              <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
-            </svg>
+            {showStopButton ? (
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden
+              >
+                <rect x="5" y="5" width="10" height="10" rx="2" />
+              </svg>
+            ) : (
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                style={{ transform: 'rotate(90deg)' }}
+                aria-hidden
+              >
+                <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
+              </svg>
+            )}
           </button>
         </div>
         <div className="chat-actions">
@@ -299,9 +320,13 @@ const ChatComposer = memo(function ChatComposer({
                   </button>
                   <button
                     type="button"
-                    className="chat-compose-fullscreen-send"
-                    disabled={disabled}
+                    className={`chat-compose-fullscreen-send${showStopButton ? ' chat-compose-fullscreen-stop' : ''}`}
+                    disabled={showStopButton ? Boolean(stopping) : disabled}
                     onClick={() => {
+                      if (showStopButton) {
+                        handleStop();
+                        return;
+                      }
                       const value = composerExpandedTextareaRef.current?.value ?? draft;
                       void submitDraft(value).then((result) => {
                         if (result?.accepted) {
@@ -310,7 +335,7 @@ const ChatComposer = memo(function ChatComposer({
                       });
                     }}
                   >
-                    {t('chat.send')}
+                    {showStopButton ? t('chat.stop') : t('chat.send')}
                   </button>
                 </div>
               </div>
@@ -942,6 +967,7 @@ export function StrategyPage() {
   const [loading, setLoading] = useState(true);
   const [canvasLoading, setCanvasLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [stoppingStrategy, setStoppingStrategy] = useState(false);
   const [serverJob, setServerJob] = useState({ status: null, statusText: '' });
   const [streamingAssistantRunId, setStreamingAssistantRunId] = useState('');
   const [error, setError] = useState('');
@@ -965,7 +991,9 @@ export function StrategyPage() {
     [],
   );
   const optimisticUserContentRef = useRef(null);
+  const stopRequestedRef = useRef(false);
   const submittingRef = useRef(false);
+  const stoppingStrategyRef = useRef(false);
   const serverJobStatusRef = useRef(null);
   const viewingRunIdRef = useRef(null);
   const liveStrategyRunIdRef = useRef('');
@@ -1039,6 +1067,7 @@ export function StrategyPage() {
   const chatScrollFrameRef = useRef(0);
   const pendingChatScrollBehaviorRef = useRef('auto');
   submittingRef.current = submitting;
+  stoppingStrategyRef.current = stoppingStrategy;
   serverJobStatusRef.current = serverJob.status;
 
   useLayoutEffect(() => {
@@ -1075,7 +1104,9 @@ export function StrategyPage() {
     }
     setServerJob({ status: null, statusText: '' });
     setSubmitting(false);
+    setStoppingStrategy(false);
     setStreamingAssistantRunId('');
+    stopRequestedRef.current = false;
     ignoredStreamRunIdsRef.current = new Set();
     shouldStickToChatBottomRef.current = true;
   }, [threadId]);
@@ -1542,6 +1573,89 @@ export function StrategyPage() {
     });
   }, []);
 
+  const handleStopStrategy = useCallback(async (runIdOverride = '') => {
+    if (!threadId) {
+      return;
+    }
+    const rid = String(runIdOverride || liveStrategyRunIdRef.current || '').trim();
+    stopRequestedRef.current = true;
+    setError('');
+    setSubmitting(false);
+    setStreamingAssistantRunId('');
+    setServerJob({ status: null, statusText: '' });
+    if (rid) {
+      ignoredStreamRunIdsRef.current.add(rid);
+      closedStreamRunIdsRef.current.add(rid);
+    }
+    if (!rid) {
+      setStoppingStrategy(true);
+      const sent = optimisticUserContentRef.current;
+      if (sent) {
+        optimisticUserContentRef.current = null;
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.role === 'user' && last?.content === sent) {
+            return prev.slice(0, -1);
+          }
+          return prev;
+        });
+      }
+      return;
+    }
+    if (stoppingStrategyRef.current && !runIdOverride) {
+      return;
+    }
+    setStoppingStrategy(true);
+    try {
+      const response = await authFetch(`${API_BASE_URL}/strategy/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ thread_id: threadId, id: rid }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to stop strategy run');
+      }
+      stopRequestedRef.current = false;
+      optimisticUserContentRef.current = null;
+      if (payload.messages) {
+        setMessagesFromStrategyPayload(payload);
+      }
+      if (payload.canvas) {
+        setCanvasIfChanged(payload.canvas);
+      }
+      if (typeof payload.id === 'string') {
+        setLiveStrategyRunId(payload.id);
+      }
+      if (typeof payload.algorithm === 'string') {
+        setLiveStrategyAlgorithm(payload.algorithm);
+      }
+      setLiveStrategyPythonCode(typeof payload.python_code === 'string' ? payload.python_code : '');
+      setStreamingAssistantRunId('');
+      setServerJob({
+        status: visibleRunStatus(payload.id, payload.status),
+        statusText: payload.status_text || '',
+      });
+      if (!payload.status) {
+        setServerJob({ status: null, statusText: '' });
+      }
+      rememberRunStatus(payload.id, payload.status);
+      mergeStrategyNameFromPayload(payload);
+    } catch (stopError) {
+      setError(stopError instanceof Error ? stopError.message : String(stopError));
+    } finally {
+      setStoppingStrategy(false);
+    }
+  }, [
+    authFetch,
+    mergeStrategyNameFromPayload,
+    rememberRunStatus,
+    setCanvasIfChanged,
+    setMessagesFromStrategyPayload,
+    threadId,
+    visibleRunStatus,
+  ]);
+
   const handleSubmit = useCallback(async (messageText) => {
     const message = String(messageText ?? '').trim();
     if (!message || submittingRef.current || serverJobStatusRef.current === 'running') {
@@ -1601,6 +1715,23 @@ export function StrategyPage() {
         throw new Error(payload.error || 'Failed to send message');
       }
 
+      if (stopRequestedRef.current) {
+        const rid = typeof payload.id === 'string' ? payload.id.trim() : '';
+        if (rid) {
+          ignoredStreamRunIdsRef.current.add(rid);
+          closedStreamRunIdsRef.current.add(rid);
+          setLiveStrategyRunId(rid);
+          void handleStopStrategy(rid);
+        } else {
+          stopRequestedRef.current = false;
+          setStoppingStrategy(false);
+        }
+        setSubmitting(false);
+        setStreamingAssistantRunId('');
+        setServerJob({ status: null, statusText: '' });
+        return { accepted: true, ok: true, cancelled: true };
+      }
+
       optimisticUserContentRef.current = null;
       setMessagesFromStrategyPayload(payload);
       setCanvasIfChanged(payload.canvas);
@@ -1635,10 +1766,13 @@ export function StrategyPage() {
         });
       }
       setError(submitError instanceof Error ? submitError.message : String(submitError));
+      stopRequestedRef.current = false;
+      setStoppingStrategy(false);
       return { accepted: true, ok: false };
     }
   }, [
     authFetch,
+    handleStopStrategy,
     location.pathname,
     location.search,
     mergeStrategyNameFromPayload,
@@ -2182,6 +2316,10 @@ export function StrategyPage() {
       evtSource.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data);
+          const rid = typeof payload?.id === 'string' ? payload.id.trim() : '';
+          if (rid && ignoredStreamRunIdsRef.current.has(rid)) {
+            return;
+          }
           const handlers = strategyStreamHandlersRef.current;
           handlers.setMessagesFromStrategyPayload?.(payload);
           handlers.setCanvasIfChanged?.(payload.canvas);
@@ -2200,6 +2338,8 @@ export function StrategyPage() {
           handlers.mergeStrategyNameFromPayload?.(payload);
           if (payload.status !== 'running') {
             setSubmitting(false);
+            setStoppingStrategy(false);
+            stopRequestedRef.current = false;
             evtSource.close();
           }
         } catch {
@@ -2226,6 +2366,8 @@ export function StrategyPage() {
           }
           setStreamingAssistantRunId((prev) => (prev === rid ? '' : prev));
           setSubmitting(false);
+          setStoppingStrategy(false);
+          stopRequestedRef.current = false;
           setServerJob((prev) => (
             prev.status === 'running'
               ? { status: null, statusText: '' }
@@ -2245,6 +2387,9 @@ export function StrategyPage() {
             return;
           }
           const rid = typeof payload?.run_id === 'string' ? payload.run_id.trim() : '';
+          if (stopRequestedRef.current || (rid && ignoredStreamRunIdsRef.current.has(rid))) {
+            return;
+          }
           if (rid && liveStrategyRunIdRef.current && rid !== liveStrategyRunIdRef.current) {
             return;
           }
@@ -2278,6 +2423,7 @@ export function StrategyPage() {
         }
         evtSource.close();
         setSubmitting(false);
+        setStoppingStrategy(false);
         setServerJob((prev) => (
           prev.status === 'running'
             ? { status: null, statusText: '' }
@@ -2686,6 +2832,8 @@ export function StrategyPage() {
           showProcessing={showProcessing}
           showSuggestedPrompts={!loading && messages.length === 0}
           onSubmit={handleSubmit}
+          onStop={handleStopStrategy}
+          stopping={stoppingStrategy}
         />
       </section>
 

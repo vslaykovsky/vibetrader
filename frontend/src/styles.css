@@ -2120,6 +2120,19 @@ li {
   transition: filter 120ms ease;
 }
 
+.chat-stop-button {
+  color: #dc2626;
+}
+
+html[data-theme='dark'] .chat-stop-button {
+  color: #f87171;
+}
+
+.chat-stop-button svg {
+  width: 24px;
+  height: 24px;
+}
+
 .chat-send-button:hover {
   transform: scale(1.06);
 }
@@ -2286,6 +2299,16 @@ html[data-theme='dark'] .chat-compose-fullscreen-send {
 .chat-compose-fullscreen-send:disabled {
   opacity: 0.55;
   cursor: default;
+}
+
+.chat-compose-fullscreen-stop {
+  background: #dc2626;
+  color: #fff;
+}
+
+html[data-theme='dark'] .chat-compose-fullscreen-stop {
+  background: #f87171;
+  color: #0f172a;
 }
 
 .chat-compose-fullscreen-send:focus-visible {

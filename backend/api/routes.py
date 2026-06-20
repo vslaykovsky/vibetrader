@@ -35,6 +35,12 @@ from services.strategy_stream_events import StrategyStreamPublisher, StrategyStr
 from services.conversation_language import detect_conversation_language_iso
 from services.background_jobs import start_background_job
 from services.supabase_trading_settings import fetch_user_timezone
+from services.agent_cancellation import (
+    AgentRunCancelled,
+    cancel_agent_run,
+    register_agent_run,
+    unregister_agent_run,
+)
 from langsmith import traceable
 from langsmith.run_helpers import get_current_run_tree
 
@@ -784,18 +790,21 @@ def _restore_thread_workspace_from_latest_snapshot(
 
 @traceable(name="post_strategy", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def _execute_strategy_agent_job(run_id: str, thread_id: str, user_timezone: str = "") -> None:
+    cancel_control = register_agent_run(run_id)
     stream = StrategyStreamPublisher(run_id)
     stream.status("Starting…")
 
     def persist_status_text(text: str) -> None:
+        cancel_control.raise_if_cancelled()
         t = (text or "")[:512]
         s = SessionLocal()
         try:
             row = s.get(Strategy, run_id)
-            if row is not None:
-                row.status_text = t
-                s.add(row)
-                s.commit()
+            if row is None:
+                raise AgentRunCancelled("Strategy run stopped")
+            row.status_text = t
+            s.add(row)
+            s.commit()
         finally:
             s.close()
         stream.status(t)
@@ -821,6 +830,7 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str, user_timezone: str 
                 on_token=stream.assistant_delta if stream.enabled else None,
                 codex_thread_id=str(strategy.codex_thread_id or ""),
                 user_timezone=user_timezone,
+                cancel_control=cancel_control,
             )
             if not _strategy_run_exists(run_id):
                 _restore_thread_workspace_if_no_newer_run(thread_id, run_created_at)
@@ -849,6 +859,19 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str, user_timezone: str 
             _apply_generated_strategy_name(strategy, sn)
             strategy.status = "success"
             strategy.status_text = ""
+        except AgentRunCancelled:
+            if not _strategy_run_exists(run_id):
+                _restore_thread_workspace_if_no_newer_run(thread_id, run_created_at)
+                stream.close()
+                return
+            logger.info(
+                "agent job stopped",
+                extra={"thread_id": thread_id, "run_id": run_id, "model": CHAT_MODEL},
+            )
+            strategy.status = "stopped"
+            strategy.status_text = "Stopped"
+            strategy.code = read_strategy_code(thread_id)
+            stream.status("Stopped")
         except Exception as exc:
             if not _strategy_run_exists(run_id):
                 _restore_thread_workspace_if_no_newer_run(thread_id, run_created_at)
@@ -875,6 +898,8 @@ def _execute_strategy_agent_job(run_id: str, thread_id: str, user_timezone: str 
             raise
     finally:
         session.close()
+        unregister_agent_run(run_id, cancel_control)
+        stream.close()
 
 
 def _run_strategy_agent_job(app_obj, run_id: str, thread_id: str, user_timezone: str = "") -> None:
@@ -1161,6 +1186,89 @@ def post_strategy() -> tuple:
         )
 
         return jsonify(serialize_strategy(new_strategy)), 200
+    finally:
+        session.close()
+
+
+@strategy_blueprint.post("/strategy/cancel")
+@require_auth
+def cancel_strategy() -> tuple:
+    uid = _current_user_id()
+    payload = request.get_json(silent=True) or {}
+    thread_id = str(payload.get("thread_id", "")).strip()
+    run_id = str(payload.get("id", "") or payload.get("run_id", "")).strip()
+
+    if not thread_id and not run_id:
+        return _validation_error("thread_id or id is required")
+    if thread_id and not thread_id_allowed(thread_id):
+        return _validation_error("invalid thread_id")
+
+    session = SessionLocal()
+    try:
+        query = session.query(Strategy).filter(
+            Strategy.status == "running",
+            _owned_or_legacy_filter(uid),
+        )
+        if run_id:
+            query = query.filter(Strategy.id == run_id)
+        if thread_id:
+            query = query.filter(Strategy.thread_id == thread_id)
+        strategy = query.order_by(desc(Strategy.created_at)).first()
+        if strategy is None:
+            latest = None
+            if run_id:
+                latest = (
+                    session.query(Strategy)
+                    .filter(Strategy.id == run_id, _owned_or_legacy_filter(uid))
+                    .first()
+                )
+            if latest is None and thread_id:
+                latest = (
+                    session.query(Strategy)
+                    .filter(Strategy.thread_id == thread_id, _owned_or_legacy_filter(uid))
+                    .order_by(desc(Strategy.created_at))
+                    .first()
+                )
+            if latest is None:
+                return _validation_error("running strategy not found")
+            out = serialize_strategy(
+                latest,
+                messages_override=_merged_thread_messages(session, latest.thread_id),
+            )
+            out["cancelled"] = False
+            return jsonify(out), 200
+
+        cancelled_run_id = str(strategy.id or "")
+        cancelled_thread_id = str(strategy.thread_id or "")
+        cancel_agent_run(cancelled_run_id)
+        session.delete(strategy)
+        session.commit()
+        StrategyStreamPublisher(cancelled_run_id).status("Stopped")
+
+        latest = latest_thread_strategy(session, cancelled_thread_id)
+        if latest is not None:
+            _restore_thread_workspace_from_latest_snapshot(session, cancelled_thread_id, latest)
+            out = serialize_strategy(
+                latest,
+                messages_override=_merged_thread_messages(session, cancelled_thread_id),
+            )
+        else:
+            out = {
+                "id": "",
+                "thread_id": cancelled_thread_id,
+                "messages": [],
+                "status": None,
+                "status_text": "",
+                "langsmith_trace": "",
+                "strategy_name": "",
+                "language": "",
+                "created_at": None,
+                "canvas": {},
+                "algorithm": "",
+            }
+        out["cancelled"] = True
+        out["cancelled_run_id"] = cancelled_run_id
+        return jsonify(out), 200
     finally:
         session.close()
 
