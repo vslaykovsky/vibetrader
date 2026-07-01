@@ -146,6 +146,8 @@ Strategy workflow
 Analysis and optimization
 * For EDA, market research, or charts without a tradable strategy, use update_strategy then run_backtest.
 * For explicit parameter optimization requests, use run_hyperopt. Use parameters_hyperopt_json for study-only overrides, including included_parameters/excluded_parameters filters, and parameters_json for base simulation inputs; follow the run_hyperopt tool schema for allowed study fields. Do not run hyperopt for ordinary strategy creation, strategy edits, parameter changes, EDA, or backtest refreshes.
+* Before triggering walk-forward optimization, double-check the walk-forward parameters with the user: train window, OOS/test window, step size, total OOS period, objective metric, trial count, per-fold optimization timeout (`timeout_seconds`), and per-trial simulation timeout (`trial_timeout_seconds`). Tell the user that walk-forward optimization may take longer than usual because it runs hyperopt separately for each fold.
+* For walk-forward optimization, do not choose a very short `timeout_seconds` such as 180 seconds unless the user explicitly asked for it or a prior run shows the full requested trial count can finish within that budget. If no timeout preference is given, propose a realistic per-fold optimization budget: usually at least 600 seconds for 40 trials, and 900-1800 seconds for intraday, multi-ticker, or indicator-heavy strategies. Keep `trial_timeout_seconds` separate; it is the hard timeout for one simulator trial that hangs or stops responding, not the hyperopt study budget.
 * If params.json contains run_mode, treat the strategy as trainable and run separate train and out-of-sample test backtests with run_mode/date overrides rather than one combined run.
 * For questions about how the latest strategy run performed on historical data, use analyse_run. This includes questions about specific trades, orders, fills, entries/exits, PnL, metrics, dates, bars, or why something happened in the latest backtest. Do not use analyse_code for these.
 
@@ -154,7 +156,7 @@ Canvas and data
 * For hide/remove/reorder requests, explain the canvas controls; no code change is needed. For alignment/spacing requests, explain the layout is already rendered at its best and strategy code is unlikely to help. For more diagnostics, offer to add indicators, series, or panels via strategy output.
 * Market data: Alpaca for non-Russian markets, MOEX for Russian markets. Auto-selection is preferred when unsure: try Alpaca, then MOEX. Alpaca data starts in 2016; no pre-2016 data. Never use or suggest yfinance.
 * To discover available symbols, use list_tickers with a natural-language query. It can filter by ticker, provider (alpaca/moex), tags such as SNP500, and last_day_volume_usd.
-* run_backtest refreshes backtest.json and metrics.json. run_hyperopt optimizes parameters, updates params.json with the best trial, then performs a final run.
+* run_backtest refreshes backtest.json and metrics.json. run_hyperopt optimizes parameters, updates params.json with the best trial, then performs a final run. Walk-forward run_hyperopt is different: it restores params.json after completion and leaves stitched OOS outputs in backtest.json, metrics.json, and walkforward.json.
 
 {{strategy_help}}"""
 
@@ -467,14 +469,53 @@ def _hyperopt_ui_line_to_status_text(raw_line: str) -> str | None:
     ev = d.get("event")
     mk = str(d.get("objective_metric") or "objective")
     nt = d.get("n_trials")
+    if ev == "walk_forward_start":
+        nf = d.get("n_folds")
+        return f"Walk-forward · {nf} folds · {nt} trials/fold · {mk}"[:512]
+    if ev == "walk_forward_fold":
+        f = d.get("fold")
+        nf = d.get("n_folds")
+        phase = str(d.get("phase") or "").strip()
+        if phase == "train":
+            return (
+                f"Walk-forward · fold {f}/{nf} · optimizing train "
+                f"{d.get('train_start')} to {d.get('train_end')}"
+            )[:512]
+        if phase == "test":
+            best = d.get("best_value")
+            parts = [f"Walk-forward · fold {f}/{nf} · running OOS"]
+            if best is not None:
+                try:
+                    parts.append(f"best {mk}={_hyperopt_status_float_str(float(best))}")
+                except (TypeError, ValueError):
+                    parts.append(f"best {mk}={best}")
+            return " · ".join(parts)[:512]
+    if ev == "walk_forward_done":
+        nf = d.get("n_folds")
+        metrics = d.get("metrics") if isinstance(d.get("metrics"), dict) else {}
+        best = metrics.get(mk)
+        parts = ["Walk-forward", "done", f"{nf} folds"]
+        if best is not None:
+            try:
+                parts.append(f"OOS {mk}={_hyperopt_status_float_str(float(best))}")
+            except (TypeError, ValueError):
+                parts.append(f"OOS {mk}={best}")
+        _append_hyperopt_timing_parts(parts, d, include_eta=False)
+        return " · ".join(parts)[:512]
     if ev == "start":
+        f = d.get("fold")
+        nf = d.get("n_folds")
+        if f and nf:
+            return f"Hyperopt · fold {f}/{nf} · {nt} trials · {mk}"[:512]
         return f"Hyperopt · {nt} trials · {mk}"[:512]
     if ev == "trial":
         t = d.get("trial")
         n = d.get("n_trials", nt)
         best = d.get("best_value")
         out = str(d.get("outcome") or "")
-        parts: list[str] = [f"Hyperopt · trial {t}/{n}"]
+        f = d.get("fold")
+        nf = d.get("n_folds")
+        parts: list[str] = [f"Hyperopt · fold {f}/{nf} · trial {t}/{n}" if f and nf else f"Hyperopt · trial {t}/{n}"]
         if out == "completed" and d.get("trial_value") is not None:
             try:
                 tv = float(d["trial_value"])
@@ -776,8 +817,10 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             "description": (
                 "Run hyperparameter optimization with no code edits only when the current user request explicitly asks "
                 "to optimize, tune, search, or find best strategy parameters. Requires params-hyperopt.json, runs simulator "
-                "trials, writes best params to params.json, then performs a final run. parameters_json changes base inputs; "
-                "parameters_hyperopt_json changes the study definition and included/excluded parameter filters."
+                "trials, writes best params to params.json, then performs a final run. In mode='walk_forward', runs rolling "
+                "train/OOS folds, restores params.json, and writes stitched OOS backtest.json, metrics.json, and walkforward.json. "
+                "parameters_json changes base inputs; parameters_hyperopt_json changes the study definition, included/excluded "
+                "parameter filters, and walk-forward settings."
             ),
             "parameters": RUN_HYPEROPT_TOOL_PARAMETERS_SCHEMA,
         },
@@ -1331,6 +1374,7 @@ CANVAS_OUTPUT_FILES: frozenset[str] = frozenset(
         "backtest.json",
         "metrics.json",
         "params-hyperopt.json",
+        "walkforward.json",
         "trained_model_params.json",
     }
 )
@@ -2215,14 +2259,14 @@ def _strategy_help_for_workspace(workspace: Path) -> str:
         else ""
     )
     if params_path.is_file():
-        return f"""Strategy inputs are read from params.json (overrides: pass parameters_json on run_backtest, or on run_hyperopt only when the current user explicitly asks to optimize parameters). On run_hyperopt, optional parameters_hyperopt_json merges into params-hyperopt.json (which params are optimised, included/excluded parameter filters, ranges, regimes, study budget—not ticker/dates from params.json).
+        return f"""Strategy inputs are read from params.json (overrides: pass parameters_json on run_backtest, or on run_hyperopt only when the current user explicitly asks to optimize parameters). On run_hyperopt, optional parameters_hyperopt_json merges into params-hyperopt.json (which params are optimised, included/excluded parameter filters, ranges, regimes, study budget, and walk-forward settings—not ticker/dates from params.json except through the walk-forward runner's own fold windows).
 {strategy_parameters}
 {hyperopt_section}{trained_section}{metrics_section}"""
     return f"""Note: params.json hasn't been created yet. Need to run update_strategy first.
 
 Current params.json (may be empty or missing):
 {strategy_parameters}
-On run_hyperopt, only when the current user explicitly asks to optimize parameters, optional parameters_hyperopt_json merges into params-hyperopt.json (study definition: optimised params, included/excluded parameter filters, ranges, regimes—not params.json backtest inputs).
+On run_hyperopt, only when the current user explicitly asks to optimize parameters, optional parameters_hyperopt_json merges into params-hyperopt.json (study definition: optimised params, included/excluded parameter filters, ranges, regimes, walk-forward settings—not ordinary params.json backtest inputs).
 {hyperopt_section}{trained_section}{metrics_section}"""
 
 

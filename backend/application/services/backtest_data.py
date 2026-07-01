@@ -64,6 +64,13 @@ class LwcTimeValuePoint(BaseModel):
     value: float
 
 
+class LwcVerticalMarker(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    time: str | int | float
+    label: str = ""
+    color: str = "#f59e0b"
+
+
 class _LwcSeriesBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
     label: str
@@ -96,6 +103,7 @@ class LightweightChartsChart(BaseModel):
     title: str
     description: str = ""
     series: list[LwcSeries] = Field(default_factory=list)
+    verticalMarkers: list[LwcVerticalMarker] | None = None
 
 
 class PlotlyChart(BaseModel):

@@ -11,7 +11,7 @@ import { renderCharts } from '../strategyChartRenderer.js';
 import { useAuth } from '../AuthContext';
 import { useTheme } from '../ThemeContext';
 import { useTimeZone } from '../TimeZoneContext.jsx';
-import { t, currentLang } from '../lib/i18n.js';
+import { t, currentLang, tStatusText } from '../lib/i18n.js';
 import { dateKeyFromIso as zonedDateKeyFromIso, parseIsoInstant, todayDateKey } from '../lib/dateTime.js';
 import { ProfileMenu } from '../ProfileMenu';
 import { ConfirmDialog } from '../components/ConfirmDialog.jsx';
@@ -2548,7 +2548,7 @@ export function StrategyPage() {
     (!streamingAssistantRunId || streamingAssistantRunId !== liveStrategyRunId);
   const processingLabel =
     serverJob.status === 'running'
-      ? serverJob.statusText?.trim() || t('chat.working')
+      ? tStatusText(serverJob.statusText) || t('chat.working')
       : submitting
         ? t('chat.sending')
         : t('chat.working');
@@ -3185,7 +3185,7 @@ export function StrategyPage() {
                           <div className="sidebar-item-title">{threadDisplayName(thread)}</div>
                           <div className="sidebar-item-subtitle">
                             {thread?.status === 'running'
-                              ? (thread?.status_text?.trim() || t('chat.running'))
+                              ? (tStatusText(thread?.status_text) || t('chat.running'))
                               : ''}
                           </div>
                         </button>

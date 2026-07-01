@@ -51,6 +51,31 @@ const TRANSLATIONS = {
     'chat.loading_thread_aria': 'Loading thread',
     'chat.loading_thread': 'Loading thread\u2026',
     'chat.working': 'Working\u2026',
+    'status.analyzing_latest_run': 'Analyzing latest run output, this may take a few minutes\u2026',
+    'status.updating_strategy': 'Updating strategy, this may take a few minutes\u2026',
+    'status.thinking': 'Thinking\u2026',
+    'status.running_simulation': 'Running simulation\u2026',
+    'status.retrying_simulation': 'Retrying simulation after auto-fix\u2026',
+    'status.optimizing_parameters': 'Optimizing strategy parameters\u2026',
+    'status.hyperopt': 'Hyperopt',
+    'status.walk_forward': 'Walk-forward',
+    'status.simulation': 'Simulation',
+    'status.fold': 'fold {fold}/{total}',
+    'status.trial': 'trial {trial}/{total}',
+    'status.trials': '{count} trials',
+    'status.trials_per_fold': '{count} trials/fold',
+    'status.best_metric': 'best {metric}={value}',
+    'status.oos_metric': 'OOS {metric}={value}',
+    'status.ok_trials': '{count} ok trials',
+    'status.done': 'done',
+    'status.stopped_at_trial': 'stopped at trial {trial}/{total}',
+    'status.optimizing_train': 'optimizing train {start} to {end}',
+    'status.running_oos': 'running OOS',
+    'status.folds': '{count} folds',
+    'status.start': 'start',
+    'status.bars': '{count} bars',
+    'status.eta': 'ETA {value}',
+    'status.per_step': '{value}/step',
     'chat.sending': 'Sending\u2026',
     'chat.stopping': 'Stopping\u2026',
     'chat.agent_responding_aria': 'Agent is responding',
@@ -248,6 +273,31 @@ const TRANSLATIONS = {
     'chat.loading_thread_aria': 'Загрузка чата',
     'chat.loading_thread': 'Загрузка чата\u2026',
     'chat.working': 'Работаем\u2026',
+    'status.analyzing_latest_run': 'Анализируем последний запуск, это может занять несколько минут\u2026',
+    'status.updating_strategy': 'Обновляем стратегию, это может занять несколько минут\u2026',
+    'status.thinking': 'Думаем\u2026',
+    'status.running_simulation': 'Запускаем симуляцию\u2026',
+    'status.retrying_simulation': 'Повторяем симуляцию после автоисправления\u2026',
+    'status.optimizing_parameters': 'Оптимизируем параметры стратегии\u2026',
+    'status.hyperopt': 'Оптимизация',
+    'status.walk_forward': 'Walk-forward',
+    'status.simulation': 'Симуляция',
+    'status.fold': 'фолд {fold}/{total}',
+    'status.trial': 'попытка {trial}/{total}',
+    'status.trials': '{count} попыток',
+    'status.trials_per_fold': '{count} попыток/фолд',
+    'status.best_metric': 'лучший {metric}={value}',
+    'status.oos_metric': 'OOS {metric}={value}',
+    'status.ok_trials': '{count} успешных попыток',
+    'status.done': 'готово',
+    'status.stopped_at_trial': 'остановлено на попытке {trial}/{total}',
+    'status.optimizing_train': 'оптимизация обучения {start} - {end}',
+    'status.running_oos': 'запуск OOS',
+    'status.folds': '{count} фолдов',
+    'status.start': 'старт',
+    'status.bars': '{count} баров',
+    'status.eta': 'осталось {value}',
+    'status.per_step': '{value}/шаг',
     'chat.sending': 'Отправка\u2026',
     'chat.stopping': 'Останавливаем\u2026',
     'chat.agent_responding_aria': 'Агент отвечает',
@@ -444,4 +494,87 @@ export function tVal(value) {
   const map = TRANSLATIONS[currentLang] || TRANSLATIONS.en;
   const translated = map[key] ?? TRANSLATIONS.en[key];
   return translated !== undefined ? translated : value;
+}
+
+function tMetric(metric) {
+  const raw = String(metric || '').trim();
+  if (!raw) return raw;
+  return t(`chart.${raw}`) === `chart.${raw}` ? raw : t(`chart.${raw}`);
+}
+
+function translateStatusSegment(segment) {
+  const s = String(segment || '').trim();
+  if (!s) return s;
+
+  let m = /^fold\s+(\d+)\/(\d+)$/i.exec(s);
+  if (m) return t('status.fold', { fold: m[1], total: m[2] });
+
+  m = /^trial\s+(\d+)\/(\d+)$/i.exec(s);
+  if (m) return t('status.trial', { trial: m[1], total: m[2] });
+
+  m = /^(\d+)\s+trials$/i.exec(s);
+  if (m) return t('status.trials', { count: m[1] });
+
+  m = /^(\d+)\s+trials\/fold$/i.exec(s);
+  if (m) return t('status.trials_per_fold', { count: m[1] });
+
+  m = /^best\s+([A-Za-z_][\w.]*)=(.+)$/i.exec(s);
+  if (m) return t('status.best_metric', { metric: tMetric(m[1]), value: m[2] });
+
+  m = /^OOS\s+([A-Za-z_][\w.]*)=(.+)$/i.exec(s);
+  if (m) return t('status.oos_metric', { metric: tMetric(m[1]), value: m[2] });
+
+  m = /^([A-Za-z_][\w.]*)=(.+)$/.exec(s);
+  if (m) return `${tMetric(m[1])}=${m[2]}`;
+
+  m = /^(\d+(?:\.\d+)?[smh](?:\s+\d+s|\s+\d+m)?)\/step$/i.exec(s);
+  if (m) return t('status.per_step', { value: m[1] });
+
+  m = /^ETA\s+(.+)$/i.exec(s);
+  if (m) return t('status.eta', { value: m[1] });
+
+  m = /^(\d+)\s+ok\s+trials$/i.exec(s);
+  if (m) return t('status.ok_trials', { count: m[1] });
+
+  m = /^done\s+\((\d+)\s+ok\s+trials\)$/i.exec(s);
+  if (m) return `${t('status.done')} (${t('status.ok_trials', { count: m[1] })})`;
+
+  m = /^stopped at trial\s+(\d+)\/(\d+)$/i.exec(s);
+  if (m) return t('status.stopped_at_trial', { trial: m[1], total: m[2] });
+
+  m = /^optimizing train\s+(.+)\s+to\s+(.+)$/i.exec(s);
+  if (m) return t('status.optimizing_train', { start: m[1], end: m[2] });
+
+  m = /^(\d+)\s+folds$/i.exec(s);
+  if (m) return t('status.folds', { count: m[1] });
+
+  m = /^(\d+)\s+bars$/i.exec(s);
+  if (m) return t('status.bars', { count: m[1] });
+
+  if (s === 'Hyperopt') return t('status.hyperopt');
+  if (s === 'Walk-forward') return t('status.walk_forward');
+  if (s === 'Simulation') return t('status.simulation');
+  if (s === 'start') return t('status.start');
+  if (s === 'done') return t('status.done');
+  if (s === 'running OOS') return t('status.running_oos');
+
+  return tMetric(s);
+}
+
+export function tStatusText(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return raw;
+
+  const exact = {
+    'Analyzing latest run output, this may take a few minutes\u2026': t('status.analyzing_latest_run'),
+    'Updating strategy, this may take a few minutes\u2026': t('status.updating_strategy'),
+    'Thinking\u2026': t('status.thinking'),
+    'Running simulation\u2026': t('status.running_simulation'),
+    'Retrying simulation after auto-fix\u2026': t('status.retrying_simulation'),
+    'Optimizing strategy parameters\u2026': t('status.optimizing_parameters'),
+  };
+  if (exact[raw]) return exact[raw];
+
+  if (!raw.includes(' · ')) return translateStatusSegment(raw);
+  return raw.split(' · ').map(translateStatusSegment).join(' · ');
 }

@@ -59,6 +59,13 @@ class LwcTimeValuePoint(BaseModel):
     value: float
 
 
+class LwcVerticalMarker(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    time: str | int | float
+    label: str = ""
+    color: str = "#f59e0b"
+
+
 class _LwcSeriesBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
     label: str
@@ -91,6 +98,7 @@ class LightweightChartsChart(BaseModel):
     title: str
     description: str = ""
     series: list[LwcSeries] = Field(default_factory=list)
+    verticalMarkers: list[LwcVerticalMarker] | None = None
 
 
 class PlotlyChart(BaseModel):
@@ -499,6 +507,14 @@ HyperoptSearchSpec = Annotated[
 ]
 
 
+class WalkForwardConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    train_window_days: int = Field(gt=0)
+    test_window_days: int = Field(gt=0)
+    step_days: int = Field(gt=0)
+    oos_total_days: int = Field(gt=0)
+
+
 class ParamsHyperopt(BaseModel):
     model_config = ConfigDict(extra="forbid")
     search_space: dict[str, HyperoptSearchSpec]
@@ -510,3 +526,5 @@ class ParamsHyperopt(BaseModel):
     objective_metric: HyperoptObjectiveMetric = "total_return"
     seed: int | None = None
     trial_timeout_seconds: int | None = 1800
+    mode: Literal["single", "walk_forward"] = "single"
+    walk_forward: WalkForwardConfig | None = None
