@@ -60,7 +60,7 @@ function storedLang() {
 }
 
 export function TimeZoneProvider({ children }) {
-  const { user, getAccessToken } = useAuth();
+  const { user, authFetch } = useAuth();
   const [timeZone, setTimeZoneState] = useState(storedTimeZone);
   const [hourFormat, setHourFormatState] = useState(storedHourFormat);
   const [interfaceLang, setInterfaceLangState] = useState(storedLang);
@@ -92,10 +92,7 @@ export function TimeZoneProvider({ children }) {
     }
     setLoading(true);
     try {
-      const token = await getAccessToken();
-      const headers = {};
-      if (token) headers.Authorization = `Bearer ${token}`;
-      const res = await fetch(`${API_BASE_URL}/settings/trading`, { headers });
+      const res = await authFetch(`${API_BASE_URL}/settings/trading`);
       const payload = await res.json().catch(() => ({}));
       if (res.ok) {
         setTimeZone(payload?.profile?.timezone || browserTimeZone());
@@ -113,7 +110,7 @@ export function TimeZoneProvider({ children }) {
     } finally {
       setLoading(false);
     }
-  }, [getAccessToken, setHourFormat, setTimeZone, user]);
+  }, [authFetch, setHourFormat, setTimeZone, user]);
 
   useEffect(() => {
     refreshTimeZone();

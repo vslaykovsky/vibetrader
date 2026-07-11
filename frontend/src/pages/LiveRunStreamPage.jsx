@@ -340,7 +340,7 @@ function paramsHyperoptJsonFromOutput(output) {
 export function LiveRunStreamPage() {
   const { runId = '' } = useParams();
   const navigate = useNavigate();
-  const { user, signOut, getAccessToken } = useAuth();
+  const { user, signOut, authFetch, getAuthenticatedUrl } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { timeZone, hourFormat } = useTimeZone();
   const [runMeta, setRunMeta] = useState(null);
@@ -364,16 +364,6 @@ export function LiveRunStreamPage() {
   const liveChartStateRef = useRef(createLiveChartState());
   const lastEventIdRef = useRef(0);
   const strategyFetchAbortRef = useRef(null);
-
-  const authFetch = useCallback(
-    async (url, options = {}) => {
-      const token = await getAccessToken();
-      const headers = { ...options.headers };
-      if (token) headers.Authorization = `Bearer ${token}`;
-      return fetch(url, { ...options, headers });
-    },
-    [getAccessToken],
-  );
 
   const bumpCharts = useCallback(() => setChartEpoch((n) => n + 1), []);
 
@@ -455,13 +445,12 @@ export function LiveRunStreamPage() {
     (async () => {
       const rid = String(runId || '').trim();
       if (!rid) return;
-      const token = await getAccessToken();
-      if (cancelled) return;
       const url = new URL(`${API_BASE_URL}/live/stream`, window.location.origin);
       url.searchParams.set('run_id', rid);
       url.searchParams.set('after_id', '0');
-      if (token) url.searchParams.set('access_token', token);
-      evtSource = new EventSource(url.toString());
+      const authenticatedUrl = await getAuthenticatedUrl(url);
+      if (cancelled) return;
+      evtSource = new EventSource(authenticatedUrl);
 
       const onChunk = (event) => {
         try {
@@ -486,7 +475,7 @@ export function LiveRunStreamPage() {
       cancelled = true;
       evtSource?.close();
     };
-  }, [runId, getAccessToken, ingestParsed]);
+  }, [runId, getAuthenticatedUrl, ingestParsed]);
 
   useEffect(() => {
     const mount = chartsMountRef.current;

@@ -17,7 +17,7 @@ const API_BASE_URL =
   (import.meta.env.PROD ? '/api' : 'http://localhost:8080');
 
 export function TradingSettingsPage() {
-  const { user, signOut, getAccessToken } = useAuth();
+  const { user, signOut, authFetch: authenticatedFetch } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { timeZone, hourFormat, interfaceLang, setTimeZone, setHourFormat, setInterfaceLang, refreshTimeZone } = useTimeZone();
   const [loading, setLoading] = useState(true);
@@ -38,13 +38,11 @@ export function TradingSettingsPage() {
 
   const authFetch = useCallback(
     async (url, options = {}) => {
-      const token = await getAccessToken();
       const headers = { ...options.headers };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
       if (!headers['Content-Type'] && options.body) headers['Content-Type'] = 'application/json';
-      return fetch(url, { ...options, headers });
+      return authenticatedFetch(url, { ...options, headers });
     },
-    [getAccessToken],
+    [authenticatedFetch],
   );
 
   const load = useCallback(async () => {

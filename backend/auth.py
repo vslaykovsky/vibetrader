@@ -12,10 +12,47 @@ from flask import g, jsonify, request
 logger = logging.getLogger(__name__)
 ADMIN_EMAILS = ["vslaykovsky@gmail.com", "leegheid2void@gmail.com"]
 _ADMIN_EMAIL_SET = {e.strip().lower() for e in ADMIN_EMAILS}
+IMPERSONATION_HEADER = "X-Act-As-User"
+IMPERSONATION_QUERY_PARAM = "act_as_user_id"
 
 
 def is_admin_email(email: str | None) -> bool:
     return isinstance(email, str) and email.strip().lower() in _ADMIN_EMAIL_SET
+
+
+def _requested_impersonation_user_id() -> tuple[str, str | None]:
+    header_value = (request.headers.get(IMPERSONATION_HEADER) or "").strip()
+    query_value = (request.args.get(IMPERSONATION_QUERY_PARAM) or "").strip()
+    if header_value and query_value and header_value != query_value:
+        return "", "Conflicting impersonation targets"
+    user_id = header_value or query_value
+    if len(user_id) > 255:
+        return "", "Invalid impersonation target"
+    return user_id, None
+
+
+def _resolve_impersonation_user(user_id: str) -> tuple[bool, str | None]:
+    # Imported lazily so the auth module stays independent of app initialization.
+    from db.models import Strategy
+    from db.session import SessionLocal
+
+    session = SessionLocal()
+    try:
+        row = (
+            session.query(Strategy.created_by_email)
+            .filter(Strategy.created_by == user_id)
+            .order_by(Strategy.created_at.desc(), Strategy.id.desc())
+            .first()
+        )
+        if row is None:
+            return False, None
+        raw_email = row[0]
+        if not isinstance(raw_email, str):
+            return True, None
+        email = raw_email.strip()
+        return True, email or None
+    finally:
+        session.close()
 
 
 def _jwt_secret() -> str:
@@ -205,15 +242,15 @@ def require_auth(fn):
             )
             return jsonify({"error": "Invalid token"}), 401
 
-        g.user_id = payload.get("sub")
+        actor_user_id = payload.get("sub")
         raw_email = payload.get("email")
         if isinstance(raw_email, str):
             e = raw_email.strip()
-            g.user_email = e or None
+            actor_user_email = e or None
         else:
-            g.user_email = None
-        g.is_admin = is_admin_email(g.user_email)
-        if not g.user_id:
+            actor_user_email = None
+        actor_is_admin = is_admin_email(actor_user_email)
+        if not actor_user_id:
             logger.warning(
                 "auth 401: missing_sub method=%s path=%s role=%r aud=%r diag=%s",
                 request.method,
@@ -223,6 +260,28 @@ def require_auth(fn):
                 diag,
             )
             return jsonify({"error": "Invalid token: missing subject"}), 401
+
+        g.actor_user_id = actor_user_id
+        g.actor_user_email = actor_user_email
+        g.actor_is_admin = actor_is_admin
+        g.user_id = actor_user_id
+        g.user_email = actor_user_email
+        g.is_admin = actor_is_admin
+        g.impersonating = False
+
+        target_user_id, target_error = _requested_impersonation_user_id()
+        if target_error:
+            return jsonify({"error": target_error}), 400
+        if target_user_id and target_user_id != str(actor_user_id):
+            if not actor_is_admin:
+                return jsonify({"error": "forbidden"}), 403
+            found, target_email = _resolve_impersonation_user(target_user_id)
+            if not found:
+                return jsonify({"error": "Impersonation target not found"}), 404
+            g.user_id = target_user_id
+            g.user_email = target_email
+            g.is_admin = is_admin_email(target_email)
+            g.impersonating = True
 
         return fn(*args, **kwargs)
 

@@ -110,7 +110,7 @@ function LiveRunDuration({ status, createdAt, updatedAt }) {
 export function DashboardPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, signOut, getAccessToken } = useAuth();
+  const { user, signOut, authFetch } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { timeZone, hourFormat } = useTimeZone();
   const [threads, setThreads] = useState([]);
@@ -122,16 +122,6 @@ export function DashboardPage() {
   const [threadsExpanded, setThreadsExpanded] = useState(false);
   const [deletingRunId, setDeletingRunId] = useState('');
   const [deleteRunRequest, setDeleteRunRequest] = useState(null);
-
-  const authFetch = useCallback(
-    async (url, options = {}) => {
-      const token = await getAccessToken();
-      const headers = { ...options.headers };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-      return fetch(url, { ...options, headers });
-    },
-    [getAccessToken],
-  );
 
   const load = useCallback(async () => {
     setLoading(true);

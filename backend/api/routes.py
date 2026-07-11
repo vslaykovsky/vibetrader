@@ -354,7 +354,7 @@ def _apply_strategy_canvas_cache_headers(
     etag = _strategy_canvas_etag(strategy)
     if etag:
         response.set_etag(etag, weak=False)
-    response.headers["Vary"] = "Authorization"
+    response.headers["Vary"] = "Authorization, X-Act-As-User"
     response.headers["Cache-Control"] = (
         "private, max-age=31536000, immutable"
         if immutable
@@ -417,6 +417,51 @@ def list_recent_threads() -> tuple:
         logger.info("list_recent_threads SQL: %s", sql.strip())
         rows = session.execute(stmt, {"uid": uid, "limit": 10}).mappings().all()
         return jsonify({"threads": _serialize_thread_rows(rows, include_owner=True)}), 200
+    finally:
+        session.close()
+
+
+@strategy_blueprint.get("/admin/users/recent")
+@require_auth
+def list_recent_users() -> tuple:
+    if not bool(getattr(g, "actor_is_admin", False)):
+        return jsonify({"error": "forbidden"}), 403
+
+    raw_limit = (request.args.get("limit") or "").strip()
+    try:
+        limit = max(1, min(100, int(raw_limit or "25")))
+    except ValueError:
+        return _validation_error("limit must be an integer")
+
+    actor_uid = str(getattr(g, "actor_user_id", "") or "").strip()
+    sql = """
+SELECT created_by, created_by_email, created_at
+FROM (
+    SELECT
+        created_by,
+        created_by_email,
+        created_at,
+        id,
+        ROW_NUMBER() OVER (PARTITION BY created_by ORDER BY created_at DESC, id DESC) AS row_num
+    FROM strategy
+    WHERE created_by IS NOT NULL AND created_by <> '' AND created_by <> :actor_uid
+) recent_users
+WHERE row_num = 1
+ORDER BY created_at DESC, id DESC
+LIMIT :limit
+"""
+    session = SessionLocal()
+    try:
+        rows = session.execute(text(sql), {"actor_uid": actor_uid, "limit": limit}).mappings().all()
+        users = [
+            {
+                "id": str(row["created_by"] or "").strip(),
+                "email": str(row["created_by_email"] or "").strip(),
+                "latest_activity_at": _thread_row_created_at(row["created_at"]),
+            }
+            for row in rows
+        ]
+        return jsonify({"users": users}), 200
     finally:
         session.close()
 

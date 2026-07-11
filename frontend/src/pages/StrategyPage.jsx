@@ -971,7 +971,12 @@ export function StrategyPage() {
   const { threadId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, signOut, getAccessToken } = useAuth();
+  const {
+    user,
+    signOut,
+    authFetch: authenticatedFetch,
+    getAuthenticatedUrl,
+  } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { timeZone, hourFormat } = useTimeZone();
   const signedInUserId = user?.id ?? null;
@@ -1189,12 +1194,10 @@ export function StrategyPage() {
   );
 
   const authFetch = useCallback(async (url, options = {}) => {
-    const token = await getAccessToken();
     const headers = { ...options.headers };
-    if (token) headers['Authorization'] = `Bearer ${token}`;
     headers['Accept-Language'] = currentLang;
-    return fetch(url, { ...options, headers });
-  }, [getAccessToken]);
+    return authenticatedFetch(url, { ...options, headers });
+  }, [authenticatedFetch]);
 
   const setCanvasIfChanged = useCallback((nextCanvas) => {
     const normalized = nextCanvas && typeof nextCanvas === 'object' ? nextCanvas : {};
@@ -2318,13 +2321,12 @@ export function StrategyPage() {
     let cancelled = false;
 
     (async () => {
-      const token = await getAccessToken();
-      if (cancelled) return;
       const url = new URL(`${API_BASE_URL}/strategy/stream`, window.location.origin);
       url.searchParams.set('thread_id', threadId);
-      if (token) url.searchParams.set('access_token', token);
+      const authenticatedUrl = await getAuthenticatedUrl(url);
+      if (cancelled) return;
 
-      evtSource = new EventSource(url.toString());
+      evtSource = new EventSource(authenticatedUrl);
 
       evtSource.onmessage = (event) => {
         try {
@@ -2453,7 +2455,7 @@ export function StrategyPage() {
   }, [
     threadId,
     serverJob.status,
-    getAccessToken,
+    getAuthenticatedUrl,
     rememberRunStatus,
     visibleRunStatus,
   ]);
@@ -3018,7 +3020,7 @@ export function StrategyPage() {
             threadId={threadId}
             apiBaseUrl={API_BASE_URL}
             authFetch={authFetch}
-            getAccessToken={getAccessToken}
+            getAuthenticatedUrl={getAuthenticatedUrl}
           />
         ) : null}
         {canvasTab === 'strategy' || !showSimulationTab ? (

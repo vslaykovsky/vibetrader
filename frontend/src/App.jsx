@@ -7,6 +7,7 @@ import { LiveRunStreamPage } from './pages/LiveRunStreamPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { TradingSettingsPage } from './pages/TradingSettingsPage';
 import { useAuth } from './AuthContext';
+import { AdminImpersonationBar } from './AdminImpersonationBar';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -30,14 +31,19 @@ function AuthCallback() {
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/" element={<HomePage />} />
-      <Route path="/auth/callback" element={<AuthCallback />} />
-      <Route path="/strategy/:threadId" element={<ProtectedRoute><StrategyPage /></ProtectedRoute>} />
-      <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
-      <Route path="/dashboard/settings" element={<ProtectedRoute><TradingSettingsPage /></ProtectedRoute>} />
-      <Route path="/live" element={<ProtectedRoute><LiveRunsPage /></ProtectedRoute>} />
-      <Route path="/live/:runId" element={<ProtectedRoute><LiveRunStreamPage /></ProtectedRoute>} />
-    </Routes>
+    <div className="application-shell">
+      <AdminImpersonationBar />
+      <div className="application-content">
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/auth/callback" element={<AuthCallback />} />
+          <Route path="/strategy/:threadId" element={<ProtectedRoute><StrategyPage /></ProtectedRoute>} />
+          <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
+          <Route path="/dashboard/settings" element={<ProtectedRoute><TradingSettingsPage /></ProtectedRoute>} />
+          <Route path="/live" element={<ProtectedRoute><LiveRunsPage /></ProtectedRoute>} />
+          <Route path="/live/:runId" element={<ProtectedRoute><LiveRunStreamPage /></ProtectedRoute>} />
+        </Routes>
+      </div>
+    </div>
   );
 }

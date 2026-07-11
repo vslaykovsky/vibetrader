@@ -46,7 +46,7 @@ def create_app() -> Flask:
         resources={
             r"/*": {
                 "origins": "*",
-                "allow_headers": ["Authorization", "Content-Type", "X-Request-Id"],
+                "allow_headers": ["Authorization", "Content-Type", "X-Request-Id", "X-Act-As-User"],
             }
         },
     )
@@ -72,9 +72,14 @@ def create_app() -> Flask:
         g.request_id = rid
         g.request_start = time.perf_counter()
         g.is_admin = False
+        g.actor_is_admin = False
+        g.impersonating = False
 
     @app.after_request
     def _log_request(response):
+        if getattr(g, "actor_user_id", None):
+            response.vary.add("Authorization")
+            response.vary.add("X-Act-As-User")
         start = getattr(g, "request_start", None)
         dur_ms = None
         if isinstance(start, (int, float)):

@@ -93,7 +93,7 @@ function applyStrategyScaleFromPayload(payload, setStrategyTf) {
   if (st) setStrategyTf(st);
 }
 
-export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToken }) {
+export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAuthenticatedUrl }) {
   const { timeZone, hourFormat } = useTimeZone();
   // ── User input / session ──────────────────────────────────────────────
   const [startDate, setStartDate] = useState('');
@@ -597,11 +597,10 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
   // ── Stream: trades / equity / status (no bars consumed for chart) ────
   const openStream = useCallback(async () => {
     stopStream();
-    const token = await getAccessToken();
     const url = new URL(`${apiBaseUrl}/simulation/stream`, window.location.origin);
     url.searchParams.set('thread_id', threadId);
-    if (token) url.searchParams.set('access_token', token);
-    const es = new EventSource(url.toString());
+    const authenticatedUrl = await getAuthenticatedUrl(url);
+    const es = new EventSource(authenticatedUrl);
     esRef.current = es;
 
     function handleStreamTradePayload(payload) {
@@ -702,7 +701,7 @@ export function SimulationPanel({ threadId, apiBaseUrl, authFetch, getAccessToke
     es.onopen = () => {
       appendLog('[stream open]');
     };
-  }, [apiBaseUrl, threadId, getAccessToken, appendLog, stopStream, hourFormat, timeZone]);
+  }, [apiBaseUrl, threadId, getAuthenticatedUrl, appendLog, stopStream, hourFormat, timeZone]);
   const openStreamRef = useRef(openStream);
   openStreamRef.current = openStream;
 
