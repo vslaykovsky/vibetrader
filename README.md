@@ -166,6 +166,7 @@ sudo usermod -aG docker $USER && newgrp docker
 - **`frontend/`**: React + Vite chat UI.
 - **`backend/`**: Flask API that powers the chat workflow and persists thread state.
 - **`backend/strategies_v2/`**: Shared strategy templates plus per-thread workspaces at `backend/strategies_v2/<THREAD_UUID>/` (seeded from `backend/strategies_v2/AGENTS.md`).
+- **Rust strategy + simulator engine**: Set `STRATEGY_ENGINE=rust` to link generated `strategy.rs` into a cached release-mode Rust historical simulator. The event loop, strategy calls, orders, portfolio, metrics, and output assembly run in one process with no per-bar IPC; the paced UI worker still supports JSON-lines/MessagePack. Python remains the default. See `backend/strategies_v2/RUST_RUNTIME.md`.
 
 ## Docs
 

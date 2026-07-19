@@ -26,3 +26,14 @@ kubectl apply -f deploy/gke/backend-service.yaml
 
 kubectl -n vibetrader rollout restart deploy/vibetrader-backend
 kubectl -n vibetrader rollout status deploy/vibetrader-backend
+
+kubectl -n vibetrader exec deploy/vibetrader-backend -c backend -- sh -ec '
+  echo "STRATEGY_ENGINE=${STRATEGY_ENGINE:-python}"
+  if [ "${STRATEGY_ENGINE:-python}" = "rust" ]; then
+    command -v cargo
+    cargo --version
+    rustc --version
+    rustup show active-toolchain
+    test -w "${STRATEGY_RUST_TARGET_DIR:-/app/.rust-target}"
+  fi
+'

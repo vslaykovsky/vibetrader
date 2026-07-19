@@ -15,6 +15,19 @@ From the repo root:
 
 The backend defaults `LIVE_RUNNER_IMAGE` to `us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-live-runner:latest`; set it in `vibetrader-config` only to override (see `deploy/gke/live-runner-deployment.example.yaml`).
 
+### Rust strategy engine
+
+Enable the Rust engine in the existing backend ConfigMap:
+
+```bash
+kubectl -n vibetrader patch configmap vibetrader-config \
+  --type merge \
+  -p '{"data":{"STRATEGY_ENGINE":"rust"}}'
+./scripts/gke_backend.sh
+```
+
+ConfigMap changes do not update environment variables in existing Pods, so restart or redeploy the backend after changing the value. The backend image contains pinned Rust/Cargo, prebuilds the strategy binaries during the image build, validates the toolchain and writable Cargo target at startup, and `gke_backend.sh` verifies the same toolchain inside the rolled-out Pod. Dynamically created live-runner Pods receive the selected `STRATEGY_ENGINE` explicitly; rebuild the runner image with `./scripts/gke_live_runner.sh` before starting Rust live runs.
+
 ### Codex `exec --full-auto` (bubblewrap)
 
 The backend invokes Codex with `--full-auto` (workspace-write sandbox), which runs shell commands through [bubblewrap](https://github.com/containers/bubblewrap). The backend image installs the `bubblewrap` package so `bwrap` is on `PATH` (Codex prefers the distro binary over the vendored helper).
@@ -44,4 +57,3 @@ If you must change them anyway on Standard (strong security and ops review requi
 **Compute Engine without GKE:** If the API runs on a VM, use a [startup script](https://cloud.google.com/compute/docs/instances/startup-scripts) to run the same `sysctl -w` lines and append stable values under `/etc/sysctl.d/`.
 
 **Practical default for this backend on GKE:** If you do not own node hardening, set `CODEX_BYPASS_SANDBOX=1` in `vibetrader-config` so Codex uses `--dangerously-bypass-approvals-and-sandbox` instead of `--full-auto`. Treat the Pod and cluster policy as the isolation boundary; Codex then runs without bubblewrap.
-

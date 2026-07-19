@@ -11,3 +11,5 @@ backend/strategies/
 test.ipynb
 backend/strategies_v2/*/
 !backend/strategies_v2/*.*
+backend/.rust-target/
+target/

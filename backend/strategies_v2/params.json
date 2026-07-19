@@ -1,0 +1,12 @@
+{
+  "ticker": "SPY",
+  "scale": "1d",
+  "simulation_scale": "1d",
+  "strategy_name": "Generated Strategy",
+  "description": "Generated strategy",
+  "start_date": "2024-01-01",
+  "end_date": "2024-12-31",
+  "initial_deposit": 10000,
+  "provider": "auto",
+  "max_leverage": 1.0
+}

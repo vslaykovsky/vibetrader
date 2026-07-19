@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import hljs from 'highlight.js/lib/core';
 import python from 'highlight.js/lib/languages/python';
+import rust from 'highlight.js/lib/languages/rust';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { randomUUID } from '../randomUUID.js';
@@ -22,6 +23,7 @@ import {
 } from '../lib/strategyStreamMessages.js';
 
 hljs.registerLanguage('python', python);
+hljs.registerLanguage('rust', rust);
 
 const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
 
@@ -435,8 +437,11 @@ function escapeHtml(code) {
 
 function highlightedPythonHtml(code) {
   const source = typeof code === 'string' ? code : '';
+  const language = /(^|\n)\s*(mod\s+utils\s*;|fn\s+main\s*\(|impl\s+StrategyHandler)/.test(source)
+    ? 'rust'
+    : 'python';
   try {
-    return hljs.highlight(source, { language: 'python', ignoreIllegals: true }).value;
+    return hljs.highlight(source, { language, ignoreIllegals: true }).value;
   } catch {
     return escapeHtml(source);
   }

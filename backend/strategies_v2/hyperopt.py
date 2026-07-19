@@ -187,15 +187,30 @@ def _merge_flat(base: dict, overlay: dict) -> dict:
 
 
 def _run_simulation(trial_timeout: float) -> subprocess.CompletedProcess[str]:
+    engine = (os.environ.get("STRATEGY_ENGINE") or "python").strip().lower()
+    entry_name = "strategy.rs" if engine == "rust" else "strategy.py"
     cmd: list[str] = [
         sys.executable,
         str(SIMULATE_SCRIPT),
         "--entry",
-        str(WORKSPACE / "strategy.py"),
+        str(WORKSPACE / entry_name),
     ]
     return subprocess.run(
         cmd, cwd=str(WORKSPACE), capture_output=True, text=True, timeout=trial_timeout
     )
+
+
+def _run_rust_optimizer() -> int:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(SIMULATE_SCRIPT),
+            "--entry",
+            str(WORKSPACE / "strategy.rs"),
+            "--optimize",
+        ],
+        cwd=str(WORKSPACE),
+    ).returncode
 
 
 def _strategy_deadlock_message(
@@ -470,7 +485,7 @@ def _walk_forward_folds(base: dict, cfg: ParamsHyperopt) -> list[dict]:
                 "test_end": test_end,
             }
         )
-        test_start = test_start + timedelta(days=int(wf.step_days))
+        test_start = test_start + timedelta(days=int(wf.test_window_days))
     return folds
 
 
@@ -1013,6 +1028,16 @@ def main() -> None:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)
+
+    engine = (os.environ.get("STRATEGY_ENGINE") or "python").strip().lower()
+    if engine == "rust":
+        rust_returncode = _run_rust_optimizer()
+        if rust_returncode != 78:
+            raise SystemExit(rust_returncode)
+        logger.info(
+            "Rust optimizer does not support this subscription topology; "
+            "falling back to the compatibility optimizer"
+        )
 
     trial_timeout = float(cfg.trial_timeout_seconds) if cfg.trial_timeout_seconds is not None else 1800.0
     rng = random.Random(cfg.seed if isinstance(cfg.seed, int) else None)

@@ -1,18 +1,19 @@
 # Vibetrader — agent context
 
-Chat UI + Flask API. An agent edits per-thread Python under `backend/strategies_v2/<thread_id>/`, runs it through the historical simulator, and the client renders chart JSON from the saved run.
+Chat UI + Flask API. An agent edits a per-thread Python or Rust strategy under `backend/strategies_v2/<thread_id>/`, runs it through the selected historical simulator, and the client renders chart JSON from the saved run.
 
 ## Architecture
 
 - **Frontend** (`frontend/`): React/Vite, Supabase session, calls the API with a Bearer JWT.
 - **Backend** (`backend/`): Flask app in `app.py`; HTTP in `api/routes.py`; auth in `auth.py`; DB models/session in `db/`.
-- **Agent** (`services/agent.py`): LLM + tools; invokes Codex on the thread workspace and subprocess runs with cwd set to that folder. Thread state is persisted as `Strategy` rows (messages, canvas, code, status, etc.); strategy source on disk is the workspace for that `thread_id`.
-- **Strategy contract** (schemas, run contract, params/output JSON): **`backend/strategies_v2/AGENTS.md`** — templates (`strategy.py`, `utils.py`, `hyperopt.py`, `params.json`, same `AGENTS.md`) are copied into each new workspace; change the template under `backend/strategies_v2/`, not only one thread directory.
+- **Agent** (`services/agent.py`): LLM + tools; invokes Codex on the thread workspace and subprocess runs with cwd set to that folder. `STRATEGY_ENGINE=python|rust` globally selects `strategy.py` or `strategy.rs`. Thread state is persisted as `Strategy` rows (messages, canvas, code, status, etc.); strategy source on disk is the workspace for that `thread_id`.
+- **Strategy contract** (schemas, run contract, params/output JSON): **`backend/strategies_v2/AGENTS.md`** for Python and **`backend/strategies_v2/AGENTS.rust.md`** for Rust. Templates are copied into each new workspace; change the shared templates under `backend/strategies_v2/`, not only one thread directory.
 
 ## Simulation (historical replay)
 
 - **Purpose**: Run the shared workspace **`backend/strategies_v2/`** (see `strategies_v2/AGENTS.md`) on fetched OHLC, one bar at a time with pacing, and stream events to the UI.
-- **Python layer**: `backend/application/` — `use_cases/strategy_simulate.py` (orchestration), `services/` (`strategy_runtime` subprocess, `portfolio`, `speed_clock`, `indicators`), `queries/historical_bars.py` (wraps `application.services.backtest_data.fetch_stock_bars` with a short TTL in-memory cache).
+- **Python engine**: `backend/application/` — `use_cases/strategy_simulate.py` (orchestration), `services/` (`strategy_runtime` subprocess, `portfolio`, `speed_clock`, `indicators`), `queries/historical_bars.py` (wraps `application.services.backtest_data.fetch_stock_bars` with a short TTL in-memory cache).
+- **Rust engine**: `backend/strategies_v2/simulator.rs` owns historical event replay, generated-strategy calls, orders, portfolio, metrics, and output assembly in one release binary. `backend/scripts/prepare_rust_simulation.py` uses the existing Python providers/cache/indicator semantics to hand it one bulk MessagePack dataset; `worker.rs` serves the paced interactive process protocol.
 - **HTTP**: `backend/api/simulation_routes.py` — `POST /simulation/init|pause|play|speed|stop`, `GET /simulation/stream` (SSE: `bar`, `trade`, `pnl`, `status`, `speed`, keepalive), `GET /simulation/display_bars` (optional OHLC at a finer `scale` for chart-only replay, same ticker/dates as the form; strategy logic unchanged). Start validates date span and an estimated bar-count ceiling against `strategies_v2/params.json` `scale`.
 - **UI**: `frontend/src/pages/StrategyPage.jsx` (Strategy | Simulation tabs; last tab per `thread_id` in `localStorage`), `frontend/src/components/SimulationPanel.jsx` + `SimulationCharts.jsx`, client OHLC resample in `frontend/src/lib/ohlcResample.js`.
 

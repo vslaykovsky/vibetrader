@@ -4,6 +4,8 @@ import argparse
 import json
 import logging
 import os
+import shutil
+import subprocess
 import sys
 import time
 from datetime import date
@@ -39,7 +41,12 @@ from application.services.simulation_driver import (
     iter_simulation_steps,
 )
 from application.services.simulation_limits import read_strategy_max_leverage
-from application.services.strategy_runtime import StrategyRuntime, StrategyRuntimeError
+from application.services.strategy_runtime import (
+    StrategyBuildError,
+    StrategyRuntime,
+    StrategyRuntimeError,
+)
+from application.services.rust_build import RustBuildError, build_rust_binary
 from application.use_cases.strategy_simulate import (
     _indicator_subscriptions_from_startup,
     _padding_days_for_indicator_subscriptions,
@@ -1279,11 +1286,28 @@ def main(argv: list[str]) -> int:
         required=True,
         help="Path to the strategy entry script (e.g. strategy.py). Its parent directory is the workspace; start_date, end_date, initial_deposit, provider, and simulation_scale are read from params.json there. backtest.json and metrics.json are written there.",
     )
+    parser.add_argument(
+        "--perf",
+        action="store_true",
+        help="Run a Rust simulator under 'perf record' and write perf.data in the strategy workspace.",
+    )
+    parser.add_argument(
+        "--optimize",
+        action="store_true",
+        help="Run the in-process Rust optimizer using params-hyperopt.json.",
+    )
     args = parser.parse_args(argv)
 
     entry_path = Path(args.entry).resolve()
     if not entry_path.is_file():
         parser.error(f"--entry must be an existing file: {entry_path}")
+    is_rust_entry = entry_path.suffix.lower() == ".rs"
+    if args.perf and not is_rust_entry:
+        parser.error("--perf is supported only for Rust strategy entries")
+    if args.optimize and not is_rust_entry:
+        parser.error("--optimize is supported only for Rust strategy entries")
+    if args.perf and args.optimize:
+        parser.error("--perf and --optimize cannot be used together")
     workspace = entry_path.parent
     entry_script = entry_path.relative_to(workspace).as_posix()
     params_path = workspace / "params.json"
@@ -1326,6 +1350,58 @@ def main(argv: list[str]) -> int:
         max_leverage,
     )
 
+    if is_rust_entry:
+        perf_path = None
+        if args.perf:
+            perf_command = os.getenv("PERF", "perf")
+            perf_path = shutil.which(perf_command)
+            if perf_path is None:
+                print(
+                    f"strategy profiler failed: --perf requires {perf_command!r} on PATH",
+                    file=sys.stderr,
+                )
+                return 1
+        try:
+            binary_source = "optimizer.rs" if args.optimize else "simulator.rs"
+            executable = build_rust_binary(workspace, binary_source)
+        except RustBuildError as exc:
+            print(f"strategy build failed: {exc}", file=sys.stderr)
+            return 1
+        env = os.environ.copy()
+        env["VIBETRADER_RUST_DATA_ADAPTER"] = str(
+            _BACKEND_ROOT / "scripts" / "prepare_rust_simulation.py"
+        )
+        env["STRATEGY_PYTHON_EXECUTABLE"] = sys.executable
+        command = [str(executable)]
+        if perf_path is not None:
+            perf_output = workspace / "perf.data"
+            command = [
+                perf_path,
+                "record",
+                "--call-graph",
+                "dwarf",
+                "--output",
+                str(perf_output),
+                "--",
+                str(executable),
+            ]
+            logger.info(
+                "run Rust simulation under perf binary=%s output=%s",
+                executable,
+                perf_output,
+            )
+        else:
+            logger.info(
+                "run Rust %s binary=%s",
+                "optimizer" if args.optimize else "simulation",
+                executable,
+            )
+        return subprocess.run(
+            command,
+            cwd=str(workspace),
+            env=env,
+        ).returncode
+
     try:
         doc, indicator_catalog, trained_model_params = simulate(
             workspace=workspace,
@@ -1337,6 +1413,9 @@ def main(argv: list[str]) -> int:
             simulation_scale=simulation_scale,
             max_leverage=max_leverage,
         )
+    except StrategyBuildError as exc:
+        print(f"strategy build failed: {exc}", file=sys.stderr)
+        return 1
     except StrategyRuntimeError as exc:
         print(f"strategy deadlock: {exc}", file=sys.stderr)
         return STRATEGY_DEADLOCK_EXIT_CODE

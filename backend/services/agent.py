@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import dotenv
 dotenv.load_dotenv()
 from langsmith import traceable
+import hashlib
 import json
 import logging
 import math
@@ -35,10 +36,17 @@ from application.schemas.hyperopt import (
     ParamsHyperoptOverrides,
     RunHyperoptToolParameters,
 )
+from application.services.strategy_engine import (
+    StrategyEngine,
+    configured_strategy_engine,
+    detect_strategy_source_engine,
+    strategy_entrypoint,
+)
+from application.services.rust_build import RustBuildError, build_rust_binary
 from services.agent_cancellation import AgentRunCancelled, AgentRunControl, kill_subprocess_tree
 
 
-CHAT_MODEL = os.getenv("CHAT_MODEL", "openai/gpt-5.4")
+CHAT_MODEL = os.getenv("CHAT_MODEL", "openai/gpt-5.6-sol")
 CHAT_REASONING_EFFORT = os.getenv("CHAT_REASONING_EFFORT", "medium")
 OPENROUTER_PROVIDER = {"only": ["OpenAI", "Anthropic"], "allow_fallbacks": False}
 CHAT_OPENROUTER_AINVOKE_TIMEOUT_SECONDS = 120
@@ -49,8 +57,10 @@ CHAT_OPENROUTER_RATE_LIMIT_MAX_DELAY_SECONDS = 30.0
 CHAT_OPENROUTER_TRANSIENT_VALIDATION_RETRIES = 5
 AGENT_MAX_TOOL_ITERATIONS = 30
 
-CODEX_MODEL = os.getenv("CODEX_MODEL", "gpt-5.4")
-CODEX_REASONING_EFFORT = os.getenv("CODEX_REASONING_EFFORT", "high")
+DEFAULT_CODEX_MODEL = "gpt-5.6-sol"
+DEFAULT_CODEX_REASONING_EFFORT = "medium"
+CODEX_MODEL = os.getenv("CODEX_MODEL", DEFAULT_CODEX_MODEL)
+CODEX_REASONING_EFFORT = os.getenv("CODEX_REASONING_EFFORT", DEFAULT_CODEX_REASONING_EFFORT)
 
 
 def _codex_bypass_sandbox() -> bool:
@@ -116,7 +126,7 @@ def _codex_exec_command(
     cmd.append(task)
     return cmd
 
-CODE_ANALYSIS_MODEL = os.getenv("CODE_ANALYSIS_MODEL", "anthropic/claude-opus-4.7")
+CODE_ANALYSIS_MODEL = os.getenv("CODE_ANALYSIS_MODEL", "anthropic/claude-sonnet-5")
 TICKER_SQL_MODEL = os.getenv("TICKER_SQL_MODEL", CODE_ANALYSIS_MODEL)
 
 SYSTEM_PROMPT = f"""You help users design and backtest trading strategies in chat.
@@ -125,7 +135,7 @@ Principles
 * Reply in the user's language, in plain text unless they ask for another format.
 * Be brief after tool runs: summarize only observed results; never invent metrics. The user sees charts and metrics.
 * Backtesting is supported; live trading is not.
-* Do not reveal generated Python implementation details.
+* Do not reveal generated implementation details.
 * Today's date is {(datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")}.{{user_timezone_line}}
 
 Strategy workflow
@@ -136,17 +146,17 @@ Strategy workflow
 * update_strategy delegates implementation to the coding agent in the strategy workspace.
 * First update_strategy task: write English instructions with the full user spec because the coding agent may have no prior context. Resumed Codex thread: send a concise delta plus every new or changed requirement; omitted new details are lost.
 * For update_strategy tasks, ask for direct implementation of the requested behavior. Do not ask the coding agent to add alternatives, fallback behavior, broad catch-and-continue handlers, fabricated data, mocked results, or hidden invariant recovery; 
-* For update_strategy tasks that create or change params.json tunables, require names based on stable semantics, not current literal values. If a value-specific name's value changes, or the parameter's meaning changes significantly, ask the coding agent to rename the key across params.json, strategy.py, and params-hyperopt.json.
+* For update_strategy tasks that create or change params.json tunables, require names based on stable semantics, not current literal values. If a value-specific name's value changes, or the parameter's meaning changes significantly, ask the coding agent to rename the key across params.json, the configured strategy source, and params-hyperopt.json.
 * For trainable update_strategy tasks, ask update_strategy to implement support for both exclusive params.json run_mode values, selected at process start: train or test. Do not ask the coding agent to create two active training/testing segments inside one strategy run. Train mode fits and emits trained_model_params, and must not trade. Test mode loads trained_model_params, trades or infers only after loading them, and must not train.
 * After successful update_strategy, refresh outputs. For ordinary strategies, call run_backtest. Only call run_hyperopt if the user's current request explicitly asks to optimize, tune, search, or find best strategy parameters. For trainable strategies, run train and test as separate run_backtest calls: first with run_mode="train" and the training date segment, then with run_mode="test" and the test date segment.
-* If the user only changes parameters (ticker, dates, thresholds, deposit, etc.), call run_backtest with parameters_json merged into params.json. Do not edit code, add a --params flag, or make strategy.py parse CLI params.
+* If the user only changes parameters (ticker, dates, thresholds, deposit, etc.), call run_backtest with parameters_json merged into params.json. Do not edit code, add a --params flag, or make the strategy parse CLI params.
 * If a backtest has num_trades=0, say no trades were executed. Do not loosen signals unless code contradicts the user's rules or the user asks.
-* If a strategy or hyperopt run reports a strategy deadlock, the likely issue is the strategy.py I/O sequence: the strategy may be reading before the simulator sent input, or the simulator may be waiting because the strategy did not emit the required startup output or per-input time_ack.
+* If a strategy or hyperopt run reports a strategy deadlock, the likely issue is the strategy runtime sequence: startup may not have completed or a per-input response may be missing.
 
 Analysis and optimization
 * For EDA, market research, or charts without a tradable strategy, use update_strategy then run_backtest.
 * For explicit parameter optimization requests, use run_hyperopt. Use parameters_hyperopt_json for study-only overrides, including included_parameters/excluded_parameters filters, and parameters_json for base simulation inputs; follow the run_hyperopt tool schema for allowed study fields. Do not run hyperopt for ordinary strategy creation, strategy edits, parameter changes, EDA, or backtest refreshes.
-* Before triggering walk-forward optimization, double-check the walk-forward parameters with the user: train window, OOS/test window, step size, total OOS period, objective metric, trial count, per-fold optimization timeout (`timeout_seconds`), and per-trial simulation timeout (`trial_timeout_seconds`). Tell the user that walk-forward optimization may take longer than usual because it runs hyperopt separately for each fold.
+* Before triggering walk-forward optimization, double-check the walk-forward parameters with the user: train window, OOS/test window (also the retraining interval), total OOS period, objective metric, trial count, per-fold optimization timeout (`timeout_seconds`), and per-trial simulation timeout (`trial_timeout_seconds`). Tell the user that walk-forward optimization may take longer than usual because it runs hyperopt separately for each fold.
 * For walk-forward optimization, do not choose a very short `timeout_seconds` such as 180 seconds unless the user explicitly asked for it or a prior run shows the full requested trial count can finish within that budget. If no timeout preference is given, propose a realistic per-fold optimization budget: usually at least 600 seconds for 40 trials, and 900-1800 seconds for intraday, multi-ticker, or indicator-heavy strategies. Keep `trial_timeout_seconds` separate; it is the hard timeout for one simulator trial that hangs or stops responding, not the hyperopt study budget.
 * If params.json contains run_mode, treat the strategy as trainable and run separate train and out-of-sample test backtests with run_mode/date overrides rather than one combined run.
 * For questions about how the latest strategy run performed on historical data, use analyse_run. This includes questions about specific trades, orders, fills, entries/exits, PnL, metrics, dates, bars, or why something happened in the latest backtest. Do not use analyse_code for these.
@@ -166,6 +176,16 @@ STRATEGY_CODE_TEMPLATE = STRATEGIES_DIR / "strategy.py"
 STRATEGY_UTILS_TEMPLATE = STRATEGIES_DIR / "utils.py"
 STRATEGY_PARAMS_TEMPLATE = STRATEGIES_DIR / "params.json"
 STRATEGY_HYPEROPT_TEMPLATE = STRATEGIES_DIR / "hyperopt.py"
+STRATEGY_RUST_AGENTS_TEMPLATE = STRATEGIES_DIR / "AGENTS.rust.md"
+STRATEGY_RUST_CODE_TEMPLATE = STRATEGIES_DIR / "strategy.rs"
+STRATEGY_RUST_UTILS_TEMPLATE = STRATEGIES_DIR / "utils.rs"
+STRATEGY_RUST_WORKER_TEMPLATE = STRATEGIES_DIR / "worker.rs"
+STRATEGY_RUST_SIMULATOR_TEMPLATE = STRATEGIES_DIR / "simulator.rs"
+STRATEGY_RUST_OPTIMIZER_TEMPLATE = STRATEGIES_DIR / "optimizer.rs"
+STRATEGY_RUST_OPTIMIZER_RUNTIME_TEMPLATE = STRATEGIES_DIR / "optimizer_runtime.rs"
+STRATEGY_RUST_PORTFOLIO_TEMPLATE = STRATEGIES_DIR / "portfolio.rs"
+STRATEGY_RUST_CARGO_TEMPLATE = STRATEGIES_DIR / "Cargo.toml"
+STRATEGY_RUST_CARGO_LOCK_TEMPLATE = STRATEGIES_DIR / "Cargo.lock"
 SIMULATE_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "simulate_strategy_v2.py"
 
 
@@ -569,6 +589,52 @@ def _hyperopt_ui_line_to_status_text(raw_line: str) -> str | None:
     return None
 
 
+def _hyperopt_ui_event(raw_line: str) -> str:
+    try:
+        payload = json.loads(raw_line)
+    except (TypeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict) or payload.get("hyperopt_ui") is not True:
+        return ""
+    return str(payload.get("event") or "")
+
+
+def _make_throttled_hyperopt_progress_handler(
+    on_progress: Callable[[str], None],
+    *,
+    interval_seconds: float | None = None,
+) -> Callable[[str], None]:
+    if interval_seconds is None:
+        raw_interval = os.getenv("STRATEGY_HYPEROPT_PROGRESS_INTERVAL_S", "5")
+        try:
+            interval_seconds = float(raw_interval)
+        except ValueError:
+            interval_seconds = 5.0
+    interval_seconds = max(0.0, interval_seconds)
+    last_emit_at: float | None = None
+    terminal_events = {"done", "walk_forward_done", "stopped"}
+
+    def handle(raw_line: str) -> None:
+        nonlocal last_emit_at
+        message = _hyperopt_ui_line_to_status_text(raw_line)
+        if not message:
+            return
+        now = time.monotonic()
+        event = _hyperopt_ui_event(raw_line)
+        if (
+            last_emit_at is not None
+            and event not in terminal_events
+            and now - last_emit_at < interval_seconds
+        ):
+            return
+        on_progress(message)
+        # Database-backed callbacks can be slow. Start the next interval after
+        # the callback completes so its own latency cannot defeat throttling.
+        last_emit_at = time.monotonic()
+
+    return handle
+
+
 def _simulation_ui_line_to_status_text(raw_line: str) -> str | None:
     s = raw_line.strip()
     if not s.startswith("{") or "simulation_ui" not in s:
@@ -633,17 +699,72 @@ def _chmod_readonly(path: Path) -> None:
         logger.warning("could not set read-only mode on %s", path)
 
 
+def _strategy_entry_name() -> str:
+    return strategy_entrypoint(configured_strategy_engine())
+
+
+def _rust_crate_name(thread_id: str) -> str:
+    digest = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()[:16]
+    return f"vibetrader_strategy_{digest}"
+
+
+def _write_rust_template(template_path: Path, thread_id: str, destination: Path) -> None:
+    template = template_path.read_text(encoding="utf-8")
+    rendered = template.replace("{{CRATE_NAME}}", _rust_crate_name(thread_id))
+    try:
+        if destination.is_file() and destination.read_text(encoding="utf-8") == rendered:
+            _chmod_readonly(destination)
+            return
+    except OSError:
+        pass
+    destination.write_text(rendered, encoding="utf-8")
+    _chmod_readonly(destination)
+
+
+def _remove_equal_legacy_walk_forward_step(path: Path) -> None:
+    if not path.is_file():
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(payload, dict):
+        return
+    walk_forward = payload.get("walk_forward")
+    if not isinstance(walk_forward, dict) or "step_days" not in walk_forward:
+        return
+    if walk_forward.get("step_days") != walk_forward.get("test_window_days"):
+        return
+    normalized = dict(payload)
+    normalized_walk_forward = dict(walk_forward)
+    normalized_walk_forward.pop("step_days", None)
+    normalized["walk_forward"] = normalized_walk_forward
+    path.write_text(json.dumps(normalized, indent=2, sort_keys=True), encoding="utf-8")
+
+
 def ensure_strategy_workspace(thread_id: str) -> Path:
     if not thread_id_allowed(thread_id):
         raise ValueError("invalid thread_id")
+    engine = configured_strategy_engine()
     workspace = STRATEGIES_DIR / thread_id
     workspace.mkdir(parents=True, exist_ok=True)
     dest_agents = workspace / "AGENTS.md"
-    if not dest_agents.is_file() and STRATEGY_AGENTS_TEMPLATE.is_file():
-        shutil.copy2(STRATEGY_AGENTS_TEMPLATE, dest_agents)
-    dest_strategy = workspace / "strategy.py"
-    if not dest_strategy.is_file() and STRATEGY_CODE_TEMPLATE.is_file():
-        shutil.copy2(STRATEGY_CODE_TEMPLATE, dest_strategy)
+    agents_template = (
+        STRATEGY_RUST_AGENTS_TEMPLATE
+        if engine is StrategyEngine.RUST
+        else STRATEGY_AGENTS_TEMPLATE
+    )
+    if agents_template.is_file():
+        shutil.copy2(agents_template, dest_agents)
+    entry_name = strategy_entrypoint(engine)
+    code_template = (
+        STRATEGY_RUST_CODE_TEMPLATE
+        if engine is StrategyEngine.RUST
+        else STRATEGY_CODE_TEMPLATE
+    )
+    dest_strategy = workspace / entry_name
+    if not dest_strategy.is_file() and code_template.is_file():
+        shutil.copy2(code_template, dest_strategy)
     dest_params = workspace / "params.json"
     if not dest_params.is_file() and STRATEGY_PARAMS_TEMPLATE.is_file():
         shutil.copy2(STRATEGY_PARAMS_TEMPLATE, dest_params)
@@ -661,6 +782,42 @@ def ensure_strategy_workspace(thread_id: str) -> Path:
                 logger.warning("could not make writable for refresh: %s", dest)
         shutil.copy2(template, dest)
         _chmod_readonly(dest)
+    if engine is StrategyEngine.RUST:
+        for template, name in (
+            (STRATEGY_RUST_UTILS_TEMPLATE, "utils.rs"),
+            (STRATEGY_RUST_WORKER_TEMPLATE, "worker.rs"),
+            (STRATEGY_RUST_SIMULATOR_TEMPLATE, "simulator.rs"),
+            (STRATEGY_RUST_OPTIMIZER_TEMPLATE, "optimizer.rs"),
+            (STRATEGY_RUST_OPTIMIZER_RUNTIME_TEMPLATE, "optimizer_runtime.rs"),
+            (STRATEGY_RUST_PORTFOLIO_TEMPLATE, "portfolio.rs"),
+        ):
+            dest_runtime = workspace / name
+            if not template.is_file():
+                continue
+            if dest_runtime.is_file():
+                try:
+                    dest_runtime.chmod(0o644)
+                except OSError:
+                    logger.warning("could not make writable for refresh: %s", dest_runtime)
+            shutil.copy2(template, dest_runtime)
+            _chmod_readonly(dest_runtime)
+        if STRATEGY_RUST_CARGO_TEMPLATE.is_file():
+            dest_manifest = workspace / "Cargo.toml"
+            if dest_manifest.is_file():
+                try:
+                    dest_manifest.chmod(0o644)
+                except OSError:
+                    logger.warning("could not make writable for refresh: %s", dest_manifest)
+            _write_rust_template(STRATEGY_RUST_CARGO_TEMPLATE, thread_id, dest_manifest)
+        if STRATEGY_RUST_CARGO_LOCK_TEMPLATE.is_file():
+            dest_lock = workspace / "Cargo.lock"
+            if dest_lock.is_file():
+                try:
+                    dest_lock.chmod(0o644)
+                except OSError:
+                    logger.warning("could not make writable for refresh: %s", dest_lock)
+            _write_rust_template(STRATEGY_RUST_CARGO_LOCK_TEMPLATE, thread_id, dest_lock)
+    _remove_equal_legacy_walk_forward_step(workspace / "params-hyperopt.json")
     return workspace
 
 
@@ -670,7 +827,7 @@ def strategy_root_for_thread(thread_id: str) -> Path:
 
 def read_strategy_code(thread_id: str) -> str:
     root = ensure_strategy_workspace(thread_id)
-    path = root / "strategy.py"
+    path = root / _strategy_entry_name()
     if not path.is_file():
         return ""
     return path.read_text(encoding="utf-8", errors="replace")
@@ -678,7 +835,7 @@ def read_strategy_code(thread_id: str) -> str:
 
 def read_strategy_utils(thread_id: str) -> str:
     root = ensure_strategy_workspace(thread_id)
-    path = root / "utils.py"
+    path = root / ("utils.rs" if configured_strategy_engine() is StrategyEngine.RUST else "utils.py")
     if not path.is_file():
         return ""
     return path.read_text(encoding="utf-8", errors="replace")
@@ -692,7 +849,7 @@ def restore_strategy_workspace_from_snapshot(
 ) -> None:
     root = ensure_strategy_workspace(thread_id)
 
-    (root / "strategy.py").write_text(code or "", encoding="utf-8")
+    (root / _strategy_entry_name()).write_text(code or "", encoding="utf-8")
 
     for name in CANVAS_OUTPUT_FILES:
         path = root / name
@@ -718,6 +875,7 @@ def restore_strategy_workspace_from_snapshot(
             out_path.write_text(contents, encoding="utf-8")
         else:
             out_path.write_text(str(contents), encoding="utf-8")
+    _remove_equal_legacy_walk_forward_step(root / "params-hyperopt.json")
 
 AGENT_TOOLS: list[dict[str, Any]] = [
     {
@@ -792,7 +950,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": RUN_BACKTEST_TOOL_NAME,
             "description": (
-                "Run one backtest with no code edits. It uses params.json, streams OHLC bars to strategy.py, "
+                "Run one backtest with no code edits. It uses params.json, streams OHLC bars to the configured strategy, "
                 "refreshes backtest.json and metrics.json, and can merge optional parameters_json into params.json first. "
                 "If num_trades=0, tell the user no trades were executed; do not assume a bug."
             ),
@@ -854,7 +1012,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": ANALYSE_CODE_TOOL_NAME,
             "description": (
-                "Answer quick questions about this thread's current strategy.py logic and params only. "
+                "Answer quick questions about this thread's current strategy logic and params only. "
                 "No file edits; not for historical performance, specific trades, dates, simulator, portfolio, fills, "
                 "metrics, run output, or platform behavior."
             ),
@@ -863,7 +1021,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                 "properties": {
                     "question": {
                         "type": "string",
-                        "description": "A natural-language question about the current strategy.py logic or params only.",
+                        "description": "A natural-language question about the current strategy logic or params only.",
                     }
                 },
                 "required": ["question"],
@@ -918,19 +1076,22 @@ def run_analyse_code(
     code = read_strategy_code(thread_id)
     utils_text = read_strategy_utils(thread_id)
     params_text = _read_strategy_params_text(thread_id)
+    engine = configured_strategy_engine()
+    source_name = strategy_entrypoint(engine)
+    utils_name = "utils.rs" if engine is StrategyEngine.RUST else "utils.py"
 
     analysis_system = (
-        "Answer only questions about the provided strategy.py logic and params. "
-        "Use utils.py only for imported data models. Do not infer simulator, portfolio, fills, metrics, "
+        f"Answer only questions about the provided {source_name} logic and params. "
+        f"Use {utils_name} only for imported data models. Do not infer simulator, portfolio, fills, metrics, "
         "or platform behavior; say those are outside this tool's context. "
         "Use 1-4 sentences. If unknown, say what is missing."
     )
     context = (
         "Strategy params (JSON, may be empty):\n"
         f"{params_text if params_text else ''}\n\n"
-        "utils.py (Python, may be empty):\n"
+        f"{utils_name} (contracts, may be empty):\n"
         f"{utils_text if utils_text else ''}\n\n"
-        "strategy.py (Python, may be empty):\n"
+        f"{source_name} ({engine.value}, may be empty):\n"
         f"{code if code else ''}"
     )
 
@@ -1035,7 +1196,7 @@ User question:
 
 Rules:
 - Do not edit, create, delete, or rename files.
-- Use actual workspace data such as params.json, backtest.json, metrics.json, strategy.py, utils.py, trained_model_params.json, and emitted output JSON.
+- Use actual workspace data such as params.json, backtest.json, metrics.json, the configured strategy source/contracts, trained_model_params.json, and emitted output JSON.
 - This is a historical performance analysis request: trades, fills, entries, exits, PnL, metrics, dates, bars, indicator values, or why a runtime event happened.
 - You may run read-only shell or Python commands to inspect files.
 - If the necessary output data is missing, say exactly what is missing and do not guess.
@@ -1358,7 +1519,7 @@ def generate_strategy_algorithm_pseudocode(*, code: str, language: str = "") -> 
         [
             SystemMessage(content=system),
             HumanMessage(
-                content="Extract core-algorithm pseudocode from this strategy.py (business logic only, no I/O boilerplate).\n\n"
+                content="Extract core-algorithm pseudocode from this strategy source (business logic only, no I/O boilerplate).\n\n"
                 + src
             ),
         ],
@@ -1496,7 +1657,7 @@ def _run_simulation(
         sys.executable,
         str(SIMULATE_SCRIPT_PATH),
         "--entry",
-        str(workspace / "strategy.py"),
+        str(workspace / _strategy_entry_name()),
     ]
     timeout_s = int(os.getenv("STRATEGY_BACKTEST_TIMEOUT_S", "1800"))
     freeze_timeout_s = int(os.getenv("STRATEGY_BACKTEST_FREEZE_TIMEOUT_S", "120"))
@@ -1755,6 +1916,211 @@ def run_update_strategy(
     return result
 
 
+class StrategyLanguageConversionError(RuntimeError):
+    pass
+
+
+def _strategy_language_conversion_task(
+    source_engine: StrategyEngine,
+    target_engine: StrategyEngine,
+) -> str:
+    target_name = strategy_entrypoint(target_engine)
+    target_utils = "utils.rs" if target_engine is StrategyEngine.RUST else "utils.py"
+    validation = (
+        "Build all workspace binaries with Cargo and resolve every compiler error."
+        if target_engine is StrategyEngine.RUST
+        else f"Run `{sys.executable} -m py_compile {target_name}` and resolve every syntax error."
+    )
+    protected_files = (
+        "Do not modify Cargo.toml, Cargo.lock, worker.rs, simulator.rs, optimizer.rs, "
+        "optimizer_runtime.rs, portfolio.rs, hyperopt.py, or either utils file."
+        if target_engine is StrategyEngine.RUST
+        else "Do not modify hyperopt.py, simulator/runtime files, or either utils file."
+    )
+    return f"""This is an automatic source-language migration, not a strategy change.
+
+The configured engine is {target_engine.value}, but `{target_name}` currently contains a complete {source_engine.value} strategy restored from an older database snapshot. Treat the current contents of `{target_name}` as the authoritative source strategy and translate the entire implementation in place to {target_engine.value}.
+
+Requirements:
+- Read AGENTS.md and `{target_utils}` and implement the required {target_engine.value} strategy contract exactly.
+- Preserve trading behavior: subscriptions and IDs, bar aggregation, indicator calculations, state transitions, entry and exit conditions, position sizing, session/time handling, order explanations, chart series and markers, and output timing.
+- Preserve every params.json key and current value. Preserve params-hyperopt.json parameter names, ranges, and study configuration. Do not optimize, rename, add, or remove tunable parameters.
+- Do not introduce fallback behavior, mocked data, new signals, new risk rules, or cleanup/refactoring unrelated to the translation.
+- Modify only `{target_name}` unless a minimal compatibility edit is strictly required; if so, preserve all parameter values and semantics.
+- {protected_files}
+- {validation}
+
+Do not ask questions. Perform the behavior-preserving translation and validation now."""
+
+
+def _strategy_language_conversion_repair_task(
+    target_engine: StrategyEngine,
+    diagnostic: str,
+) -> str:
+    target_name = strategy_entrypoint(target_engine)
+    return f"""The automatic behavior-preserving migration to {target_engine.value} did not validate.
+
+Validation diagnostic:
+{_tail(diagnostic, 6000)}
+
+Fix only translation or compilation issues in `{target_name}`. Preserve the source strategy's behavior and all params.json and params-hyperopt.json keys and values exactly. Do not modify platform runtime files, add signals, change risk logic, optimize parameters, or run a historical simulation. Re-run the appropriate compile/build check and leave the workspace compiling."""
+
+
+def _strategy_language_validation_error(
+    root: Path,
+    target_engine: StrategyEngine,
+    cancel_control: AgentRunControl | None,
+) -> str:
+    target_name = strategy_entrypoint(target_engine)
+    target_path = root / target_name
+    if not target_path.is_file():
+        return f"{target_name} is missing after conversion"
+    try:
+        source = target_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"could not read {target_name} after conversion: {exc}"
+    detected = detect_strategy_source_engine(source)
+    if detected is not target_engine:
+        found = detected.value if detected is not None else "unknown"
+        return f"{target_name} is still detected as {found}, expected {target_engine.value}"
+
+    if target_engine is StrategyEngine.RUST:
+        try:
+            for binary_source in ("worker.rs", "simulator.rs", "optimizer.rs"):
+                build_rust_binary(root, binary_source)
+        except (OSError, RustBuildError) as exc:
+            return str(exc)
+        return ""
+
+    compiled = _run_logged_subprocess(
+        "python strategy compile check",
+        [sys.executable, "-m", "py_compile", target_name],
+        str(root),
+        timeout=120,
+        cancel_control=cancel_control,
+    )
+    if compiled.returncode != 0:
+        return _tail(compiled.stderr or compiled.stdout or "Python compile check failed", 8000)
+    return ""
+
+
+@traceable(name="ensure_strategy_source_language", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
+def ensure_strategy_source_language(
+    thread_id: str,
+    *,
+    on_progress: ProgressCallback = None,
+    cancel_control: AgentRunControl | None = None,
+) -> dict[str, Any]:
+    if not thread_id_allowed(thread_id):
+        raise ValueError("invalid thread_id")
+
+    target_engine = configured_strategy_engine()
+    root = ensure_strategy_workspace(thread_id)
+    target_name = strategy_entrypoint(target_engine)
+    target_path = root / target_name
+    if not target_path.is_file():
+        return {
+            "ok": True,
+            "migrated": False,
+            "source_engine": "unknown",
+            "target_engine": target_engine.value,
+            "codex_thread_id": "",
+        }
+    source = target_path.read_text(encoding="utf-8", errors="replace")
+    source_engine = detect_strategy_source_engine(source)
+    if source_engine is None or source_engine is target_engine:
+        return {
+            "ok": True,
+            "migrated": False,
+            "source_engine": source_engine.value if source_engine is not None else "unknown",
+            "target_engine": target_engine.value,
+            "codex_thread_id": "",
+        }
+
+    if cancel_control is not None:
+        cancel_control.raise_if_cancelled()
+    if on_progress:
+        on_progress(
+            f"Converting strategy from {source_engine.value.title()} to "
+            f"{target_engine.value.title()}..."
+        )
+
+    preserved_paths = (root / "params.json", root / "params-hyperopt.json")
+    preserved_files = {
+        path: path.read_bytes() if path.is_file() else None for path in preserved_paths
+    }
+
+    def restore_managed_files(*, restore_source: bool) -> None:
+        if restore_source:
+            target_path.write_text(source, encoding="utf-8")
+        ensure_strategy_workspace(thread_id)
+        for path, contents in preserved_files.items():
+            if contents is None:
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+            else:
+                path.write_bytes(contents)
+
+    try:
+        runner, conversion = _run_coding_agent_exec(
+            _strategy_language_conversion_task(source_engine, target_engine),
+            root,
+            codex_thread_id=None,
+            cancel_control=cancel_control,
+        )
+        restore_managed_files(restore_source=False)
+        codex_thread_id = (
+            _codex_thread_id_from_stdout(conversion.stdout or "") if runner == "codex" else ""
+        )
+        if conversion.returncode != 0:
+            detail = _tail(f"{conversion.stdout or ''}\n{conversion.stderr or ''}", 8000)
+            raise StrategyLanguageConversionError(
+                f"automatic strategy conversion from {source_engine.value} to "
+                f"{target_engine.value} failed: {detail}"
+            )
+
+        diagnostic = _strategy_language_validation_error(root, target_engine, cancel_control)
+        if diagnostic:
+            if on_progress:
+                on_progress("Repairing converted strategy compilation...")
+            runner, repair = _run_coding_agent_exec(
+                _strategy_language_conversion_repair_task(target_engine, diagnostic),
+                root,
+                codex_thread_id=codex_thread_id,
+                cancel_control=cancel_control,
+            )
+            restore_managed_files(restore_source=False)
+            if runner == "codex":
+                codex_thread_id = (
+                    _codex_thread_id_from_stdout(repair.stdout or "") or codex_thread_id
+                )
+            if repair.returncode != 0:
+                detail = _tail(f"{repair.stdout or ''}\n{repair.stderr or ''}", 8000)
+                raise StrategyLanguageConversionError(
+                    f"automatic strategy conversion repair failed: {detail}"
+                )
+            diagnostic = _strategy_language_validation_error(root, target_engine, cancel_control)
+
+        if diagnostic:
+            raise StrategyLanguageConversionError(
+                f"automatic strategy conversion from {source_engine.value} to "
+                f"{target_engine.value} did not compile: {diagnostic}"
+            )
+    except Exception:
+        restore_managed_files(restore_source=True)
+        raise
+
+    return {
+        "ok": True,
+        "migrated": True,
+        "source_engine": source_engine.value,
+        "target_engine": target_engine.value,
+        "codex_thread_id": codex_thread_id,
+    }
+
+
 def _read_params_json_object(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
@@ -1874,9 +2240,11 @@ def _merge_parameters_hyperopt_json_into_params_hyperopt_file(
         if key in overlay:
             to_write[key] = overlay[key]
     try:
-        ParamsHyperopt.model_validate(to_write)
+        validated = ParamsHyperopt.model_validate(to_write)
     except ValidationError as e:
         raise ValueError(f"merged params-hyperopt.json does not match ParamsHyperopt: {e}") from e
+    if validated.walk_forward is not None:
+        to_write["walk_forward"] = validated.walk_forward.model_dump(mode="json")
     path.write_text(
         json.dumps(to_write, indent=2, sort_keys=True),
         encoding="utf-8",
@@ -1950,9 +2318,19 @@ def _is_simulator_command(command: str) -> bool:
     parts = shlex.split(command or "")
     if not parts:
         return False
-    if parts[-1] != "strategy.py":
+    if parts[-1] != _strategy_entry_name():
         return False
-    return len(parts) == 1 or parts[0] in ("python", "python3") or parts[0] == sys.executable
+    if len(parts) == 1:
+        return True
+    if configured_strategy_engine() is StrategyEngine.RUST:
+        return parts[0] == "rust"
+    return parts[0] in ("python", "python3") or parts[0] == sys.executable
+
+
+def _strategy_run_command() -> str:
+    if configured_strategy_engine() is StrategyEngine.RUST:
+        return "rust strategy.rs"
+    return "python strategy.py"
 
 
 def _is_hyperopt_command(command: str) -> bool:
@@ -2015,7 +2393,7 @@ def run_backtest(
                     sys.executable,
                     str(SIMULATE_SCRIPT_PATH),
                     "--entry",
-                    str(root / "strategy.py"),
+                    str(root / _strategy_entry_name()),
                 ],
                 cwd=str(root),
                 timeout=int(os.getenv("STRATEGY_BACKTEST_TIMEOUT_S", "1800")),
@@ -2032,7 +2410,7 @@ def run_backtest(
                 thread_id,
                 (
                     "The backtest froze and was killed due to no output for over 120 seconds. "
-                    "Fix strategy.py so it cannot hang: remove infinite loops, ensure per-bar processing is fast, "
+                    "Fix the configured strategy source so it cannot hang: remove infinite loops, ensure per-bar processing is fast, "
                     "avoid blocking network calls, and always read stdin line-by-line and emit outputs regularly. "
                     "Then keep the strategy logic intact as much as possible."
                 ),
@@ -2050,7 +2428,7 @@ def run_backtest(
                         sys.executable,
                         str(SIMULATE_SCRIPT_PATH),
                         "--entry",
-                        str(root / "strategy.py"),
+                        str(root / _strategy_entry_name()),
                     ],
                     cwd=str(root),
                     timeout=int(os.getenv("STRATEGY_BACKTEST_TIMEOUT_S", "1800")),
@@ -2079,17 +2457,16 @@ def run_backtest(
         if on_progress:
             on_progress("Optimizing strategy parameters…")
 
-        def _on_hyperopt_stderr_line(line: str) -> None:
-            if not on_progress:
-                return
-            msg = _hyperopt_ui_line_to_status_text(line)
-            if msg:
-                on_progress(msg)
+        hyperopt_progress_handler = (
+            _make_throttled_hyperopt_progress_handler(on_progress)
+            if on_progress
+            else None
+        )
 
         bt = _run_workspace_command(
             command,
             root,
-            on_stderr_line=_on_hyperopt_stderr_line if on_progress else None,
+            on_stderr_line=hyperopt_progress_handler,
             cancel_control=cancel_control,
         )
         extras = {}
@@ -2138,7 +2515,7 @@ def _tool_handlers_for_thread(
     def _run_backtest_tool(args: dict[str, Any]) -> dict[str, Any]:
         payload = run_backtest(
             thread_id,
-            "python strategy.py",
+            _strategy_run_command(),
             on_progress=on_progress,
             parameters_json=args.get("parameters_json"),
             parameters_hyperopt_json=None,
@@ -2533,6 +2910,16 @@ def build_agent_reply(
 
     if cancel_control is not None:
         cancel_control.raise_if_cancelled()
+    language_check = ensure_strategy_source_language(
+        thread_id,
+        on_progress=on_progress,
+        cancel_control=cancel_control,
+    )
+    migrated_codex_thread_id = _clean_codex_thread_id(
+        str(language_check.get("codex_thread_id") or "")
+    )
+    if migrated_codex_thread_id:
+        codex_thread_id = migrated_codex_thread_id
     if not os.getenv("OPENROUTER_API_KEY", "").strip():
         return {
             "message": (

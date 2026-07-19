@@ -22,7 +22,7 @@ spec.loader.exec_module(hyperopt)
 from utils import ParamsHyperopt  # noqa: E402
 
 
-def test_walk_forward_folds_are_inclusive_calendar_windows():
+def test_walk_forward_legacy_equal_step_days_is_removed():
     cfg = ParamsHyperopt.model_validate(
         {
             "search_space": {"period": {"type": "int", "low": 2, "high": 5}},
@@ -31,6 +31,43 @@ def test_walk_forward_folds_are_inclusive_calendar_windows():
                 "train_window_days": 30,
                 "test_window_days": 10,
                 "step_days": 10,
+                "oos_total_days": 20,
+            },
+        }
+    )
+
+    dumped = cfg.walk_forward.model_dump(mode="json")
+    assert dumped == {
+        "train_window_days": 30,
+        "test_window_days": 10,
+        "oos_total_days": 20,
+    }
+
+
+def test_walk_forward_legacy_unequal_step_days_is_rejected():
+    with pytest.raises(ValueError, match="legacy step_days must equal test_window_days"):
+        ParamsHyperopt.model_validate(
+            {
+                "search_space": {"period": {"type": "int", "low": 2, "high": 5}},
+                "mode": "walk_forward",
+                "walk_forward": {
+                    "train_window_days": 30,
+                    "test_window_days": 10,
+                    "step_days": 5,
+                    "oos_total_days": 20,
+                },
+            }
+        )
+
+
+def test_walk_forward_folds_are_inclusive_calendar_windows():
+    cfg = ParamsHyperopt.model_validate(
+        {
+            "search_space": {"period": {"type": "int", "low": 2, "high": 5}},
+            "mode": "walk_forward",
+            "walk_forward": {
+                "train_window_days": 30,
+                "test_window_days": 10,
                 "oos_total_days": 20,
             },
         }
@@ -161,7 +198,6 @@ def test_walk_forward_uses_fresh_timeout_clock_per_fold(monkeypatch):
             "walk_forward": {
                 "train_window_days": 30,
                 "test_window_days": 10,
-                "step_days": 10,
                 "oos_total_days": 20,
             },
         }

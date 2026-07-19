@@ -1,6 +1,9 @@
 from datetime import date
+import json
+from types import SimpleNamespace
 
 import pandas as pd
+import scripts.simulate_strategy_v2 as simulator_script
 
 from scripts.simulate_strategy_v2 import (
     _build_position_value_chart,
@@ -98,3 +101,122 @@ def test_build_position_value_chart_uses_one_line_per_ticker():
         is None
     )
     assert _build_position_value_chart({}) is None
+
+
+def test_rust_entry_dispatches_release_simulator_binary(monkeypatch, tmp_path):
+    entry = tmp_path / "strategy.rs"
+    entry.write_text("// generated strategy", encoding="utf-8")
+    (tmp_path / "params.json").write_text(
+        json.dumps(
+            {
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-02",
+                "initial_deposit": 10_000,
+            }
+        ),
+        encoding="utf-8",
+    )
+    executable = tmp_path / "target" / "release" / "strategy_simulator"
+    calls = []
+    monkeypatch.setattr(
+        simulator_script,
+        "build_rust_binary",
+        lambda workspace, source: (
+            calls.append((workspace, source)) or executable
+        ),
+    )
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(simulator_script.subprocess, "run", fake_run)
+
+    assert simulator_script.main(["--entry", str(entry)]) == 0
+    assert calls[0] == (tmp_path, "simulator.rs")
+    command, options = calls[1]
+    assert command == [str(executable)]
+    assert options["cwd"] == str(tmp_path)
+    assert options["env"]["STRATEGY_PYTHON_EXECUTABLE"]
+    assert options["env"]["VIBETRADER_RUST_DATA_ADAPTER"].endswith(
+        "prepare_rust_simulation.py"
+    )
+
+
+def test_rust_entry_can_run_simulator_under_perf(monkeypatch, tmp_path):
+    entry = tmp_path / "strategy.rs"
+    entry.write_text("// generated strategy", encoding="utf-8")
+    (tmp_path / "params.json").write_text(
+        json.dumps(
+            {
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-02",
+                "initial_deposit": 10_000,
+            }
+        ),
+        encoding="utf-8",
+    )
+    executable = tmp_path / "target" / "release" / "strategy_simulator"
+    monkeypatch.setattr(
+        simulator_script,
+        "build_rust_binary",
+        lambda workspace, source: executable,
+    )
+    monkeypatch.setattr(
+        simulator_script.shutil,
+        "which",
+        lambda command: "/usr/bin/perf" if command == "perf" else None,
+    )
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(simulator_script.subprocess, "run", fake_run)
+
+    assert simulator_script.main(["--entry", str(entry), "--perf"]) == 0
+    command, options = calls[0]
+    assert command == [
+        "/usr/bin/perf",
+        "record",
+        "--call-graph",
+        "dwarf",
+        "--output",
+        str(tmp_path / "perf.data"),
+        "--",
+        str(executable),
+    ]
+    assert options["cwd"] == str(tmp_path)
+
+
+def test_rust_entry_dispatches_optimizer_binary(monkeypatch, tmp_path):
+    entry = tmp_path / "strategy.rs"
+    entry.write_text("// generated strategy", encoding="utf-8")
+    (tmp_path / "params.json").write_text(
+        json.dumps(
+            {
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-02",
+                "initial_deposit": 10_000,
+            }
+        ),
+        encoding="utf-8",
+    )
+    executable = tmp_path / "target" / "release" / "strategy_optimizer"
+    calls = []
+    monkeypatch.setattr(
+        simulator_script,
+        "build_rust_binary",
+        lambda workspace, source: calls.append((workspace, source)) or executable,
+    )
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(simulator_script.subprocess, "run", fake_run)
+
+    assert simulator_script.main(["--entry", str(entry), "--optimize"]) == 0
+    assert calls[0] == (tmp_path, "optimizer.rs")
+    assert calls[1][0] == [str(executable)]

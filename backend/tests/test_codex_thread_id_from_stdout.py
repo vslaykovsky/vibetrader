@@ -1,10 +1,17 @@
 from services.agent import (
     CODEX_MODEL,
     CODEX_REASONING_EFFORT,
+    DEFAULT_CODEX_MODEL,
+    DEFAULT_CODEX_REASONING_EFFORT,
     _codex_exec_command,
     _codex_resume_rollout_missing_error,
     _codex_thread_id_from_stdout,
 )
+
+
+def test_codex_default_model_and_reasoning_effort():
+    assert DEFAULT_CODEX_MODEL == "gpt-5.6-sol"
+    assert DEFAULT_CODEX_REASONING_EFFORT == "medium"
 
 
 def test_codex_thread_id_from_stdout():
@@ -54,4 +61,3 @@ def test_codex_exec_command_places_exec_options_before_resume():
 def test_codex_resume_rollout_missing_error():
     stderr = "Error: thread/resume: thread/resume failed: no rollout found for thread id 019df987-06a1-7883-9b6c-2f13aebea96a\n"
     assert _codex_resume_rollout_missing_error("", stderr)
-

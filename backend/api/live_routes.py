@@ -12,6 +12,7 @@ from flask import Blueprint, Response, g, jsonify, request
 
 from application.schemas.live_stream import build_live_stream_snapshot, live_stream_patch_from_event
 from application.services.alpaca_live_db import delete_runner_subscriptions
+from application.services.strategy_engine import configured_strategy_engine
 from auth import require_auth
 from db.models import LiveRun, LiveRunEvent, Strategy
 from db.session import SessionLocal
@@ -199,14 +200,22 @@ def _deployment_manifest(
         "imagePullPolicy": "Always",
         "args": args,
         "envFrom": env_from or None,
+        "env": [
+            {
+                "name": "STRATEGY_ENGINE",
+                "value": configured_strategy_engine().value,
+            }
+        ],
     }
     ak = (alpaca_api_key or "").strip()
     sk = (alpaca_secret_key or "").strip()
     if ak and sk:
-        container["env"] = [
-            {"name": "ALPACA_API_KEY", "value": ak},
-            {"name": "ALPACA_SECRET_KEY", "value": sk},
-        ]
+        container["env"].extend(
+            [
+                {"name": "ALPACA_API_KEY", "value": ak},
+                {"name": "ALPACA_SECRET_KEY", "value": sk},
+            ]
+        )
     pod_spec: dict[str, Any] = {
         "containers": [container],
         "restartPolicy": "Always",
@@ -670,4 +679,3 @@ def live_stream() -> tuple | Response:
             "Connection": "keep-alive",
         },
     )
-

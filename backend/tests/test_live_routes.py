@@ -16,7 +16,7 @@ _flask = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_flask)
 create_app = _flask.create_app
 
-from api.live_routes import _utc_isoformat
+from api.live_routes import _deployment_manifest, _utc_isoformat
 
 
 def _auth_headers() -> dict[str, str]:
@@ -37,6 +37,25 @@ def _auth_headers() -> dict[str, str]:
 def test_utc_isoformat_marks_naive_datetimes_as_utc():
     assert _utc_isoformat(datetime(2026, 5, 3, 19, 10, 0)) == "2026-05-03T19:10:00Z"
     assert _utc_isoformat(datetime(2026, 5, 3, 19, 10, 0, tzinfo=timezone.utc)) == "2026-05-03T19:10:00Z"
+
+
+def test_kubernetes_live_runner_inherits_rust_engine(monkeypatch):
+    monkeypatch.setenv("STRATEGY_ENGINE", "rust")
+    manifest = _deployment_manifest(
+        run_id="00000000-0000-4000-8000-000000000001",
+        thread_id="00000000-0000-4000-8000-000000000002",
+        strategy_id="00000000-0000-4000-8000-000000000003",
+        paper=True,
+        enable_trading=False,
+        user_id="00000000-0000-4000-8000-000000000004",
+        user_email=None,
+    )
+
+    container = manifest["spec"]["template"]["spec"]["containers"][0]
+    assert container["args"][:2] == ["python", "scripts/run_alpaca_strategy.py"]
+    assert {item["name"]: item["value"] for item in container["env"]}[
+        "STRATEGY_ENGINE"
+    ] == "rust"
 
 
 def test_live_stream_requires_auth():
@@ -135,4 +154,3 @@ def test_live_delete_removes_stopped_run():
             os.environ["SUPABASE_JWT_SECRET"] = prev_secret
         else:
             os.environ.pop("SUPABASE_JWT_SECRET", None)
-

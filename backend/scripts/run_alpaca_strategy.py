@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -64,6 +65,11 @@ from application.services.simulation_driver import (
 )
 from application.services.scale_utils import floor_ts_to_scale
 from application.services.strategy_runtime import StrategyRuntime
+from application.services.strategy_engine import (
+    StrategyEngine,
+    configured_strategy_engine,
+    strategy_entrypoint,
+)
 from db.models import LiveRun, LiveRunEvent, LiveRunOrder, Strategy
 from db.session import SessionLocal
 from db.strategy_queries import resolve_strategy_row_for_live
@@ -89,9 +95,11 @@ _USE_CASH_ONLY_FOR_BUY_NOTIONAL = True
 _DEFAULT_BACKFILL_BARS = 240
 
 
-def _materialize_workspace_from_db(strategy_row: Strategy, dest: Path) -> None:
+def _materialize_workspace_from_db(strategy_row: Strategy, dest: Path) -> str:
     dest.mkdir(parents=True, exist_ok=True)
-    (dest / "strategy.py").write_text(strategy_row.code or "", encoding="utf-8")
+    engine = configured_strategy_engine()
+    entry_name = strategy_entrypoint(engine)
+    (dest / entry_name).write_text(strategy_row.code or "", encoding="utf-8")
     canvas = strategy_row.canvas or {}
     output = canvas.get("output") if isinstance(canvas.get("output"), dict) else {}
     params_blob = output.get("params.json") if isinstance(output, dict) else None
@@ -114,6 +122,30 @@ def _materialize_workspace_from_db(strategy_row: Strategy, dest: Path) -> None:
         src = v2 / name
         if src.is_file():
             shutil.copy2(src, dest / name)
+    if engine is StrategyEngine.RUST:
+        for name in (
+            "utils.rs",
+            "worker.rs",
+            "simulator.rs",
+            "optimizer.rs",
+            "optimizer_runtime.rs",
+            "portfolio.rs",
+        ):
+            src = v2 / name
+            if src.is_file():
+                shutil.copy2(src, dest / name)
+        crate_suffix = hashlib.sha256(
+            str(strategy_row.id).encode("utf-8")
+        ).hexdigest()[:16]
+        crate_name = f"vibetrader_live_{crate_suffix}"
+        for name in ("Cargo.toml", "Cargo.lock"):
+            src = v2 / name
+            if src.is_file():
+                rendered = src.read_text(encoding="utf-8").replace(
+                    "{{CRATE_NAME}}", crate_name
+                )
+                (dest / name).write_text(rendered, encoding="utf-8")
+    return entry_name
 
 
 def _log_strategy_input(inp: StrategyInput) -> None:
@@ -1167,9 +1199,8 @@ def main(argv: list[str]) -> int:
             if strat_err or strat_row is None:
                 parser.error(strat_err or "strategy not found")
         temp_workspace = Path(tempfile.mkdtemp(prefix=f"live_run_{run_id}_"))
-        _materialize_workspace_from_db(strat_row, temp_workspace)
+        entry_script = _materialize_workspace_from_db(strat_row, temp_workspace)
         workspace = temp_workspace
-        entry_script = "strategy.py"
         entry_path = workspace / entry_script
         thread_id_eff = thread_raw
         stored_entry_path = ""
@@ -1748,4 +1779,3 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-

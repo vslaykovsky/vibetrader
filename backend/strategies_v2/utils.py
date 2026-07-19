@@ -511,8 +511,18 @@ class WalkForwardConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     train_window_days: int = Field(gt=0)
     test_window_days: int = Field(gt=0)
-    step_days: int = Field(gt=0)
     oos_total_days: int = Field(gt=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_step_days(cls, value):
+        if not isinstance(value, dict) or "step_days" not in value:
+            return value
+        migrated = dict(value)
+        step_days = migrated.pop("step_days")
+        if step_days != migrated.get("test_window_days"):
+            raise ValueError("legacy step_days must equal test_window_days")
+        return migrated
 
 
 class ParamsHyperopt(BaseModel):

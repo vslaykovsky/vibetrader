@@ -37,6 +37,7 @@ from application.services.simulation_driver import (
 from application.services.simulation_registry import SimulationRegistry
 from application.services.simulation_session import SimulationSession
 from application.services.strategy_runtime import StrategyRuntime, StrategyRuntimeError
+from application.services.strategy_engine import strategy_entrypoint
 from strategies_v2.utils import (
     InputOhlcDataPoint,
     InputTrainedModelParams,
@@ -365,12 +366,12 @@ class StrategySimulateCommandHandler:
         bars_query: HistoricalBarsQuery,
         *,
         strategy_v2_workspace_parent: Path | None = None,
-        strategy_entry_script: str = "strategy.py",
+        strategy_entry_script: str | None = None,
     ) -> None:
         self._registry = registry
         self._bars = bars_query
         self._strategy_v2_workspace_parent = strategy_v2_workspace_parent
-        self._strategy_entry_script = strategy_entry_script
+        self._strategy_entry_script = strategy_entry_script or strategy_entrypoint()
 
     def _resolve_strategy_workspace(self, cmd: InitSimulationCommand) -> Path:
         root = self._strategy_v2_workspace_parent or (
