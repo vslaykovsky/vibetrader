@@ -31,6 +31,7 @@ export function EulaGate({ children }) {
   } = useAuth();
   const [agreement, setAgreement] = useState(null);
   const [accepted, setAccepted] = useState(false);
+  const [resolvedUserId, setResolvedUserId] = useState('');
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -41,9 +42,11 @@ export function EulaGate({ children }) {
     if (!actorUser?.id) {
       setAgreement(null);
       setAccepted(false);
+      setResolvedUserId('');
       setError('');
       return;
     }
+    setResolvedUserId('');
     setLoading(true);
     setError('');
     try {
@@ -60,11 +63,13 @@ export function EulaGate({ children }) {
       if (!nextAgreement) throw new Error('The agreement returned by the server is invalid.');
       setAgreement(nextAgreement);
       setAccepted(payload?.acceptance?.accepted === true);
+      setResolvedUserId(actorUser.id);
       setAgeConfirmed(false);
       setRiskAcknowledged(false);
     } catch (loadError) {
       if (loadError?.name !== 'AbortError') {
         setError(loadError instanceof Error ? loadError.message : String(loadError));
+        setResolvedUserId(actorUser.id);
       }
     } finally {
       if (!signal?.aborted) setLoading(false);
@@ -75,6 +80,7 @@ export function EulaGate({ children }) {
     const controller = new AbortController();
     setAccepted(false);
     setAgreement(null);
+    setResolvedUserId('');
     void loadEula(controller.signal);
     return () => controller.abort();
   }, [loadEula]);
@@ -121,7 +127,9 @@ export function EulaGate({ children }) {
   }, [ageConfirmed, agreement, canAccept, getAccessToken, loadEula, refreshAdminUsers, riskAcknowledged]);
 
   if (authLoading) return null;
-  if (!actorUser || accepted) return children;
+  if (!actorUser) return children;
+  if (resolvedUserId !== actorUser.id) return null;
+  if (accepted) return children;
 
   return (
     <main className="eula-gate">
