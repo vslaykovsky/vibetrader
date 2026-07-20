@@ -13,6 +13,8 @@ From the repo root:
 ./scripts/gke_alpaca_listener.sh
 ```
 
+The backend ConfigMap must include `REDIS_URL` for user message quotas and strategy event streaming. Apply the Supabase migrations through `20260719203000_add_profile_eula_acceptance.sql` before deploying this backend version; protected APIs fail closed until the EULA fields are available.
+
 The backend defaults `LIVE_RUNNER_IMAGE` to `us-central1-docker.pkg.dev/traderchat/traderchat/vibetrader-live-runner:latest`; set it in `vibetrader-config` only to override (see `deploy/gke/live-runner-deployment.example.yaml`).
 
 ### Rust strategy engine

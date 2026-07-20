@@ -74,6 +74,14 @@ cd frontend
 npm run dev
 ```
 
+### Message quotas
+
+User chat messages are limited with five UTC hourly Redis buckets. Set `REDIS_URL` for the backend and apply the Supabase migrations before starting it. The per-user total is stored in `public.profiles.message_limit_5h`; new and existing profiles default to 5 messages per five-hour window. The API fails closed with HTTP 503 when Redis or the profile limit cannot be read.
+
+### EULA acceptance
+
+Authenticated users must accept the current EULA before protected UI providers or API routes become available. Acceptance evidence is stored in `public.profiles` by the backend service role, including the version, timestamp, IP address, and user agent. Apply `supabase/migrations/20260719203000_add_profile_eula_acceptance.sql` before deploying the matching backend. Increment `EULA_VERSION` in `backend/services/eula.py` whenever a revised agreement must be accepted again.
+
 ## Live runs: runner + orchestrator (local vs GKE)
 
 “Live runs” are controlled via the Flask API (`/live/start`, `/live/stop`, `/live/status`) and executed by a **runner** process (`backend/scripts/run_alpaca_strategy.py`) that reads Alpaca market events from the DB and writes run events back to the DB for streaming to the UI.

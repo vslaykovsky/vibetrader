@@ -14,6 +14,7 @@ ADMIN_EMAILS = ["vslaykovsky@gmail.com", "leegheid2void@gmail.com"]
 _ADMIN_EMAIL_SET = {e.strip().lower() for e in ADMIN_EMAILS}
 IMPERSONATION_HEADER = "X-Act-As-User"
 IMPERSONATION_QUERY_PARAM = "act_as_user_id"
+_EULA_EXEMPT_PATHS = frozenset({"/eula", "/eula/accept"})
 
 
 def is_admin_email(email: str | None) -> bool:
@@ -153,6 +154,33 @@ def _decode_supabase_jwt(token: str) -> dict:
     raise jwt.InvalidTokenError(f"unsupported JWT algorithm {alg!r}")
 
 
+def _eula_access_error(user_id: str):
+    from services.eula import EULA_VERSION, is_current_eula_accepted
+
+    accepted = is_current_eula_accepted(user_id)
+    if accepted is None:
+        return (
+            jsonify(
+                {
+                    "error": "EULA status is temporarily unavailable",
+                    "code": "eula_status_unavailable",
+                }
+            ),
+            503,
+        )
+    if not accepted:
+        response = jsonify(
+            {
+                "error": "You must accept the current EULA before using TraderChat.",
+                "code": "eula_required",
+                "current_version": EULA_VERSION,
+            }
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response, 403
+    return None
+
+
 def require_auth(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
@@ -268,6 +296,11 @@ def require_auth(fn):
         g.user_email = actor_user_email
         g.is_admin = actor_is_admin
         g.impersonating = False
+
+        if request.path not in _EULA_EXEMPT_PATHS:
+            eula_error = _eula_access_error(str(actor_user_id))
+            if eula_error is not None:
+                return eula_error
 
         target_user_id, target_error = _requested_impersonation_user_id()
         if target_error:

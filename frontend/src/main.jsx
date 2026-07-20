@@ -5,15 +5,21 @@ import App from './App';
 import { AuthProvider } from './AuthContext';
 import { ThemeProvider } from './ThemeContext';
 import { TimeZoneProvider } from './TimeZoneContext.jsx';
+import { MessageQuotaProvider } from './MessageQuotaContext.jsx';
+import { EulaGate } from './EulaGate.jsx';
 import './styles.css';
 
 const app = (
   <BrowserRouter>
     <ThemeProvider>
       <AuthProvider>
-        <TimeZoneProvider>
-          <App />
-        </TimeZoneProvider>
+        <EulaGate>
+          <TimeZoneProvider>
+            <MessageQuotaProvider>
+              <App />
+            </MessageQuotaProvider>
+          </TimeZoneProvider>
+        </EulaGate>
       </AuthProvider>
     </ThemeProvider>
   </BrowserRouter>

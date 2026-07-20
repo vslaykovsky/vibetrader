@@ -7,6 +7,13 @@ from typing import Any
 from flask import Blueprint, g, jsonify, request
 
 from auth import require_auth
+from services.eula import (
+    EULA_DOCUMENT,
+    EULA_VERSION,
+    fetch_eula_acceptance,
+    normalize_client_ip,
+    record_eula_acceptance,
+)
 from services.supabase_trading_settings import (
     delete_alpaca_account,
     fetch_trading_settings_payload,
@@ -23,6 +30,57 @@ settings_blueprint = Blueprint("settings", __name__)
 
 def _bad(message: str, code: int = 400) -> tuple:
     return jsonify({"error": message}), code
+
+
+def _no_store(response):
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@settings_blueprint.get("/eula")
+@require_auth
+def eula_get() -> tuple:
+    if not service_role_configured():
+        return _bad("EULA status is not configured on the server", 503)
+    acceptance = fetch_eula_acceptance(str(g.actor_user_id))
+    if acceptance is None:
+        return _bad("Failed to load EULA status", 502)
+    response = jsonify(
+        {
+            "agreement": EULA_DOCUMENT,
+            "acceptance": acceptance.to_dict(),
+        }
+    )
+    return _no_store(response), 200
+
+
+@settings_blueprint.post("/eula/accept")
+@require_auth
+def eula_accept_post() -> tuple:
+    if not service_role_configured():
+        return _bad("EULA acceptance is not configured on the server", 503)
+    body = request.get_json(silent=True) or {}
+    if body.get("accepted") is not True:
+        return _bad("accepted must be true")
+    if body.get("age_confirmed") is not True:
+        return _bad("age_confirmed must be true")
+    if body.get("risk_acknowledged") is not True:
+        return _bad("risk_acknowledged must be true")
+    if str(body.get("version") or "").strip() != EULA_VERSION:
+        return _bad("EULA version is no longer current", 409)
+
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    client_ip = normalize_client_ip(forwarded_for) or normalize_client_ip(request.remote_addr)
+    acceptance = record_eula_acceptance(
+        str(g.actor_user_id),
+        email=getattr(g, "actor_user_email", None),
+        client_ip=client_ip,
+        user_agent=request.headers.get("User-Agent"),
+    )
+    if acceptance is None:
+        return _bad("Failed to record EULA acceptance", 502)
+    response = jsonify({"ok": True, "acceptance": acceptance.to_dict()})
+    return _no_store(response), 200
 
 
 @settings_blueprint.get("/settings/trading")

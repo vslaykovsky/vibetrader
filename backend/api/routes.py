@@ -34,7 +34,14 @@ from services.agent import (
 from services.strategy_stream_events import StrategyStreamPublisher, StrategyStreamSubscriber
 from services.conversation_language import detect_conversation_language_iso
 from services.background_jobs import start_background_job
-from services.supabase_trading_settings import fetch_user_timezone
+from services.message_quota import (
+    MessageQuotaDecision,
+    MessageQuotaUnavailable,
+    consume_message_quota,
+    get_message_quota,
+    refund_message_quota,
+)
+from services.supabase_trading_settings import fetch_user_message_limit_5h, fetch_user_timezone
 from services.agent_cancellation import (
     AgentRunCancelled,
     cancel_agent_run,
@@ -186,6 +193,33 @@ def _merged_thread_messages(session, thread_id: str) -> list:
 
 def _current_user_id() -> str:
     return str(getattr(g, "user_id", "") or "").strip()
+
+
+def _message_quota_unavailable_response() -> tuple:
+    return (
+        jsonify(
+            {
+                "error": "Message quota is temporarily unavailable. Try again shortly.",
+                "code": "message_quota_unavailable",
+            }
+        ),
+        503,
+    )
+
+
+def _message_quota_exceeded_response(decision: MessageQuotaDecision) -> Response:
+    quota = decision.quota.to_dict()
+    response = jsonify(
+        {
+            "error": "Message limit reached.",
+            "code": "message_limit_exceeded",
+            "quota": quota,
+        }
+    )
+    response.status_code = 429
+    response.headers["Retry-After"] = str(max(1, int(decision.quota.retry_after_seconds)))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def _owned_or_legacy_filter(uid: str):
@@ -1141,6 +1175,22 @@ def get_strategy_canvas() -> tuple:
         session.close()
 
 
+@strategy_blueprint.get("/message-quota")
+@require_auth
+def get_current_message_quota() -> tuple:
+    uid = _current_user_id()
+    limit = fetch_user_message_limit_5h(uid)
+    if limit is None:
+        return _message_quota_unavailable_response()
+    try:
+        quota = get_message_quota(uid, limit)
+    except MessageQuotaUnavailable:
+        return _message_quota_unavailable_response()
+    response = jsonify({"quota": quota.to_dict()})
+    response.headers["Cache-Control"] = "no-store"
+    return response, 200
+
+
 @strategy_blueprint.post("/strategy")
 @require_auth
 def post_strategy() -> tuple:
@@ -1157,6 +1207,8 @@ def post_strategy() -> tuple:
         return _validation_error("message is required")
 
     session = SessionLocal()
+    quota_decision: MessageQuotaDecision | None = None
+    message_persisted = False
     try:
         running = (
             session.query(Strategy)
@@ -1176,6 +1228,16 @@ def post_strategy() -> tuple:
             )
             out["error"] = "A strategy update is already in progress."
             return jsonify(out), 409
+
+        limit = fetch_user_message_limit_5h(uid)
+        if limit is None:
+            return _message_quota_unavailable_response()
+        try:
+            quota_decision = consume_message_quota(uid, limit)
+        except MessageQuotaUnavailable:
+            return _message_quota_unavailable_response()
+        if not quota_decision.allowed:
+            return _message_quota_exceeded_response(quota_decision)
 
         latest = latest_thread_strategy(session, thread_id)
         prev_messages = _merged_thread_messages(session, thread_id) if latest else []
@@ -1215,6 +1277,7 @@ def post_strategy() -> tuple:
         )
         session.add(new_strategy)
         session.commit()
+        message_persisted = True
         session.refresh(new_strategy)
 
         run_id = new_strategy.id
@@ -1230,7 +1293,14 @@ def post_strategy() -> tuple:
             name=f"strategy-agent-{run_id}",
         )
 
-        return jsonify(serialize_strategy(new_strategy)), 200
+        result = serialize_strategy(new_strategy)
+        result["message_quota"] = quota_decision.quota.to_dict()
+        return jsonify(result), 200
+    except Exception:
+        session.rollback()
+        if quota_decision is not None and quota_decision.allowed and not message_persisted:
+            refund_message_quota(quota_decision)
+        raise
     finally:
         session.close()
 

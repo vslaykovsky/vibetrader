@@ -11,6 +11,7 @@ import { useTimeZone } from '../TimeZoneContext.jsx';
 import { formatUnixDateTime, parseIsoInstant } from '../lib/dateTime.js';
 import { ProfileMenu } from '../ProfileMenu';
 import { ConfirmDialog } from '../components/ConfirmDialog.jsx';
+import { MessageQuotaButton } from '../MessageQuotaContext.jsx';
 import { renderCharts } from '../strategyChartRenderer.js';
 import { attachSyncedCrosshair, attachSyncedTimeScales } from '../lib/lwcSync.js';
 import {
@@ -680,6 +681,7 @@ export function LiveRunStreamPage() {
           <span className="dashboard-topbar-crumb">Live stream</span>
         </div>
         <div className="dashboard-topbar-right">
+          <MessageQuotaButton />
           <Link className="dashboard-topbar-crumb dashboard-topbar-link" to="/dashboard#live-deployments">
             Dashboard
           </Link>

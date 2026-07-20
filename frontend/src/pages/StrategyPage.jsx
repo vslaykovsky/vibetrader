@@ -15,6 +15,7 @@ import { useTimeZone } from '../TimeZoneContext.jsx';
 import { t, currentLang, tStatusText } from '../lib/i18n.js';
 import { dateKeyFromIso as zonedDateKeyFromIso, parseIsoInstant, todayDateKey } from '../lib/dateTime.js';
 import { ProfileMenu } from '../ProfileMenu';
+import { MessageQuotaButton, useMessageQuota } from '../MessageQuotaContext.jsx';
 import { ConfirmDialog } from '../components/ConfirmDialog.jsx';
 import { SimulationPanel } from '../components/SimulationPanel.jsx';
 import {
@@ -984,6 +985,11 @@ export function StrategyPage() {
   } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { timeZone, hourFormat } = useTimeZone();
+  const {
+    applyMessageQuota,
+    ensureMessageQuotaAvailable,
+    openMessageQuotaExhausted,
+  } = useMessageQuota();
   const signedInUserId = user?.id ?? null;
   const [messages, setMessages] = useState([]);
   const [canvas, setCanvas] = useState({});
@@ -1682,6 +1688,9 @@ export function StrategyPage() {
     if (!message || submittingRef.current || serverJobStatusRef.current === 'running') {
       return { accepted: false };
     }
+    if (!ensureMessageQuotaAvailable()) {
+      return { accepted: false, restoreDraft: true };
+    }
 
     setSubmitting(true);
     setStreamingAssistantRunId('');
@@ -1733,8 +1742,15 @@ export function StrategyPage() {
           });
         }
         setSubmitting(false);
+        if (payload.code === 'message_limit_exceeded') {
+          applyMessageQuota(payload.quota);
+          openMessageQuotaExhausted();
+          return { accepted: true, ok: false, restoreDraft: true };
+        }
         throw new Error(payload.error || 'Failed to send message');
       }
+
+      applyMessageQuota(payload.message_quota);
 
       if (stopRequestedRef.current) {
         const rid = typeof payload.id === 'string' ? payload.id.trim() : '';
@@ -1793,11 +1809,14 @@ export function StrategyPage() {
     }
   }, [
     authFetch,
+    applyMessageQuota,
+    ensureMessageQuotaAvailable,
     handleStopStrategy,
     location.pathname,
     location.search,
     mergeStrategyNameFromPayload,
     navigate,
+    openMessageQuotaExhausted,
     rememberRunStatus,
     setCanvasIfChanged,
     setMessagesFromStrategyPayload,
@@ -2761,6 +2780,7 @@ export function StrategyPage() {
           <span className="dashboard-topbar-crumb">{t('nav.strategy_crumb')}</span>
         </div>
         <div className="dashboard-topbar-right">
+          <MessageQuotaButton />
           <Link className="dashboard-topbar-crumb dashboard-topbar-link" to="/dashboard">
             {t('nav.dashboard')}
           </Link>

@@ -12,6 +12,7 @@ import jwt
 
 from db.models import Strategy
 from db.session import SessionLocal
+from services.message_quota import MessageQuota, MessageQuotaDecision
 
 _ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("vibetrader_impersonation_app", _ROOT / "app.py")
@@ -125,6 +126,15 @@ def test_admin_impersonation_applies_target_identity_to_reads_and_writes(monkeyp
         session.close()
 
     monkeypatch.setattr("api.routes.start_background_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr("api.routes.fetch_user_message_limit_5h", lambda _uid: 5)
+    monkeypatch.setattr(
+        "api.routes.consume_message_quota",
+        lambda _uid, _limit: MessageQuotaDecision(
+            True,
+            MessageQuota(limit=5, used=1, remaining=4, retry_at_epoch=None, retry_after_seconds=0),
+            "test-bucket",
+        ),
+    )
     app = create_app()
     workspace = _ROOT / "strategies_v2" / thread_id
     try:
@@ -156,6 +166,7 @@ def test_admin_impersonation_applies_target_identity_to_reads_and_writes(monkeyp
         assert write_response.status_code == 200
         payload = write_response.get_json()
         assert payload["thread_id"] == thread_id
+        assert payload["message_quota"]["remaining"] == 4
         assert "python_code" not in payload
         assert "codex_thread_id" not in payload
 

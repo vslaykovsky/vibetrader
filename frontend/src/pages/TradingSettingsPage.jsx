@@ -6,6 +6,7 @@ import { useTimeZone } from '../TimeZoneContext.jsx';
 import { browserTimeZone, normalizeHourFormat, supportedTimeZones } from '../lib/dateTime.js';
 import { currentLang } from '../lib/i18n.js';
 import { ProfileMenu } from '../ProfileMenu';
+import { MessageQuotaButton } from '../MessageQuotaContext.jsx';
 
 const LANGUAGE_OPTIONS = [
   { value: 'en', label: 'English' },
@@ -196,6 +197,7 @@ export function TradingSettingsPage() {
           <span className="dashboard-topbar-crumb">Trading settings</span>
         </div>
         <div className="dashboard-topbar-right">
+          <MessageQuotaButton />
           <Link className="dashboard-topbar-crumb dashboard-topbar-link" to="/dashboard">
             Dashboard
           </Link>

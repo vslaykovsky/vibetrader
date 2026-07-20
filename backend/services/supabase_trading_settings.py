@@ -12,6 +12,8 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_MESSAGE_LIMIT_5H = 5
+
 _ALPACA_ACCOUNT_ENDPOINTS: tuple[tuple[bool, str], ...] = (
     (False, "https://paper-api.alpaca.markets/v2/account"),
     (True, "https://api.alpaca.markets/v2/account"),
@@ -59,6 +61,16 @@ def normalize_hour_format(value: str | None) -> str:
 
 def normalize_adjust_for_dividends(value: Any) -> bool:
     return bool(value) if isinstance(value, bool) else False
+
+
+def normalize_message_limit_5h(value: Any) -> int:
+    if isinstance(value, bool):
+        return DEFAULT_MESSAGE_LIMIT_5H
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_MESSAGE_LIMIT_5H
+    return limit if limit >= 1 else DEFAULT_MESSAGE_LIMIT_5H
 
 
 def _headers() -> dict[str, str]:
@@ -229,7 +241,10 @@ def fetch_trading_settings_payload(user_id: str) -> dict[str, Any] | None:
         return None
     pr = _get(
         "profiles",
-        {"id": f"eq.{uid}", "select": "timezone,hour_format,adjust_for_dividends,interface_language,updated_at"},
+        {
+            "id": f"eq.{uid}",
+            "select": "timezone,hour_format,adjust_for_dividends,interface_language,message_limit_5h,updated_at",
+        },
     )
     if pr.status_code != 200:
         logger.warning("supabase profiles read status=%s", pr.status_code)
@@ -244,6 +259,7 @@ def fetch_trading_settings_payload(user_id: str) -> dict[str, Any] | None:
             "hour_format": normalize_hour_format(str(p0.get("hour_format") or "")) or "auto",
             "adjust_for_dividends": normalize_adjust_for_dividends(p0.get("adjust_for_dividends")),
             "interface_language": raw_lang if raw_lang in ("en", "ru") else "",
+            "message_limit_5h": normalize_message_limit_5h(p0.get("message_limit_5h")),
             "updated_at": p0.get("updated_at"),
         }
     ar = _get(
@@ -294,6 +310,29 @@ def fetch_user_timezone(user_id: str) -> str:
     if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
         return ""
     return normalize_timezone(str(rows[0].get("timezone") or ""))
+
+
+def fetch_user_message_limit_5h(user_id: str) -> int | None:
+    uid = (user_id or "").strip()
+    if not uid or not service_role_configured():
+        return None
+    r = _get(
+        "profiles",
+        {
+            "id": f"eq.{urllib.parse.quote(uid, safe='')}",
+            "select": "message_limit_5h",
+        },
+    )
+    if r.status_code != 200:
+        logger.warning("supabase message limit fetch status=%s", r.status_code)
+        return None
+    rows = r.json()
+    if not isinstance(rows, list) or not rows:
+        return DEFAULT_MESSAGE_LIMIT_5H
+    row = rows[0]
+    if not isinstance(row, dict):
+        return DEFAULT_MESSAGE_LIMIT_5H
+    return normalize_message_limit_5h(row.get("message_limit_5h"))
 
 
 def fetch_adjust_for_dividends(user_id: str) -> bool:

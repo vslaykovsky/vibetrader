@@ -8,6 +8,7 @@ import { useTimeZone } from '../TimeZoneContext.jsx';
 import { formatIsoDateTime, parseIsoInstant } from '../lib/dateTime.js';
 import { ProfileMenu } from '../ProfileMenu';
 import { ConfirmDialog } from '../components/ConfirmDialog.jsx';
+import { MessageQuotaButton } from '../MessageQuotaContext.jsx';
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
@@ -229,6 +230,7 @@ export function DashboardPage() {
           <span className="dashboard-topbar-crumb">Dashboard</span>
         </div>
         <div className="dashboard-topbar-right">
+          <MessageQuotaButton />
           <Link className="dashboard-topbar-crumb dashboard-topbar-link" to="/dashboard">
             Dashboard
           </Link>
