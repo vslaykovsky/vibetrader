@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from application.queries.historical_bars import (
     HistoricalBarsQuery,
-    _covers_all_whole_weeks,
+    _covers_expected_us_equity_sessions,
     infer_asset_class,
     scale_to_timeframe,
 )
@@ -133,30 +133,52 @@ def test_historical_bars_query_cache_reuses_fetch(monkeypatch):
     assert len(calls) == 1
 
 
-def test_covers_all_whole_weeks_requires_one_bar_per_full_week():
+def test_daily_session_coverage_requires_every_trading_day():
     class _Row:
         def __init__(self, ts):
             self.timestamp = ts
 
-    # Range spans exactly one full week (Mon..Sun).
-    start = date(2024, 1, 1)  # Monday
-    end = date(2024, 1, 7)  # Sunday
-
-    rows_missing = [
-        _Row(pd.Timestamp("2024-01-02T00:00:00Z").to_pydatetime()),
+    rows_through_july_2 = [
+        _Row(pd.Timestamp(f"2026-{day}T14:00:00Z").to_pydatetime())
+        for day in ("06-29", "06-30", "07-01", "07-02")
     ]
-    assert _covers_all_whole_weeks(rows_missing, start=start, end=end) is True
+    assert (
+        _covers_expected_us_equity_sessions(
+            rows_through_july_2,
+            start=date(2026, 6, 29),
+            end=date(2026, 7, 6),
+        )
+        is False
+    )
 
-    # Now require two full weeks; provide a bar only for the first week.
-    start2 = date(2024, 1, 1)  # Mon
-    end2 = date(2024, 1, 14)  # Sun (two full weeks)
-    rows_one_week = [
-        _Row(pd.Timestamp("2024-01-03T00:00:00Z").to_pydatetime()),
+    rows_through_july_6 = [
+        *rows_through_july_2,
+        _Row(pd.Timestamp("2026-07-06T14:00:00Z").to_pydatetime()),
     ]
-    assert _covers_all_whole_weeks(rows_one_week, start=start2, end=end2) is False
+    assert (
+        _covers_expected_us_equity_sessions(
+            rows_through_july_6,
+            start=date(2026, 6, 29),
+            end=date(2026, 7, 6),
+        )
+        is True
+    )
 
-    rows_two_weeks = [
-        _Row(pd.Timestamp("2024-01-03T00:00:00Z").to_pydatetime()),
-        _Row(pd.Timestamp("2024-01-10T00:00:00Z").to_pydatetime()),
+
+def test_daily_session_coverage_excludes_us_holiday_and_weekend():
+    class _Row:
+        def __init__(self, ts):
+            self.timestamp = ts
+
+    rows = [
+        _Row(pd.Timestamp("2026-07-02T19:45:00Z").to_pydatetime()),
+        _Row(pd.Timestamp("2026-07-06T13:30:00Z").to_pydatetime()),
     ]
-    assert _covers_all_whole_weeks(rows_two_weeks, start=start2, end=end2) is True
+    assert (
+        _covers_expected_us_equity_sessions(
+            rows,
+            start=date(2026, 7, 2),
+            end=date(2026, 7, 6),
+        )
+        is True
+    )

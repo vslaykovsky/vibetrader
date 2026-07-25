@@ -6,11 +6,12 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import date
-from datetime import datetime, timezone
-from datetime import timedelta
+from datetime import datetime
+from functools import lru_cache
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import exchange_calendars as xcals
 import pandas as pd
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from sqlalchemy.orm import Session
@@ -368,9 +369,18 @@ class HistoricalBarsQuery:
                                 df=df_hit, expires_at=time.monotonic() + self._cache_ttl
                             )
                         return df_hit
-                    if _covers_all_whole_weeks(cached_rows, start=padded_start, end=key.end):
+                    if (
+                        key.asset_class == "us_equity"
+                        and key.provider == "alpaca"
+                        and key.scale != "1w"
+                        and _covers_expected_us_equity_sessions(
+                            cached_rows,
+                            start=padded_start,
+                            end=key.end,
+                        )
+                    ):
                         logger.info(
-                            "fetch cache hit (db_weekly) ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s rows=%s",
+                            "fetch cache hit (db_daily_sessions) ticker=%s scale=%s start=%s end=%s padding_days=%s provider=%s rows=%s",
                             key.ticker,
                             key.scale,
                             padded_start,
@@ -527,40 +537,33 @@ class HistoricalBarsQuery:
         return merged, len(chunks)
 
 
-def _covers_all_whole_weeks(cached_rows: list[Candle], *, start: date, end: date) -> bool:
-    """Return True if we have at least one cached bar for every *whole* week fully contained
-    in the inclusive calendar range [start, end].
+@lru_cache(maxsize=1)
+def _us_equity_calendar():
+    return xcals.get_calendar("XNYS")
 
-    This is used to avoid refetching for weekend gaps (US equities don't trade on weekends).
-    """
-    if not cached_rows:
+
+def _covers_expected_us_equity_sessions(
+    cached_rows: list[Candle],
+    *,
+    start: date,
+    end: date,
+) -> bool:
+    """Return whether every expected NYSE session has at least one cached bar."""
+    if not cached_rows or start > end:
         return False
 
-    # Whole weeks are Monday..Sunday that are fully inside [start, end].
-    first_monday = start + timedelta(days=(7 - start.weekday()) % 7)
-    last_sunday = end - timedelta(days=(end.weekday() + 1) % 7)
-    if first_monday > last_sunday:
+    sessions = _us_equity_calendar().sessions_in_range(start.isoformat(), end.isoformat())
+    expected = {session.date() for session in sessions}
+    if not expected:
         return False
 
-    required: set[tuple[int, int]] = set()
-    cur = first_monday
-    while cur <= last_sunday:
-        iso = cur.isocalendar()
-        required.add((int(iso.year), int(iso.week)))
-        cur = cur + timedelta(days=7)
-
-    present: set[tuple[int, int]] = set()
-    for r in cached_rows:
-        ts = r.timestamp
-        if isinstance(ts, datetime):
-            dt = ts
+    present: set[date] = set()
+    for row in cached_rows:
+        timestamp = pd.Timestamp(row.timestamp)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize("UTC")
         else:
-            dt = pd.Timestamp(ts).to_pydatetime()
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        else:
-            dt = dt.astimezone(timezone.utc)
-        iso = dt.date().isocalendar()
-        present.add((int(iso.year), int(iso.week)))
+            timestamp = timestamp.tz_convert("UTC")
+        present.add(timestamp.tz_convert(_US_EASTERN_TZ).date())
 
-    return required.issubset(present)
+    return expected.issubset(present)
