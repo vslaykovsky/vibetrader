@@ -7,15 +7,14 @@ import time
 from dataclasses import dataclass
 from datetime import date
 from datetime import datetime
-from functools import lru_cache
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-import exchange_calendars as xcals
 import pandas as pd
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from sqlalchemy.orm import Session
 
+from application.services.market_calendar import xnys_session_dates
 from application.services.simulation_limits import CHUNK_BAR_BUDGET, plan_display_bars_fetch_chunks
 from db.models import Candle, CandleTimeframe, Ticker
 from db.session import SessionLocal, engine
@@ -537,11 +536,6 @@ class HistoricalBarsQuery:
         return merged, len(chunks)
 
 
-@lru_cache(maxsize=1)
-def _us_equity_calendar():
-    return xcals.get_calendar("XNYS")
-
-
 def _covers_expected_us_equity_sessions(
     cached_rows: list[Candle],
     *,
@@ -552,8 +546,7 @@ def _covers_expected_us_equity_sessions(
     if not cached_rows or start > end:
         return False
 
-    sessions = _us_equity_calendar().sessions_in_range(start.isoformat(), end.isoformat())
-    expected = {session.date() for session in sessions}
+    expected = xnys_session_dates(start, end)
     if not expected:
         return False
 

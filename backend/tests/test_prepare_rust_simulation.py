@@ -140,6 +140,9 @@ def test_prepare_study_fetches_maximum_warmup_once_and_reuses_slices(monkeypatch
     assert len(calls) == 1
     assert calls[0][1]["padding_days"] == 60
     assert study["max_padding_days"] == 60
+    assert study["market_calendar"] == "XNYS"
+    assert "2024-02-03" not in study["market_sessions"]
+    assert "2024-02-05" in study["market_sessions"]
     assert study["trial_windows"][0]["warmup_start"] > study["trial_windows"][1]["warmup_start"]
 
     cached = StudyBarsQuery(study)

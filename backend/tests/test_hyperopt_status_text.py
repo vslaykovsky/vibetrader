@@ -39,7 +39,8 @@ def test_hyperopt_progress_throttles_trials_but_keeps_completion():
             {
                 "hyperopt_ui": True,
                 "event": "walk_forward_start",
-                "n_folds": 50,
+                "n_folds": 47,
+                "skipped_folds": 3,
                 "n_trials": 30,
                 "objective_metric": "total_return",
             }
@@ -52,7 +53,7 @@ def test_hyperopt_progress_throttles_trials_but_keeps_completion():
                     "hyperopt_ui": True,
                     "event": "trial",
                     "fold": 1,
-                    "n_folds": 50,
+                    "n_folds": 47,
                     "trial": trial,
                     "n_trials": 30,
                     "objective_metric": "total_return",
@@ -67,7 +68,8 @@ def test_hyperopt_progress_throttles_trials_but_keeps_completion():
             {
                 "hyperopt_ui": True,
                 "event": "walk_forward_done",
-                "n_folds": 50,
+                "n_folds": 47,
+                "skipped_folds": 3,
                 "objective_metric": "total_return",
                 "metrics": {"total_return": 2.0},
             }
@@ -75,6 +77,6 @@ def test_hyperopt_progress_throttles_trials_but_keeps_completion():
     )
 
     assert messages == [
-        "Walk-forward · 50 folds · 30 trials/fold · total_return",
-        "Walk-forward · done · 50 folds · OOS total_return=2",
+        "Walk-forward · 47 active folds · 3 non-trading skipped · 30 trials/fold · total_return",
+        "Walk-forward · done · 47 folds · 3 non-trading skipped · OOS total_return=2",
     ]

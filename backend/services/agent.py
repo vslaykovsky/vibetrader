@@ -491,7 +491,12 @@ def _hyperopt_ui_line_to_status_text(raw_line: str) -> str | None:
     nt = d.get("n_trials")
     if ev == "walk_forward_start":
         nf = d.get("n_folds")
-        return f"Walk-forward · {nf} folds · {nt} trials/fold · {mk}"[:512]
+        skipped = d.get("skipped_folds")
+        parts = [f"Walk-forward · {nf} active folds"]
+        if isinstance(skipped, int) and skipped > 0:
+            parts.append(f"{skipped} non-trading skipped")
+        parts.extend([f"{nt} trials/fold", mk])
+        return " · ".join(parts)[:512]
     if ev == "walk_forward_fold":
         f = d.get("fold")
         nf = d.get("n_folds")
@@ -512,9 +517,12 @@ def _hyperopt_ui_line_to_status_text(raw_line: str) -> str | None:
             return " · ".join(parts)[:512]
     if ev == "walk_forward_done":
         nf = d.get("n_folds")
+        skipped = d.get("skipped_folds")
         metrics = d.get("metrics") if isinstance(d.get("metrics"), dict) else {}
         best = metrics.get(mk)
         parts = ["Walk-forward", "done", f"{nf} folds"]
+        if isinstance(skipped, int) and skipped > 0:
+            parts.append(f"{skipped} non-trading skipped")
         if best is not None:
             try:
                 parts.append(f"OOS {mk}={_hyperopt_status_float_str(float(best))}")

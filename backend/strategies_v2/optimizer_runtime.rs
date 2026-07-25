@@ -214,6 +214,7 @@ impl CivilDate {
 #[derive(Clone)]
 struct WalkForwardFold {
     number: usize,
+    planned_number: usize,
     train_start: CivilDate,
     train_end: CivilDate,
     test_start: CivilDate,
@@ -244,6 +245,10 @@ struct StudyDataset {
     primary_ticker: String,
     base_scale: String,
     simulation_scale: String,
+    #[serde(default)]
+    market_calendar: Option<String>,
+    #[serde(default)]
+    market_sessions: Vec<String>,
     initial_deposit: f64,
     max_leverage: f64,
     bars: Vec<StudyBar>,
@@ -467,6 +472,7 @@ fn walk_forward_folds(
         let train_start = train_end.add_days(-(config.train_window_days - 1));
         folds.push(WalkForwardFold {
             number: folds.len() + 1,
+            planned_number: folds.len() + 1,
             train_start,
             train_end,
             test_start,
@@ -478,6 +484,38 @@ fn walk_forward_folds(
         return Err(failed("walk-forward produced no folds"));
     }
     Ok(folds)
+}
+
+fn partition_walk_forward_folds(
+    folds: Vec<WalkForwardFold>,
+    study: &StudyDataset,
+) -> (Vec<WalkForwardFold>, Vec<Value>) {
+    if study.market_calendar.as_deref() != Some("XNYS") {
+        return (folds, Vec::new());
+    }
+
+    let sessions: BTreeSet<&str> = study.market_sessions.iter().map(String::as_str).collect();
+    let mut active = Vec::new();
+    let mut skipped = Vec::new();
+    for mut fold in folds {
+        let start = fold.test_start.iso();
+        let end = fold.test_end.iso();
+        if !sessions
+            .iter()
+            .any(|session| *session >= start.as_str() && *session <= end.as_str())
+        {
+            skipped.push(json!({
+                "planned_fold": fold.planned_number,
+                "test_start": start,
+                "test_end": end,
+                "reason": "no_xnys_sessions",
+            }));
+            continue;
+        }
+        fold.number = active.len() + 1;
+        active.push(fold);
+    }
+    (active, skipped)
 }
 
 fn adapter_command() -> Result<Command, OptimizerError> {
@@ -1459,19 +1497,13 @@ fn run_walk_forward(
         .walk_forward
         .as_ref()
         .ok_or_else(|| failed("walk_forward mode requires walk_forward settings"))?;
-    let folds = walk_forward_folds(base, walk_config)?;
+    let planned_folds = walk_forward_folds(base, walk_config)?;
     let overall_started = Instant::now();
-    emit_ui(json!({
-        "event": "walk_forward_start",
-        "n_folds": folds.len(),
-        "n_trials": config.n_trials,
-        "objective_metric": config.objective_metric,
-    }));
 
     let mut rng = StudyRng::new(config.seed);
-    let mut candidates_by_fold = Vec::with_capacity(folds.len());
-    let mut all_startups = Vec::with_capacity(folds.len() * config.n_trials);
-    for fold in &folds {
+    let mut candidates_by_fold = Vec::with_capacity(planned_folds.len());
+    let mut all_startups = Vec::with_capacity(planned_folds.len() * config.n_trials);
+    for fold in &planned_folds {
         let train_base = params_with_dates(base, fold.train_start, fold.train_end);
         let candidates = sample_candidates_with_rng(
             train_base
@@ -1490,10 +1522,31 @@ fn run_walk_forward(
     }
     let wide_params = params_with_dates(
         base,
-        folds.first().expect("folds is non-empty").train_start,
-        folds.last().expect("folds is non-empty").test_end,
+        planned_folds
+            .first()
+            .expect("planned_folds is non-empty")
+            .train_start,
+        planned_folds
+            .last()
+            .expect("planned_folds is non-empty")
+            .test_end,
     );
     let study = prepare_study_dataset(workspace, all_startups, &wide_params)?;
+    let planned_fold_count = planned_folds.len();
+    let (folds, skipped_folds) = partition_walk_forward_folds(planned_folds, &study);
+    if folds.is_empty() {
+        return Err(failed(
+            "walk-forward produced no OOS folds with NYSE sessions",
+        ));
+    }
+    emit_ui(json!({
+        "event": "walk_forward_start",
+        "n_folds": folds.len(),
+        "planned_folds": planned_fold_count,
+        "skipped_folds": skipped_folds.len(),
+        "n_trials": config.n_trials,
+        "objective_metric": config.objective_metric,
+    }));
     let scale = base
         .get("scale")
         .or_else(|| base.get("simulation_scale"))
@@ -1507,7 +1560,7 @@ fn run_walk_forward(
     let mut fold_infos = Vec::with_capacity(folds.len());
     let mut oos_portfolio: Option<Portfolio> = None;
 
-    for (fold_index, fold) in folds.iter().enumerate() {
+    for fold in &folds {
         emit_ui(json!({
             "event": "walk_forward_fold",
             "fold": fold.number,
@@ -1522,7 +1575,7 @@ fn run_walk_forward(
         let result = optimize_fold(
             workspace,
             &study,
-            &candidates_by_fold[fold_index],
+            &candidates_by_fold[fold.planned_number - 1],
             fold,
             folds.len(),
             config,
@@ -1630,6 +1683,7 @@ fn run_walk_forward(
             "execution_model": "continuous_oos_portfolio",
             "walk_forward": walk_config,
             "folds": fold_infos,
+            "skipped_folds": skipped_folds,
             "metrics": metrics,
         }),
     )?;
@@ -1647,6 +1701,8 @@ fn run_walk_forward(
             "event": "walk_forward_done",
             "objective_metric": config.objective_metric,
             "n_folds": folds.len(),
+            "planned_folds": planned_fold_count,
+            "skipped_folds": skipped_folds.len(),
             "metrics": metrics,
         }),
         overall_started,
@@ -1943,5 +1999,40 @@ mod tests {
         assert!(error
             .to_string()
             .contains("legacy step_days must equal test_window_days"));
+    }
+
+    #[test]
+    fn walk_forward_skips_oos_windows_without_xnys_sessions() {
+        let config = WalkForwardConfig {
+            train_window_days: 30,
+            test_window_days: 1,
+            oos_total_days: 4,
+        };
+        let base = Map::from_iter([(
+            "end_date".to_owned(),
+            Value::String("2026-07-06".to_owned()),
+        )]);
+        let folds = walk_forward_folds(&base, &config).expect("folds should be valid");
+        let study = StudyDataset {
+            strategy_name: "test".to_owned(),
+            primary_ticker: "QQQ".to_owned(),
+            base_scale: "1d".to_owned(),
+            simulation_scale: "1d".to_owned(),
+            market_calendar: Some("XNYS".to_owned()),
+            market_sessions: vec!["2026-07-06".to_owned()],
+            initial_deposit: 10_000.0,
+            max_leverage: 1.0,
+            bars: Vec::new(),
+            trial_windows: Vec::new(),
+        };
+
+        let (active, skipped) = partition_walk_forward_folds(folds, &study);
+
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].number, 1);
+        assert_eq!(active[0].planned_number, 4);
+        assert_eq!(active[0].test_start.iso(), "2026-07-06");
+        assert_eq!(skipped.len(), 3);
+        assert_eq!(skipped[0]["reason"], "no_xnys_sessions");
     }
 }

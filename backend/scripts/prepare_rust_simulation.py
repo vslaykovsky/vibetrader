@@ -23,6 +23,7 @@ except Exception:
 
 from application.queries.historical_bars import HistoricalBarsQuery
 from application.services.indicators import IndicatorEngine
+from application.services.market_calendar import uses_xnys_calendar, xnys_session_dates
 from application.services.scale_utils import is_finer_or_equal, normalize_scale, scale_divides
 from application.services.simulation_driver import (
     aggregate_to_base,
@@ -216,6 +217,20 @@ def prepare_study(
     _, ticker, scale, session, _ = first
     max_padding_days = max(topology[4] for topology in topologies)
     provider = params.get("provider")
+    market_calendar = (
+        "XNYS"
+        if uses_xnys_calendar(
+            ticker=ticker,
+            provider=provider,
+            asset_class=params.get("asset_class"),
+        )
+        else None
+    )
+    market_sessions = (
+        sorted(session_date.isoformat() for session_date in xnys_session_dates(start_d, end_d))
+        if market_calendar == "XNYS"
+        else []
+    )
     query = HistoricalBarsQuery()
     frame, _ = query.fetch_chunked_merge(
         ticker,
@@ -266,6 +281,8 @@ def prepare_study(
         "simulation_scale": scale,
         "session": session,
         "provider": provider,
+        "market_calendar": market_calendar,
+        "market_sessions": market_sessions,
         "initial_deposit": float(params["initial_deposit"]),
         "max_leverage": read_strategy_max_leverage(workspace / "params.json"),
         "max_padding_days": max_padding_days,

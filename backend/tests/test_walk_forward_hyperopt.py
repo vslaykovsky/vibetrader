@@ -89,6 +89,104 @@ def test_walk_forward_folds_are_inclusive_calendar_windows():
     ]
 
 
+def test_walk_forward_skips_oos_windows_without_xnys_sessions():
+    cfg = ParamsHyperopt.model_validate(
+        {
+            "search_space": {"period": {"type": "int", "low": 2, "high": 5}},
+            "mode": "walk_forward",
+            "walk_forward": {
+                "train_window_days": 30,
+                "test_window_days": 1,
+                "oos_total_days": 4,
+            },
+        }
+    )
+    base = {
+        "ticker": "QQQ",
+        "provider": "alpaca",
+        "end_date": "2026-07-06",
+    }
+
+    planned = hyperopt._walk_forward_folds(base, cfg)
+    active, skipped = hyperopt._partition_walk_forward_folds(base, planned)
+
+    assert [
+        (fold["fold"], fold["test_start"].isoformat(), fold["test_end"].isoformat())
+        for fold in active
+    ] == [(1, "2026-07-06", "2026-07-06")]
+    assert skipped == [
+        {
+            "planned_fold": 1,
+            "test_start": "2026-07-03",
+            "test_end": "2026-07-03",
+            "reason": "no_xnys_sessions",
+        },
+        {
+            "planned_fold": 2,
+            "test_start": "2026-07-04",
+            "test_end": "2026-07-04",
+            "reason": "no_xnys_sessions",
+        },
+        {
+            "planned_fold": 3,
+            "test_start": "2026-07-05",
+            "test_end": "2026-07-05",
+            "reason": "no_xnys_sessions",
+        },
+    ]
+
+
+def test_walk_forward_does_not_apply_xnys_calendar_to_crypto():
+    cfg = ParamsHyperopt.model_validate(
+        {
+            "search_space": {"period": {"type": "int", "low": 2, "high": 5}},
+            "mode": "walk_forward",
+            "walk_forward": {
+                "train_window_days": 30,
+                "test_window_days": 1,
+                "oos_total_days": 4,
+            },
+        }
+    )
+    base = {
+        "ticker": "BTC/USD",
+        "provider": "alpaca",
+        "end_date": "2026-07-06",
+    }
+
+    planned = hyperopt._walk_forward_folds(base, cfg)
+    active, skipped = hyperopt._partition_walk_forward_folds(base, planned)
+
+    assert active == planned
+    assert skipped == []
+
+
+def test_walk_forward_does_not_apply_xnys_calendar_to_moex_equity():
+    base = {
+        "ticker": "SBER",
+        "provider": "moex",
+        "asset_class": "us_equity",
+        "end_date": "2026-07-06",
+    }
+    cfg = ParamsHyperopt.model_validate(
+        {
+            "search_space": {"period": {"type": "int", "low": 2, "high": 5}},
+            "mode": "walk_forward",
+            "walk_forward": {
+                "train_window_days": 30,
+                "test_window_days": 1,
+                "oos_total_days": 4,
+            },
+        }
+    )
+
+    planned = hyperopt._walk_forward_folds(base, cfg)
+    active, skipped = hyperopt._partition_walk_forward_folds(base, planned)
+
+    assert active == planned
+    assert skipped == []
+
+
 def test_stitch_docs_compounds_equity_and_adds_oos_vertical_markers():
     fold_docs = [
         {

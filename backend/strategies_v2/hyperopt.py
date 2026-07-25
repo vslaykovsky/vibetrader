@@ -39,6 +39,14 @@ def _locate_simulate_script(start: Path) -> Path:
 
 
 SIMULATE_SCRIPT = _locate_simulate_script(WORKSPACE)
+BACKEND_ROOT = SIMULATE_SCRIPT.parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+from application.services.market_calendar import (  # noqa: E402
+    uses_xnys_calendar,
+    xnys_session_dates,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -489,6 +497,41 @@ def _walk_forward_folds(base: dict, cfg: ParamsHyperopt) -> list[dict]:
     return folds
 
 
+def _partition_walk_forward_folds(
+    base: dict,
+    folds: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    if not folds or not uses_xnys_calendar(
+        ticker=str(base.get("ticker") or ""),
+        provider=base.get("provider"),
+        asset_class=base.get("asset_class"),
+    ):
+        return folds, []
+
+    sessions = xnys_session_dates(folds[0]["test_start"], folds[-1]["test_end"])
+    active: list[dict] = []
+    skipped: list[dict] = []
+    for fold in folds:
+        has_session = any(
+            fold["test_start"] <= session_date <= fold["test_end"]
+            for session_date in sessions
+        )
+        if not has_session:
+            skipped.append(
+                {
+                    "planned_fold": int(fold["fold"]),
+                    "test_start": fold["test_start"].isoformat(),
+                    "test_end": fold["test_end"].isoformat(),
+                    "reason": "no_xnys_sessions",
+                }
+            )
+            continue
+        active_fold = dict(fold)
+        active_fold["fold"] = len(active) + 1
+        active.append(active_fold)
+    return active, skipped
+
+
 def _chart_time_to_unix(value: object) -> int | None:
     if isinstance(value, (int, float)) and math.isfinite(float(value)):
         v = float(value)
@@ -882,11 +925,16 @@ def _run_walk_forward_mode(
     t0: float,
     trial_timeout: float,
 ) -> None:
-    folds = _walk_forward_folds(base, cfg)
+    planned_folds = _walk_forward_folds(base, cfg)
+    folds, skipped_folds = _partition_walk_forward_folds(base, planned_folds)
+    if not folds:
+        raise HyperoptRunError("walk-forward produced no OOS folds with NYSE sessions")
     _emit_ui(
         {
             "event": "walk_forward_start",
             "n_folds": len(folds),
+            "planned_folds": len(planned_folds),
+            "skipped_folds": len(skipped_folds),
             "n_trials": int(cfg.n_trials),
             "objective_metric": str(cfg.objective_metric),
         }
@@ -990,6 +1038,7 @@ def _run_walk_forward_mode(
             "n_trials": int(cfg.n_trials),
             "walk_forward": cfg.walk_forward.model_dump(mode="json") if cfg.walk_forward else None,
             "folds": fold_infos,
+            "skipped_folds": skipped_folds,
             "metrics": metrics,
         },
     )
@@ -1002,6 +1051,8 @@ def _run_walk_forward_mode(
             "event": "walk_forward_done",
             "objective_metric": str(cfg.objective_metric),
             "n_folds": len(folds),
+            "planned_folds": len(planned_folds),
+            "skipped_folds": len(skipped_folds),
             "metrics": metrics,
             **_timing_payload(t0, len(folds), len(folds), float(cfg.timeout_seconds)),
         }
