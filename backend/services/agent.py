@@ -55,7 +55,12 @@ CHAT_OPENROUTER_AINVOKE_TIMEOUT_RETRIES = 3
 CHAT_OPENROUTER_RATE_LIMIT_RETRIES = 5
 CHAT_OPENROUTER_RATE_LIMIT_MAX_DELAY_SECONDS = 30.0
 CHAT_OPENROUTER_TRANSIENT_VALIDATION_RETRIES = 5
-AGENT_MAX_TOOL_ITERATIONS = 30
+AGENT_MAX_TOOL_ITERATIONS = 50
+TOOL_ITERATION_LIMIT_REACHED_MESSAGE = (
+    f"The agent stopped because it reached the {AGENT_MAX_TOOL_ITERATIONS}-tool-call "
+    "limit before completing the request. Please split the request into smaller parts "
+    "and try again."
+)
 
 DEFAULT_CODEX_MODEL = "gpt-5.6-sol"
 DEFAULT_CODEX_REASONING_EFFORT = "medium"
@@ -136,6 +141,7 @@ Principles
 * Be brief after tool runs: summarize only observed results; never invent metrics. The user sees charts and metrics.
 * Backtesting is supported; live trading is not.
 * Do not reveal generated implementation details.
+* Before invoking any tool for the current user request, estimate the total number of tool calls needed. If the estimate is greater than {AGENT_MAX_TOOL_ITERATIONS}, do not invoke any tools. Immediately tell the user in their language that the request cannot be executed in one run because it has too many steps for the {AGENT_MAX_TOOL_ITERATIONS}-tool-call limit, and ask them to split it into smaller requests.
 * Today's date is {(datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")}.{{user_timezone_line}}
 
 Strategy workflow
@@ -3065,4 +3071,12 @@ def build_agent_reply(
                 ToolMessage(content=json.dumps(limited), tool_call_id=tid)
             )
 
-    raise Exception("Agent stopped: maximum tool iterations reached without a final reply.")
+    if on_token is not None:
+        on_token(TOOL_ITERATION_LIMIT_REACHED_MESSAGE)
+    return {
+        "message": TOOL_ITERATION_LIMIT_REACHED_MESSAGE,
+        "canvas": canvas_with_output(existing_canvas, thread_id),
+        "reply_duration_ms": _reply_duration_ms(),
+        "strategy_name": last_strategy_name,
+        "codex_thread_id": codex_thread_ref["value"],
+    }
