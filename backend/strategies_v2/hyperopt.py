@@ -1081,10 +1081,19 @@ def main() -> None:
         sys.exit(1)
 
     engine = (os.environ.get("STRATEGY_ENGINE") or "python").strip().lower()
+    if cfg.sampler == "grid" and engine != "rust":
+        print("grid optimization is supported only by the Rust optimizer", file=sys.stderr)
+        sys.exit(1)
     if engine == "rust":
         rust_returncode = _run_rust_optimizer()
         if rust_returncode != 78:
             raise SystemExit(rust_returncode)
+        if cfg.sampler == "grid":
+            print(
+                "grid optimization requires a strategy topology supported by the native Rust optimizer",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         logger.info(
             "Rust optimizer does not support this subscription topology; "
             "falling back to the compatibility optimizer"

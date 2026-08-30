@@ -53,9 +53,28 @@ impl fmt::Display for OptimizerError {
 #[derive(Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum SearchSpec {
-    Int { low: i64, high: i64 },
-    Float { low: f64, high: f64 },
-    Categorical { choices: Vec<Value> },
+    Int {
+        low: i64,
+        high: i64,
+        #[serde(default)]
+        step: Option<i64>,
+    },
+    Float {
+        low: f64,
+        high: f64,
+        #[serde(default)]
+        step: Option<f64>,
+    },
+    Categorical {
+        choices: Vec<Value>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum Sampler {
+    Bayesian,
+    Grid,
 }
 
 fn default_trials() -> usize {
@@ -76,6 +95,10 @@ fn default_objective() -> String {
 
 fn default_mode() -> String {
     "single".to_owned()
+}
+
+fn default_sampler() -> Sampler {
+    Sampler::Bayesian
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -129,6 +152,8 @@ struct HyperoptConfig {
     #[serde(default = "default_objective")]
     objective_metric: String,
     seed: Option<i64>,
+    #[serde(default = "default_sampler")]
+    sampler: Sampler,
     #[serde(default = "default_mode")]
     mode: String,
     walk_forward: Option<WalkForwardConfig>,
@@ -394,7 +419,7 @@ fn active_space(config: &HyperoptConfig) -> Result<BTreeMap<String, SearchSpec>,
 
 fn sample_value(rng: &mut StudyRng, spec: &SearchSpec) -> Result<Value, OptimizerError> {
     match spec {
-        SearchSpec::Int { low, high } => {
+        SearchSpec::Int { low, high, .. } => {
             if high < low {
                 return Err(failed("integer search-space high must be >= low"));
             }
@@ -402,7 +427,7 @@ fn sample_value(rng: &mut StudyRng, spec: &SearchSpec) -> Result<Value, Optimize
             let offset = (rng.next_u64() as u128 % width) as i128;
             Ok(json!((*low as i128 + offset) as i64))
         }
-        SearchSpec::Float { low, high } => {
+        SearchSpec::Float { low, high, .. } => {
             if !low.is_finite() || !high.is_finite() || high < low {
                 return Err(failed(
                     "float search-space bounds must be finite and ordered",
@@ -419,14 +444,106 @@ fn sample_value(rng: &mut StudyRng, spec: &SearchSpec) -> Result<Value, Optimize
     }
 }
 
-fn sample_candidates(
+fn grid_values(spec: &SearchSpec, limit: usize) -> Result<Vec<Value>, OptimizerError> {
+    match spec {
+        SearchSpec::Int { low, high, step } => {
+            if high < low {
+                return Err(failed("integer search-space high must be >= low"));
+            }
+            let step = step.unwrap_or(1);
+            if step <= 0 {
+                return Err(failed("integer grid step must be positive"));
+            }
+            let mut values = Vec::new();
+            let mut current = *low;
+            while current <= *high && values.len() < limit {
+                values.push(json!(current));
+                let Some(next) = current.checked_add(step) else {
+                    break;
+                };
+                current = next;
+            }
+            Ok(values)
+        }
+        SearchSpec::Float { low, high, step } => {
+            if !low.is_finite() || !high.is_finite() || high < low {
+                return Err(failed(
+                    "float search-space bounds must be finite and ordered",
+                ));
+            }
+            let step = step.ok_or_else(|| failed("float grid search requires step"))?;
+            if !step.is_finite() || step <= 0.0 {
+                return Err(failed("float grid step must be finite and positive"));
+            }
+            let tolerance =
+                step.abs() * 1e-12 + low.abs().max(high.abs()).max(1.0) * f64::EPSILON * 16.0;
+            let mut values = Vec::new();
+            for index in 0..limit {
+                let value = low + step * index as f64;
+                if !value.is_finite() || value > high + tolerance {
+                    break;
+                }
+                values.push(json!(if value > *high { *high } else { value }));
+            }
+            Ok(values)
+        }
+        SearchSpec::Categorical { choices } => {
+            if choices.is_empty() {
+                return Err(failed("categorical search-space choices must not be empty"));
+            }
+            Ok(choices.iter().take(limit).cloned().collect())
+        }
+    }
+}
+
+fn append_grid_candidates(
+    base: &Map<String, Value>,
+    dimensions: &[(String, Vec<Value>)],
+    dimension: usize,
+    selected: &mut Vec<Value>,
+    limit: usize,
+    candidates: &mut Vec<Value>,
+) {
+    if candidates.len() >= limit {
+        return;
+    }
+    if dimension == dimensions.len() {
+        let mut params = base.clone();
+        for ((key, _), value) in dimensions.iter().zip(selected.iter()) {
+            params.insert(key.clone(), value.clone());
+        }
+        candidates.push(Value::Object(params));
+        return;
+    }
+    for value in &dimensions[dimension].1 {
+        selected.push(value.clone());
+        append_grid_candidates(base, dimensions, dimension + 1, selected, limit, candidates);
+        selected.pop();
+        if candidates.len() >= limit {
+            break;
+        }
+    }
+}
+
+fn grid_candidates(
     base: &Map<String, Value>,
     space: &BTreeMap<String, SearchSpec>,
-    count: usize,
-    seed: Option<i64>,
+    limit: usize,
 ) -> Result<Vec<Value>, OptimizerError> {
-    let mut rng = StudyRng::new(seed);
-    sample_candidates_with_rng(base, space, count, &mut rng)
+    let dimensions = space
+        .iter()
+        .map(|(key, spec)| Ok((key.clone(), grid_values(spec, limit)?)))
+        .collect::<Result<Vec<_>, OptimizerError>>()?;
+    let mut candidates = Vec::with_capacity(limit);
+    append_grid_candidates(
+        base,
+        &dimensions,
+        0,
+        &mut Vec::with_capacity(dimensions.len()),
+        limit,
+        &mut candidates,
+    );
+    Ok(candidates)
 }
 
 fn sample_candidates_with_rng(
@@ -444,6 +561,18 @@ fn sample_candidates_with_rng(
         candidates.push(Value::Object(params));
     }
     Ok(candidates)
+}
+
+fn candidates_with_rng(
+    base: &Map<String, Value>,
+    space: &BTreeMap<String, SearchSpec>,
+    config: &HyperoptConfig,
+    rng: &mut StudyRng,
+) -> Result<Vec<Value>, OptimizerError> {
+    match config.sampler {
+        Sampler::Bayesian => sample_candidates_with_rng(base, space, config.n_trials, rng),
+        Sampler::Grid => grid_candidates(base, space, config.n_trials),
+    }
 }
 
 fn walk_forward_folds(
@@ -1349,6 +1478,7 @@ fn optimize_fold(
     config: &HyperoptConfig,
 ) -> Result<FoldStudyResult, OptimizerError> {
     let started = Instant::now();
+    let n_trials = candidates.len();
     let maximize = config.direction != "minimize";
     let mut best_value = if maximize {
         f64::NEG_INFINITY
@@ -1364,7 +1494,7 @@ fn optimize_fold(
                     "event": "stopped",
                     "reason": "wall_timeout",
                     "trial": index,
-                    "n_trials": config.n_trials,
+                    "n_trials": n_trials,
                     "objective_metric": config.objective_metric,
                     "best_value": best_params.as_ref().map(|_| best_value),
                     "completed_trials": completed,
@@ -1373,7 +1503,7 @@ fn optimize_fold(
                 }),
                 started,
                 index,
-                config.n_trials,
+                n_trials,
                 config.timeout_seconds,
             ));
             break;
@@ -1396,7 +1526,7 @@ fn optimize_fold(
                     json!({
                         "event": "trial",
                         "trial": index + 1,
-                        "n_trials": config.n_trials,
+                        "n_trials": n_trials,
                         "objective_metric": config.objective_metric,
                         "outcome": "sim_failed",
                         "best_value": best_params.as_ref().map(|_| best_value),
@@ -1406,7 +1536,7 @@ fn optimize_fold(
                     }),
                     started,
                     index + 1,
-                    config.n_trials,
+                    n_trials,
                     config.timeout_seconds,
                 ));
                 continue;
@@ -1417,7 +1547,7 @@ fn optimize_fold(
                 json!({
                     "event": "trial",
                     "trial": index + 1,
-                    "n_trials": config.n_trials,
+                    "n_trials": n_trials,
                     "objective_metric": config.objective_metric,
                     "outcome": "missing_objective",
                     "best_value": best_params.as_ref().map(|_| best_value),
@@ -1427,7 +1557,7 @@ fn optimize_fold(
                 }),
                 started,
                 index + 1,
-                config.n_trials,
+                n_trials,
                 config.timeout_seconds,
             ));
             continue;
@@ -1447,7 +1577,7 @@ fn optimize_fold(
             json!({
                 "event": "trial",
                 "trial": index + 1,
-                "n_trials": config.n_trials,
+                "n_trials": n_trials,
                 "objective_metric": config.objective_metric,
                 "outcome": "completed",
                 "trial_value": value,
@@ -1459,7 +1589,7 @@ fn optimize_fold(
             }),
             started,
             index + 1,
-            config.n_trials,
+            n_trials,
             config.timeout_seconds,
         ));
     }
@@ -1505,12 +1635,12 @@ fn run_walk_forward(
     let mut all_startups = Vec::with_capacity(planned_folds.len() * config.n_trials);
     for fold in &planned_folds {
         let train_base = params_with_dates(base, fold.train_start, fold.train_end);
-        let candidates = sample_candidates_with_rng(
+        let candidates = candidates_with_rng(
             train_base
                 .as_object()
                 .expect("params_with_dates returns an object"),
             space,
-            config.n_trials,
+            config,
             &mut rng,
         )?;
         for candidate in &candidates {
@@ -1519,6 +1649,13 @@ fn run_walk_forward(
             all_startups.push(serde_json::to_value(handler.startup()).map_err(failed)?);
         }
         candidates_by_fold.push(candidates);
+    }
+    let n_trials = candidates_by_fold
+        .first()
+        .map(Vec::len)
+        .ok_or_else(|| failed("walk-forward has no candidate folds"))?;
+    if n_trials == 0 {
+        return Err(failed("optimization sampler produced no candidates"));
     }
     let wide_params = params_with_dates(
         base,
@@ -1544,7 +1681,8 @@ fn run_walk_forward(
         "n_folds": folds.len(),
         "planned_folds": planned_fold_count,
         "skipped_folds": skipped_folds.len(),
-        "n_trials": config.n_trials,
+        "n_trials": n_trials,
+        "sampler": config.sampler,
         "objective_metric": config.objective_metric,
     }));
     let scale = base
@@ -1679,7 +1817,8 @@ fn run_walk_forward(
             "mode": "walk_forward",
             "objective_metric": config.objective_metric,
             "direction": config.direction,
-            "n_trials": config.n_trials,
+            "n_trials": n_trials,
+            "sampler": config.sampler,
             "execution_model": "continuous_oos_portfolio",
             "walk_forward": walk_config,
             "folds": fold_infos,
@@ -1745,13 +1884,19 @@ fn run_inner(workspace: &Path, original: &Value) -> Result<bool, OptimizerError>
         run_walk_forward(workspace, base, &config, &space)?;
         return Ok(true);
     }
-    let candidates = sample_candidates(base, &space, config.n_trials, config.seed)?;
+    let mut rng = StudyRng::new(config.seed);
+    let candidates = candidates_with_rng(base, &space, &config, &mut rng)?;
+    let n_trials = candidates.len();
+    if n_trials == 0 {
+        return Err(failed("optimization sampler produced no candidates"));
+    }
     let started = Instant::now();
     eprintln!(
-        "Rust hyperopt start: mode=single objective={} direction={} trials={} wall={:.3}s seed={:?}",
+        "Rust hyperopt start: mode=single sampler={:?} objective={} direction={} trials={} wall={:.3}s seed={:?}",
+        config.sampler,
         config.objective_metric,
         config.direction,
-        config.n_trials,
+        n_trials,
         config.timeout_seconds,
         config.seed
     );
@@ -1759,7 +1904,8 @@ fn run_inner(workspace: &Path, original: &Value) -> Result<bool, OptimizerError>
         "event": "start",
         "objective_metric": config.objective_metric,
         "maximize": config.direction != "minimize",
-        "n_trials": config.n_trials,
+        "n_trials": n_trials,
+        "sampler": config.sampler,
     }));
 
     let mut startups = Vec::with_capacity(candidates.len());
@@ -1800,14 +1946,14 @@ fn run_inner(workspace: &Path, original: &Value) -> Result<bool, OptimizerError>
                     "event": "stopped",
                     "reason": "wall_timeout",
                     "trial": index,
-                    "n_trials": config.n_trials,
+                    "n_trials": n_trials,
                     "objective_metric": config.objective_metric,
                     "best_value": best_params.as_ref().map(|_| best_value),
                     "completed_trials": completed,
                 }),
                 started,
                 index,
-                config.n_trials,
+                n_trials,
                 config.timeout_seconds,
             ));
             break;
@@ -1841,7 +1987,7 @@ fn run_inner(workspace: &Path, original: &Value) -> Result<bool, OptimizerError>
                     json!({
                         "event": "trial",
                         "trial": index + 1,
-                        "n_trials": config.n_trials,
+                        "n_trials": n_trials,
                         "objective_metric": config.objective_metric,
                         "outcome": "sim_failed",
                         "best_value": best_params.as_ref().map(|_| best_value),
@@ -1849,7 +1995,7 @@ fn run_inner(workspace: &Path, original: &Value) -> Result<bool, OptimizerError>
                     }),
                     started,
                     attempted,
-                    config.n_trials,
+                    n_trials,
                     config.timeout_seconds,
                 ));
                 continue;
@@ -1873,7 +2019,7 @@ fn run_inner(workspace: &Path, original: &Value) -> Result<bool, OptimizerError>
             json!({
                 "event": "trial",
                 "trial": index + 1,
-                "n_trials": config.n_trials,
+                "n_trials": n_trials,
                 "objective_metric": config.objective_metric,
                 "outcome": "completed",
                 "trial_value": value,
@@ -1883,7 +2029,7 @@ fn run_inner(workspace: &Path, original: &Value) -> Result<bool, OptimizerError>
             }),
             started,
             attempted,
-            config.n_trials,
+            n_trials,
             config.timeout_seconds,
         ));
     }
@@ -1921,11 +2067,12 @@ fn run_inner(workspace: &Path, original: &Value) -> Result<bool, OptimizerError>
             "objective_metric": config.objective_metric,
             "best_value": best_value,
             "completed_trials": completed,
-            "n_trials": config.n_trials,
+            "n_trials": n_trials,
+            "sampler": config.sampler,
         }),
         started,
         attempted,
-        config.n_trials,
+        n_trials,
         config.timeout_seconds,
     ));
     for name in TEMP_FILES {
@@ -1963,6 +2110,61 @@ pub fn run() -> Result<(), OptimizerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grid_candidates_are_deterministic_and_capped() {
+        let base = Map::from_iter([("untouched".to_owned(), json!(true))]);
+        let space = BTreeMap::from_iter([
+            (
+                "a_int".to_owned(),
+                SearchSpec::Int {
+                    low: 1,
+                    high: 3,
+                    step: Some(2),
+                },
+            ),
+            (
+                "b_float".to_owned(),
+                SearchSpec::Float {
+                    low: 0.1,
+                    high: 0.2,
+                    step: Some(0.1),
+                },
+            ),
+            (
+                "c_category".to_owned(),
+                SearchSpec::Categorical {
+                    choices: vec![json!("first"), json!("second")],
+                },
+            ),
+        ]);
+
+        let all = grid_candidates(&base, &space, 20).expect("grid should be valid");
+        assert_eq!(all.len(), 8);
+        assert_eq!(all[0]["a_int"], json!(1));
+        assert_eq!(all[0]["b_float"], json!(0.1));
+        assert_eq!(all[0]["c_category"], json!("first"));
+        assert_eq!(all[1]["c_category"], json!("second"));
+        assert_eq!(all[2]["b_float"], json!(0.2));
+        assert_eq!(all[4]["a_int"], json!(3));
+        assert_eq!(all[0]["untouched"], json!(true));
+
+        let capped = grid_candidates(&base, &space, 3).expect("grid should be valid");
+        assert_eq!(capped, all[..3]);
+    }
+
+    #[test]
+    fn float_grid_requires_a_positive_step() {
+        let missing = SearchSpec::Float {
+            low: 0.0,
+            high: 1.0,
+            step: None,
+        };
+        assert!(grid_values(&missing, 10)
+            .expect_err("missing float step must fail")
+            .to_string()
+            .contains("requires step"));
+    }
 
     #[test]
     fn equal_legacy_step_days_is_accepted_but_not_serialized() {

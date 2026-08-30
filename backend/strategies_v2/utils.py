@@ -486,6 +486,7 @@ class HyperoptIntSpec(BaseModel):
     type: Literal["int"] = "int"
     low: int
     high: int
+    step: int | None = Field(default=None, gt=0)
 
 
 class HyperoptFloatSpec(BaseModel):
@@ -493,6 +494,7 @@ class HyperoptFloatSpec(BaseModel):
     type: Literal["float"] = "float"
     low: float
     high: float
+    step: float | None = Field(default=None, gt=0)
 
 
 class HyperoptCategoricalSpec(BaseModel):
@@ -536,5 +538,6 @@ class ParamsHyperopt(BaseModel):
     objective_metric: HyperoptObjectiveMetric = "total_return"
     seed: int | None = None
     trial_timeout_seconds: int | None = 1800
+    sampler: Literal["bayesian", "grid"] = "bayesian"
     mode: Literal["single", "walk_forward"] = "single"
     walk_forward: WalkForwardConfig | None = None

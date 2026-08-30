@@ -20,6 +20,11 @@ class HyperoptIntSpec(BaseModel):
     type: Literal["int"] = "int"
     low: int
     high: int
+    step: int | None = Field(
+        default=None,
+        gt=0,
+        description="Positive spacing between integer values when sampler is 'grid'. Defaults to 1 in grid mode.",
+    )
 
 
 class HyperoptFloatSpec(BaseModel):
@@ -27,6 +32,11 @@ class HyperoptFloatSpec(BaseModel):
     type: Literal["float"] = "float"
     low: float
     high: float
+    step: float | None = Field(
+        default=None,
+        gt=0,
+        description="Required positive spacing between float values when sampler is 'grid'.",
+    )
 
 
 class HyperoptCategoricalSpec(BaseModel):
@@ -70,6 +80,7 @@ class ParamsHyperopt(BaseModel):
     objective_metric: HyperoptObjectiveMetric = "total_return"
     seed: int | None = None
     trial_timeout_seconds: int | None = 1800
+    sampler: Literal["bayesian", "grid"] = "bayesian"
     mode: Literal["single", "walk_forward"] = "single"
     walk_forward: WalkForwardConfig | None = None
 
@@ -88,7 +99,13 @@ class ParamsHyperoptOverrides(BaseModel):
         default=None,
         description="Optional blacklist of search_space keys to skip.",
     )
-    n_trials: int | None = None
+    n_trials: int | None = Field(
+        default=None,
+        description=(
+            "Maximum number of candidates to evaluate. In grid mode set this to the full Cartesian-product size "
+            "for an exhaustive search; a smaller value caps the deterministic grid."
+        ),
+    )
     timeout_seconds: int | None = Field(
         default=None,
         description=(
@@ -109,6 +126,13 @@ class ParamsHyperoptOverrides(BaseModel):
         description=(
             "Hard timeout for one simulator trial, mainly to stop a hanging or non-responsive strategy. "
             "This is not the hyperopt study budget."
+        ),
+    )
+    sampler: Literal["bayesian", "grid"] | None = Field(
+        default=None,
+        description=(
+            "Keep 'bayesian' unless the user explicitly asks for grid, exhaustive, or grid-like optimization. "
+            "Grid sampling is supported by the Rust optimizer and requires a positive step on each active float spec."
         ),
     )
     mode: Literal["single", "walk_forward"] | None = Field(
@@ -134,7 +158,8 @@ class RunHyperoptToolParameters(BaseModel):
         default=None,
         description=(
             "Optional structured object merged into params-hyperopt.json. Use for search space, ranges, "
-            "included/excluded parameter filters, trial budgets, timeouts, direction, seed, and objective metric. "
+            "included/excluded parameter filters, sampler, grid steps, trial budgets, timeouts, direction, seed, "
+            "and objective metric. "
             "Use parameters_json instead for ticker, dates, deposit, provider, scale, simulation_scale, metadata, "
             "run_mode, or other base simulation inputs. For lower drawdown, maximize max_drawdown because "
             "drawdowns are stored as negative percentages."

@@ -1,6 +1,6 @@
 from __future__ import annotations
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 import dotenv
 dotenv.load_dotenv()
 from langsmith import traceable
@@ -35,6 +35,11 @@ from application.schemas.hyperopt import (
     ParamsHyperopt,
     ParamsHyperoptOverrides,
     RunHyperoptToolParameters,
+)
+from application.services.backtest_data import provider_data_cap_date
+from application.services.market_calendar import (
+    latest_xnys_session_on_or_before,
+    uses_xnys_calendar,
 )
 from application.services.strategy_engine import (
     StrategyEngine,
@@ -142,7 +147,7 @@ Principles
 * Backtesting is supported; live trading is not.
 * Do not reveal generated implementation details.
 * Before invoking any tool for the current user request, estimate the total number of tool calls needed. If the estimate is greater than {AGENT_MAX_TOOL_ITERATIONS}, do not invoke any tools. Immediately tell the user in their language that the request cannot be executed in one run because it has too many steps for the {AGENT_MAX_TOOL_ITERATIONS}-tool-call limit, and ask them to split it into smaller requests.
-* Today's date is {(datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")}.{{user_timezone_line}}
+{{market_data_date_line}}{{user_timezone_line}}
 
 Strategy workflow
 * Before the first update_strategy, ASK the user only for missing build/run/visualization details: ticker, scale, start/end dates, indicators, entry/exit, sizing, parameters, charts/visualizations. If the user wants defaults, choose sensible defaults. If they supplied a complete spec, implement it.
@@ -162,7 +167,8 @@ Strategy workflow
 Analysis and optimization
 * For EDA, market research, or charts without a tradable strategy, use update_strategy then run_backtest.
 * For explicit parameter optimization requests, use run_hyperopt. Use parameters_hyperopt_json for study-only overrides, including included_parameters/excluded_parameters filters, and parameters_json for base simulation inputs; follow the run_hyperopt tool schema for allowed study fields. Do not run hyperopt for ordinary strategy creation, strategy edits, parameter changes, EDA, or backtest refreshes.
-* Before triggering walk-forward optimization, double-check the walk-forward parameters with the user: train window, OOS/test window (also the retraining interval), total OOS period, objective metric, trial count, per-fold optimization timeout (`timeout_seconds`), and per-trial simulation timeout (`trial_timeout_seconds`). Tell the user that walk-forward optimization may take longer than usual because it runs hyperopt separately for each fold.
+* Keep the default Bayesian sampler for ordinary optimization. Set `sampler: "grid"` only when the user explicitly asks for grid, exhaustive, or grid-like optimization; never infer grid sampling from a generic request to optimize or tune. For grid sampling, pass a positive `step` in every active numeric search-space spec (categorical `choices` already define their grid), and set `n_trials` to the Cartesian-product size for an exhaustive search or to the user's requested cap. Grid sampling is available only through the Rust optimizer; do not silently substitute the default sampler if the Rust optimizer cannot run it.
+* Before triggering walk-forward optimization, double-check the walk-forward parameters with the user: train window, OOS/test window (also the retraining interval), total OOS period, objective metric, sampler, trial count, per-fold optimization timeout (`timeout_seconds`), and per-trial simulation timeout (`trial_timeout_seconds`). For grid sampling also confirm the per-parameter steps and resulting combination count. Tell the user that walk-forward optimization may take longer than usual because it runs hyperopt separately for each fold.
 * For walk-forward optimization, do not choose a very short `timeout_seconds` such as 180 seconds unless the user explicitly asked for it or a prior run shows the full requested trial count can finish within that budget. If no timeout preference is given, propose a realistic per-fold optimization budget: usually at least 600 seconds for 40 trials, and 900-1800 seconds for intraday, multi-ticker, or indicator-heavy strategies. Keep `trial_timeout_seconds` separate; it is the hard timeout for one simulator trial that hangs or stops responding, not the hyperopt study budget.
 * If params.json contains run_mode, treat the strategy as trainable and run separate train and out-of-sample test backtests with run_mode/date overrides rather than one combined run.
 * For questions about how the latest strategy run performed on historical data, use analyse_run. This includes questions about specific trades, orders, fills, entries/exits, PnL, metrics, dates, bars, or why something happened in the latest backtest. Do not use analyse_code for these.
@@ -992,7 +998,8 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                 "trials, writes best params to params.json, then performs a final run. In mode='walk_forward', runs rolling "
                 "train/OOS folds, restores params.json, and writes stitched OOS backtest.json, metrics.json, and walkforward.json. "
                 "parameters_json changes base inputs; parameters_hyperopt_json changes the study definition, included/excluded "
-                "parameter filters, and walk-forward settings."
+                "parameter filters, sampler and grid steps, and walk-forward settings. The sampler remains Bayesian unless the "
+                "user explicitly asks for grid, exhaustive, or grid-like optimization."
             ),
             "parameters": RUN_HYPEROPT_TOOL_PARAMETERS_SCHEMA,
         },
@@ -2148,6 +2155,50 @@ def _read_params_json_object(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _market_data_prompt_line(
+    workspace: Path,
+    *,
+    now_utc: datetime | None = None,
+) -> str:
+    """Build request-time market-date context for the current strategy workspace."""
+    current = now_utc or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    else:
+        current = current.astimezone(timezone.utc)
+
+    provider_cap = provider_data_cap_date(current)
+    params = _read_params_json_object(workspace / "params.json")
+    ticker = str(params.get("ticker") or "").strip()
+    provider = str(params.get("provider") or "").strip()
+    asset_class = str(params.get("asset_class") or "").strip()
+
+    latest_permitted = provider_cap
+    basis = "the provider's one-UTC-calendar-day data delay"
+    if uses_xnys_calendar(
+        ticker=ticker,
+        provider=provider,
+        asset_class=asset_class,
+    ):
+        try:
+            latest_permitted = latest_xnys_session_on_or_before(provider_cap)
+            basis = "the latest XNYS trading session allowed by the provider data cap"
+        except Exception:
+            logger.exception(
+                "failed to resolve latest XNYS session for prompt date=%s",
+                provider_cap,
+            )
+
+    return (
+        f"* Current UTC date is {current.date().isoformat()}. "
+        f"The provider data cap is {provider_cap.isoformat()} inclusive. "
+        f"For the current strategy, the latest permitted market-data date is "
+        f"{latest_permitted.isoformat()} ({basis}). When the user asks for the "
+        "latest or last available bar, use this date as end_date; the provider may "
+        "return an earlier final bar when no data exists for that date."
+    )
+
+
 def read_strategy_description_from_workspace(root: Path) -> str:
     candidates = (
         root / "params.json",
@@ -2906,6 +2957,19 @@ def _invoke_agent_model(
     return msg
 
 
+def _system_prompt_for_workspace(
+    workspace: Path,
+    *,
+    user_timezone_line: str = "",
+    now_utc: datetime | None = None,
+) -> str:
+    return SYSTEM_PROMPT.format(
+        strategy_help=_strategy_help_for_workspace(workspace),
+        market_data_date_line=_market_data_prompt_line(workspace, now_utc=now_utc),
+        user_timezone_line=user_timezone_line,
+    )
+
+
 @traceable(name="build_agent_reply", process_inputs=_TRACE_INPUTS, process_outputs=_TRACE_OUTPUTS)
 def build_agent_reply(
     messages: list[dict[str, Any]],
@@ -2947,14 +3011,18 @@ def build_agent_reply(
         }
 
     workspace = strategy_root_for_thread(thread_id)
-    strategy_help = _strategy_help_for_workspace(workspace)
     user_timezone_line = (
         f"\n* The user's local timezone is {user_timezone}. When the user mentions a clock time (e.g. '9:30am'), interpret it in this timezone and convert to UTC for strategy code unless the user explicitly specifies a different timezone. Strategy unixtime values are UTC-based POSIX seconds."
         if user_timezone
         else ""
     )
     chat_messages: list[BaseMessage] = [
-        SystemMessage(content=SYSTEM_PROMPT.format(strategy_help=strategy_help, user_timezone_line=user_timezone_line)),
+        SystemMessage(
+            content=_system_prompt_for_workspace(
+                workspace,
+                user_timezone_line=user_timezone_line,
+            )
+        ),
         *_stored_messages_to_lc(messages),
     ]
 
@@ -2971,8 +3039,8 @@ def build_agent_reply(
         if cancel_control is not None:
             cancel_control.raise_if_cancelled()
         chat_messages[0] = SystemMessage(
-            content=SYSTEM_PROMPT.format(
-                strategy_help=_strategy_help_for_workspace(workspace),
+            content=_system_prompt_for_workspace(
+                workspace,
                 user_timezone_line=user_timezone_line,
             )
         )

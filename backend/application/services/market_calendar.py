@@ -55,3 +55,9 @@ def xnys_session_dates(start: date, end: date) -> frozenset[date]:
         return frozenset()
     sessions = _xnys_calendar().sessions_in_range(start.isoformat(), end.isoformat())
     return frozenset(session.date() for session in sessions)
+
+
+def latest_xnys_session_on_or_before(day: date) -> date:
+    """Return the latest NYSE trading session on or before ``day``."""
+    session = _xnys_calendar().date_to_session(day.isoformat(), direction="previous")
+    return session.date()

@@ -279,6 +279,47 @@ def test_rust_simulator_runs_strategy_in_process(monkeypatch, tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("cargo") is None, reason="Cargo is not installed")
+def test_rust_optimizer_grid_sampler_unit_tests(tmp_path):
+    template_dir = Path(__file__).resolve().parents[1] / "strategies_v2"
+    for name in (
+        "strategy.rs",
+        "utils.rs",
+        "simulator.rs",
+        "optimizer.rs",
+        "optimizer_runtime.rs",
+        "portfolio.rs",
+        "params.json",
+    ):
+        shutil.copy2(template_dir / name, tmp_path / name)
+    crate_name = "vibetrader_grid_optimizer_unit_test"
+    for name in ("Cargo.toml", "Cargo.lock"):
+        rendered = (template_dir / name).read_text(encoding="utf-8").replace(
+            "{{CRATE_NAME}}", crate_name
+        )
+        (tmp_path / name).write_text(rendered, encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            "cargo",
+            "test",
+            "--quiet",
+            "--target-dir",
+            str(tmp_path / "target"),
+            "--bin",
+            f"{crate_name}_optimizer",
+            "grid_",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "2 passed" in completed.stdout
+
+
+@pytest.mark.skipif(shutil.which("cargo") is None, reason="Cargo is not installed")
 def test_rust_optimizer_runs_trials_in_one_process(monkeypatch, tmp_path):
     template_dir = Path(__file__).resolve().parents[1] / "strategies_v2"
     for name in (
@@ -333,6 +374,85 @@ def test_rust_optimizer_runs_trials_in_one_process(monkeypatch, tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("cargo") is None, reason="Cargo is not installed")
+def test_rust_optimizer_runs_deterministic_grid_up_to_trial_cap(monkeypatch, tmp_path):
+    template_dir = Path(__file__).resolve().parents[1] / "strategies_v2"
+    for name in (
+        "strategy.rs",
+        "utils.rs",
+        "simulator.rs",
+        "optimizer.rs",
+        "optimizer_runtime.rs",
+        "portfolio.rs",
+        "params.json",
+    ):
+        shutil.copy2(template_dir / name, tmp_path / name)
+    params = json.loads((tmp_path / "params.json").read_text(encoding="utf-8"))
+    params.update(
+        {
+            "grid_category": "original",
+            "grid_period": 0,
+            "grid_threshold": 0.0,
+        }
+    )
+    (tmp_path / "params.json").write_text(json.dumps(params), encoding="utf-8")
+    (tmp_path / "params-hyperopt.json").write_text(
+        json.dumps(
+            {
+                "sampler": "grid",
+                "search_space": {
+                    "grid_category": {
+                        "type": "categorical",
+                        "choices": ["first", "second"],
+                    },
+                    "grid_period": {
+                        "type": "int",
+                        "low": 1,
+                        "high": 3,
+                        "step": 2,
+                    },
+                    "grid_threshold": {
+                        "type": "float",
+                        "low": 0.1,
+                        "high": 0.2,
+                        "step": 0.1,
+                    },
+                },
+                "n_trials": 5,
+                "objective_metric": "total_return",
+            }
+        ),
+        encoding="utf-8",
+    )
+    crate_name = "vibetrader_grid_optimizer_integration_test"
+    for name in ("Cargo.toml", "Cargo.lock"):
+        rendered = (template_dir / name).read_text(encoding="utf-8").replace(
+            "{{CRATE_NAME}}", crate_name
+        )
+        (tmp_path / name).write_text(rendered, encoding="utf-8")
+    monkeypatch.setenv("STRATEGY_RUST_TARGET_DIR", str(tmp_path / "target"))
+    monkeypatch.setenv(
+        "VIBETRADER_RUST_DATA_ADAPTER",
+        str(FIXTURES_DIR / "rust_data_adapter.py"),
+    )
+    monkeypatch.setenv("STRATEGY_PYTHON_EXECUTABLE", sys.executable)
+
+    executable = build_rust_binary(tmp_path, "optimizer.rs")
+    completed = subprocess.run(
+        [str(executable)], cwd=tmp_path, capture_output=True, text=True, timeout=60
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "over 5 successful trials" in completed.stdout
+    assert '"n_trials":5' in completed.stderr
+    assert '"sampler":"grid"' in completed.stderr
+    best = json.loads((tmp_path / "params.json").read_text())
+    assert best["grid_category"] == "first"
+    assert best["grid_period"] == 1
+    assert best["grid_threshold"] == pytest.approx(0.1)
+    assert not list(tmp_path.glob(".rust-optimization-*"))
+
+
+@pytest.mark.skipif(shutil.which("cargo") is None, reason="Cargo is not installed")
 def test_rust_optimizer_runs_complete_walk_forward_study(monkeypatch, tmp_path):
     template_dir = Path(__file__).resolve().parents[1] / "strategies_v2"
     for name in (
@@ -356,7 +476,7 @@ def test_rust_optimizer_runs_complete_walk_forward_study(monkeypatch, tmp_path):
             "fast_sma_period": 1,
             "slow_sma_period": 2,
             "position_fraction": 1.0,
-            "unused_trial_value": 0.0,
+            "unused_trial_value": -1.0,
         }
     )
     original_params = json.dumps(params, indent=2) + "\n"
@@ -365,10 +485,16 @@ def test_rust_optimizer_runs_complete_walk_forward_study(monkeypatch, tmp_path):
         json.dumps(
             {
                 "search_space": {
-                    "unused_trial_value": {"type": "float", "low": 0.0, "high": 1.0}
+                    "unused_trial_value": {
+                        "type": "float",
+                        "low": 0.0,
+                        "high": 1.0,
+                        "step": 1.0,
+                    }
                 },
+                "sampler": "grid",
                 "mode": "walk_forward",
-                "n_trials": 2,
+                "n_trials": 10,
                 "seed": 1,
                 "objective_metric": "total_return",
                 "walk_forward": {
@@ -409,6 +535,13 @@ def test_rust_optimizer_runs_complete_walk_forward_study(monkeypatch, tmp_path):
         "2024-01-04",
     ]
     assert walkforward["execution_model"] == "continuous_oos_portfolio"
+    assert walkforward["sampler"] == "grid"
+    assert walkforward["n_trials"] == 2
+    assert all(fold["completed_trials"] == 2 for fold in walkforward["folds"])
+    assert all(
+        fold["best_params"]["unused_trial_value"] == 0.0
+        for fold in walkforward["folds"]
+    )
     assert walkforward["metrics"]["final_equity"] == pytest.approx(10_000.0 * 99.0 / 103.0)
     assert walkforward["metrics"]["num_trades"] == 2
     assert walkforward["folds"][1]["ending_positions"][0]["ticker"] == "SPY"

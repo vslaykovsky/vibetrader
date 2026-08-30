@@ -2,7 +2,7 @@ import json
 import logging
 import math
 import os
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Annotated, Any, Callable, Literal, Optional
@@ -344,9 +344,19 @@ def _drop_wide_spread_bars(df: pd.DataFrame) -> pd.DataFrame:
     return out.loc[keep]
 
 
+def provider_data_cap_date(now_utc: datetime | None = None) -> date:
+    """Return the newest UTC calendar date allowed by the data subscription."""
+    current = now_utc or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    else:
+        current = current.astimezone(timezone.utc)
+    return current.date() - timedelta(days=1)
+
+
 def _end_datetime_capped_yesterday(end_test_date: str) -> datetime:
     # Subscription doesn't allow recent data.
-    cap_date = (datetime.now(timezone.utc).date() - timedelta(days=1))
+    cap_date = provider_data_cap_date()
     end = datetime.fromisoformat(end_test_date)
     if end.date() > cap_date:
         return datetime.combine(cap_date, end.time(), tzinfo=end.tzinfo)
